@@ -1,0 +1,154 @@
+# UCI Concrete Compressive Strength regression — 1030 samples, 8 features,
+# target is concrete strength in MPa (Yeh, 1998).
+#
+# Compose against the SONNConfig schema first (defaults filled in), then
+# layer this tutorial's overrides on top via `_self_`.
+defaults:
+  - default
+  - _self_
+
+# Top-level flag (declared in SONNConfig); set true to resume training from
+# the latest checkpoint in `train.checkpoint_dir`.
+resume: false
+
+# Hydra: keep auto-chdir disabled so the YAML's relative paths still resolve
+# from the launch cwd rather than outputs/<date>/<time>/.
+hydra:
+  job:
+    chdir: false
+
+# --- Model -------------------------------------------------------------------
+model:
+  type: regressor
+  # Concrete strength is known to depend on multiplicative interactions
+  # (cement × age, water × superplasticizer, etc.) and an Abrams-law-style
+  # ratio of cement to water. `linear_cov` captures pairwise products; the
+  # `quadratic` family adds explicit x² terms for the age-vs-strength
+  # nonlinearity (strength saturates, doesn't grow linearly with age).
+  # Per-neuron-type activation: each entry below sets its own `activation`
+  # in its options dict. Entries that omit `activation:` default to None →
+  # `nn.Identity()`.
+  ref_functions:
+    - linear_cov:
+        activation: ""
+    - quadratic:
+        activation: ""
+    - cubic:
+        activation: ""
+    - polyquad:
+        - squares: True
+        - dim: 5
+        - activation: ""
+  # Shortcut keeps the raw 8 inputs available to every layer — useful on a
+  # small dataset where layer 0 might already discover the bulk of the
+  # signal and layer 1 should be able to add residual terms over raw vars.
+  shortcut: True
+  # 8 features → C(8, 2) = 28 unordered pairs per polynomial family.
+  nbest_neurons: 8
+  max_neuron_models: 56
+  # After StandardScaler the per-feature range is roughly ±3 σ, so the
+  # worst-case |xi*xj| at xavier init is ~9. 1e+4 is plenty of headroom
+  # without ever binding the clamp inside the regular operating range.
+  output_clamp_value: 1.0e+4
+
+  # Build a Linear(num_out, 1) head on top of the survivor pool. The head
+  # is trained against NormMSE in `train_out_proj` (called by
+  # `concrete.py` after `trainer.train`). `num_out_neurons` is the size of
+  # the last-layer survivor pool the head consumes — top-k by err_values,
+  # zero-padded if fewer survived. nbest_neurons = num_out_neurons means
+  # the head sees the full survivor width.
+  use_output_projection: False
+  num_out_neurons: 8
+
+# --- Training ----------------------------------------------------------------
+train:
+  seed: 10
+  # 1030 train samples → batches=1030 makes every LBFGS step a true
+  # full-batch Newton-ish update with stable curvature pairs.
+  batch_size: 8192
+  device: cpu
+  dtype: float32
+
+  criterion_type: validate
+  error_alpha: 0.5
+  layer_err_criterion: top
+  criterion_minimum_width: 2
+  stop_train_epsilon_condition: 0.001
+  # Concrete strength is a relatively shallow nonlinearity — 5 layers is
+  # plenty. Early-stop on validate-error plateau usually triggers at 2-3.
+  max_layer_count: 50
+
+  # Decorrelate survivors so the per-layer fine-tune head sees an
+  # independent basis. 0.2 keeps any candidate whose residual norm survives
+  # at ≥20 % of its centered norm after Gram-Schmidt.
+  neuron_selection_method: omp_mixed
+  neuron_selection_orth_threshold: 0.2
+
+  # L2 (ridge) penalty on each neuron's polynomial coefficient fit.
+  # PolyQuadratic(dim=5) has 1 + 5 + 5·6/2 = 21 weights per neuron, and
+  # 824 train samples isn't a lot of room to fit that many degrees of
+  # freedom — without regularization the highest-arity primitives over-
+  # fit. 0.05 lands in the recommended 0.01–0.1 range. Tune via Hydra
+  # multirun:
+  #   python -m tutorials.concrete.concrete -m train.ridge_alpha=0.01,0.05,0.1
+  # and pick whichever value gives the lowest dev RMSE in report().
+  # `eval_loss_fn_vmapped` is pinned to alpha=0 internally, so the dev
+  # number you compare is the *unpenalised* one — apples to apples.
+  ridge_alpha: 0.001
+
+  # LBFGS — convex weight fit per neuron-model.
+  optimizer:
+    name: lbfgs
+    verbose: True
+    optimizer_params:
+      lr: 1e-1
+      min_lr: 1e-2
+      gamma: 0.5
+      history_size: 10
+      clip_norm: 5.0
+  steps: 500
+  shuffle: True
+
+  eval_step_interval: 5
+  eval_smoothing_factor: 0.2
+  early_stop_tolerance_steps: 3
+  early_stop_patience: 1e-3
+  early_stop_completion_percentage: 100
+  train_loss_tol: 0.001
+  train_loss_window: 20
+
+  # Checkpointing — local to the tutorial folder so artifacts don't collide
+  # with the other tutorials.
+  save_interval: 500
+  save_last_layer: True
+  keep_last_n: 5
+  skip_saving_at_epoch_end: True
+  checkpoint_dir: "../concrete/checkpoints"
+
+  # Per-layer joint fine-tune (surviving neurons' polynomial weights + a
+  # temporary (d_layer, 1) head trained against NormMSE on the dev split).
+  # Runs after neuron_selection on each layer except the planned last one
+  # (max_layer_count - 1) — the subsequent train_out_proj pass below fits
+  # the real (D, 1) head against that layer's outputs, so the temporary
+  # head fit on it would just be thrown away. Uses out_proj_train's
+  # hyperparameters (below) so both passes share one place to tune.
+  layer_finetune: False
+
+  # Trains the regression out_proj head (Linear(num_out, 1)) against
+  # NormMSE on dev. LBFGS is appropriate because the per-head fit is a
+  # convex linear regression on top of the frozen survivor outputs —
+  # converges in O(50–200) outer steps.
+  out_proj_train:
+    optimizer: lbfgs
+    max_steps: 200
+    lr: 0.1                # LBFGS step length; strong_wolfe scales it
+    weight_decay: 1.0e-4   # mild L2 on the (D, 1) head
+    eval_interval: 5
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-5
+    early_stop_patience: 10
+    early_stop_min_delta: 1.0e-5
+    lbfgs_history_size: 20
+    lbfgs_max_iter: 20
+    lbfgs_line_search: strong_wolfe

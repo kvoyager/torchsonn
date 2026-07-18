@@ -1,0 +1,96 @@
+# Compose against the SONNConfig schema first (filled-in defaults), then layer
+# this tutorial's overrides on top via `_self_`. The schema is registered by
+# `src/config/schemas.py` and exposed under the name `default`.
+defaults:
+  - default
+  - _self_
+
+# Top-level script knobs (overridable via Hydra CLI).
+resume: false
+train_on_first_half: false   # gmdhpy default: train = second half
+
+# Disable Hydra's auto-chdir so the YAML's relative paths still resolve from
+# the launch cwd rather than the per-run outputs/<date>/<time>/ dir.
+hydra:
+  job:
+    chdir: false
+
+model:
+  type: regressor
+  # Mirror the gmdhpy California-housing example: just the linear-with-covariance
+  # reference function (y = w0 + w1*xi + w2*xj + w3*xi*xj).
+  # Per-neuron-type activation: each entry sets its own `activation:`.
+  # Entries that omit it default to None → `nn.Identity()`.
+  ref_functions:
+    - linear_cov:
+        activation: ""
+  # No shortcut keeps the architecture comparable to the gmdhpy example.
+  shortcut: True
+  # nbest_neurons survive layer pruning; max_neuron_models caps the candidate
+  # ensemble built per layer (8 features × 50 candidates is plenty for housing).
+  nbest_neurons: 8
+  # n=8 features → C(8, 2) = 28 unique unordered pairs. Setting this above 28
+  # used to silently double the ensemble (P(8, 2) = 56 ordered pairs producing
+  # duplicates that fit the same closed-form OLS minimum); the deduplicated
+  # unordered enumeration matches gmdhpy.
+  max_neuron_models: 28
+  # StandardScaler keeps features z-scored but doesn't clip heavy tails, so
+  # at xavier init the worst-case |xi*xj| on the Population/AveOccup outliers
+  # reaches ~7300. Cap well above that so torch.clamp doesn't zero the
+  # gradient through those samples in the first LBFGS steps.
+  output_clamp_value: 1.0e+6
+
+train:
+  seed: 10
+  # LBFGS curvature pairs (s, y) are only meaningful when the gradient is
+  # stable — small mini-batches make them noisy. Bump the batch up to a near-
+  # full-batch on the California train split (~10k samples) so each step
+  # actually moves along a good Newton-like direction.
+  batch_size: 8192
+  device: cpu
+  dtype: float32
+
+  # gmdhpy defaults: criterion="validate", layer_err_criterion="top",
+  # criterion_minimum_width=5, stop_train_epsilon_condition=0.001
+  criterion_type: validate
+  error_alpha: 0.5
+  layer_err_criterion: top
+  criterion_minimum_width: 2
+  stop_train_epsilon_condition: 0.001
+  max_layer_count: 50
+
+  # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
+  # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex
+  # 4-parameter MSE objective like a single linear_cov neuron it converges in
+  # tens of iterations (essentially iterative closed-form). lr=1.0 is the standard LBFGS
+  # step scale — the two-loop recursion already produces a Newton-ish step,
+  # we're not rescaling it.
+  optimizer:
+    name: lbfgs
+    verbose: True
+    optimizer_params:
+      lr: 1e-1
+      min_lr: 1e-2
+      gamma: 0.5
+      history_size: 10
+      clip_norm: 5.0
+  steps: 500
+  shuffle: True
+
+  # Eval / early stop — eval every few LBFGS steps; with full-batch gradients
+  # each step is a real Newton update so we want to react quickly.
+  eval_step_interval: 5
+  eval_smoothing_factor: 0.2
+  early_stop_tolerance_steps: 3
+  early_stop_patience: 1e-3
+  early_stop_completion_percentage: 100
+  train_loss_tol: 0.001
+  train_loss_window: 20
+
+  # Checkpointing — keep the housing artefacts inside the tutorial folder so
+  # they don't collide with the iris checkpoints in the repo's top-level dir.
+  save_interval: 500
+  save_last_layer: True
+  keep_last_n: 5
+  skip_saving_at_epoch_end: True
+  checkpoint_dir: "../california_housing/checkpoints"

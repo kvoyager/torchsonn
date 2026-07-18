@@ -1,0 +1,43 @@
+*.DS_Store
+*.pyc
+*.swp
+*.log
+*.zip
+.ipynb_checkpoints
+temp/*
+dist/*
+build/*
+docs/site/*
+docs/theme/*
+tags
+src/torchsonn.egg-info/
+__pycache__
+
+# test-related
+.coverage
+.cache
+.pytest_cache/
+.ruff_cache/
+
+# developer environments
+.idea
+.claude
+.venv
+
+# tutorials
+checkpoints
+
+# graphviz's render() writes the DOT source alongside the .svg, with no
+# extension (tutorials/iris/iris_model, .../iris_pruned_model, ...). Ignore
+# those build artifacts; the rendered *.svg diagrams are kept, since the
+# pattern only matches names *ending* in _model.
+tutorials/*/*_model
+
+tutorials/concrete/outputs
+tutorials/concrete/data
+tutorials/iris/outputs
+tutorials/california_housing/outputs
+tutorials/otto/data
+tutorials/otto/outputs
+
+

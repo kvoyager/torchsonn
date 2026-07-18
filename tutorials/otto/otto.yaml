@@ -1,0 +1,110 @@
+﻿# Otto Group Product Classification — 93 integer-count features, 9 classes (~62k samples).
+# Compose against the SONNConfig schema first, then layer overrides via _self_.
+defaults:
+  - default
+  - _self_
+
+resume: false
+
+hydra:
+  job:
+    chdir: false
+
+model:
+  type: multi-class
+  soft_binner: false
+  soft_binner_scale: 100.0
+  use_neuron_proj: true
+  num_classes: 9
+  # Per-neuron-type activation: each entry sets its own `activation:`.
+  # Entries that omit it default to None → `nn.Identity()`.
+  ref_functions:
+#    - linear_cov:
+#        activation: ""
+    - polyquad:
+      - squares: True
+      - dim: 5
+      - activation: ""
+  shortcut: true
+  normalize: true
+  nbest_neurons: 93
+  use_layer_norm: false
+  max_neuron_models: 10000
+  output_clamp_value: 1000.0
+  use_output_projection: true
+  num_out_neurons: 93
+
+train:
+  seed: 42
+  batch_size: 512
+  device: cuda
+  dtype: float32
+  criterion_type: validate
+  error_alpha: 0.5
+  max_layer_count: 3
+  criterion_minimum_width: 5
+  stop_train_epsilon_condition: 1.0e-4
+  eval_step_interval: 100
+  eval_smoothing_factor: 0.2
+  save_interval: 1000
+  save_last_layer: true
+  keep_last_n: 10
+  skip_saving_at_epoch_end: true
+  checkpoint_dir: ""
+  early_stop_completion_percentage: 100
+  early_stop_patience: 1.0e-4
+  early_stop_tolerance_steps: 10
+  divergence_threshold: .inf
+  optimizer:
+    name: adam
+    verbose: true
+    optimizer_params:
+      lr: 1.0e-3
+      min_lr: 1.0e-4
+      gamma: 0.5
+      clip_value: 1.0
+      clip_norm: 5.0
+  scheduler:
+    name: null
+    scheduler_params: null
+  out_proj_train:
+    optimizer: lbfgs
+    # outer LBFGS steps; each opt.step() runs lbfgs_max_iter inner iterations,
+    # so 200 x 20 ~ sklearn's max_iter=2000 — convex problem converges well before.
+    max_steps: 200
+    lr: 0.1                # step length for LBFGS; strong_wolfe scales it
+    # Critical for LBFGS — without L2 the unregularized class-weighted CE on
+    # near-separable polynomial features has its optimum at ||W||→∞, which
+    # collapses softmax onto a single class. Sklearn's default C=1.0 adds
+    # 0.5·||W||² to a sum-loss objective; matching that for a mean-loss
+    # objective with N_train≈43k samples gives wd ≈ 1/(C·N) ≈ 2.3e-5.
+    weight_decay: 2.5e-5
+    eval_interval: 5       # full-batch dev eval is one forward — cheap
+    # ReduceLROnPlateau fields below are ignored by the LBFGS path; kept for
+    # quick A/B switch back to adam without re-editing the YAML.
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-5
+    early_stop_patience: 10
+    early_stop_min_delta: 1.0e-5
+    lbfgs_history_size: 20
+    lbfgs_max_iter: 20
+    lbfgs_line_search: strong_wolfe
+  # Per-layer joint fine-tune (surviving neurons' polynomial weights + a
+  # temporary (D, K) head, trained against class-weighted CE on the dev
+  # split). Runs after neuron_selection on each layer EXCEPT the planned
+  # last one (layer_index == max_layer_count - 1) — there's no point doing
+  # it on the last layer because train_out_proj fits the real (D, K) head
+  # against the same outputs immediately afterward. Uses out_proj_train's
+  # hyperparameters (above) so there's a single place to tune optimizer /
+  # max_steps / weight_decay for both passes.
+  layer_finetune: true
+  steps: 1000
+  shuffle: true
+  normalize: true
+  train_loss_tol: 0.001
+  train_loss_window: 20
+  verbose: true
+  log_layer_diagnostics: true
+  neuron_selection_method: omp_mixed
+  neuron_selection_orth_threshold: 0.2

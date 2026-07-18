@@ -1,0 +1,67 @@
+# Compose against the SONNConfig schema first (filled-in defaults), then layer
+# this tutorial's overrides on top via `_self_`. The schema is registered by
+# `src/config/schemas.py` and exposed under the name `default`.
+defaults:
+  - default
+  - _self_
+
+# Top-level script knobs (overridable via Hydra CLI, e.g. `resume=true`).
+resume: false
+
+# Disable Hydra's auto-chdir so relative paths (checkpoint_dir, plot output)
+# resolve from the launch cwd rather than the per-run outputs/<date>/<time>/ dir.
+hydra:
+  job:
+    chdir: false
+
+model:
+  type: multi-class
+  soft_binner: False
+  # Per-neuron-type activation: each entry sets its own `activation:`.
+  # Entries that omit it default to None → `nn.Identity()`.
+  ref_functions:
+#    - linear:
+#        activation: ""
+    - linear_cov:
+        activation: ""
+#    - quadratic:
+#        activation: ""
+#    - cubic:
+#        activation: ""
+#    - polyquad:
+#        - squares: True
+#        - dim: 3
+#        - activation: ""
+  shortcut: False
+  nbest_neurons: 4
+  max_neuron_models: 8
+train:
+  # Near-full-batch: iris train split ~105 samples, large batch keeps LBFGS
+  # curvature pairs stable.
+  batch_size: 30
+  device: cpu
+  criterion_type: validate
+  error_alpha: 0.5
+#  criterion_type: bias_retrain
+  criterion_minimum_width: 5
+  eval_step_interval: 5
+  eval_smoothing_factor: 0.2
+  save_interval: 100
+  keep_last_n: 100
+  checkpoint_dir: ""
+  optimizer:
+    name: sgd
+    verbose: True
+    optimizer_params:
+      lr: 1e-4
+      min_lr: 1e-5
+      gamma: 0.5
+      clip_norm: 5.0
+  steps: 900
+  shuffle: True
+  early_stop_tolerance_steps: 5
+  early_stop_patience: 1e-4
+  train_loss_tol: 0.001
+  train_loss_window: 20
+  max_layer_count: 5
+  stop_train_epsilon_condition: 1e-6
