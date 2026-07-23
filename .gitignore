@@ -1,4 +1,5 @@
 *.DS_Store
+.msys*
 *.pyc
 *.swp
 *.log
@@ -25,7 +26,13 @@ __pycache__
 .venv
 
 # tutorials
+# `checkpoints` and `outputs` are Hydra / training artifact dirs. Bare (un-
+# anchored) so they're ignored at any depth: a tutorial's checkpoint_dir and
+# hydra.run.dir are relative to the launch cwd, so running from the repo root
+# vs. from inside tutorials/<name>/ (e.g. an IDE run) lands them at different
+# nesting levels — a bare rule catches them all.
 checkpoints
+outputs/
 
 # graphviz's render() writes the DOT source alongside the .svg, with no
 # extension (tutorials/iris/iris_model, .../iris_pruned_model, ...). Ignore
@@ -39,5 +46,7 @@ tutorials/iris/outputs
 tutorials/california_housing/outputs
 tutorials/otto/data
 tutorials/otto/outputs
+tutorials/ccpp/data
+tutorials/ccpp/outputs
 
 

@@ -1,0 +1,181 @@
+# HEAVY variant of the CCPP tutorial config — the larger survivor pool /
+# candidate cap (nbest_neurons: 60, max_neuron_models: 600) used while
+# exploring the two-polyquad model. The default `ccpp.yaml` is a lighter
+# config whose 5×2 cross-validation (10 fits) runs in ~10 min on CPU; this one
+# is far heavier per fold (hours for the full 10-fold run). Run it with:
+#   python -m tutorials.ccpp.ccpp --config-name=ccpp_heavy
+#
+# UCI Combined Cycle Power Plant regression — 9568 samples, 4 features, target
+# is net hourly electrical output PE in MW (Tüfekci & Kaya, 2014).
+#
+# Compose against the SONNConfig schema first (defaults filled in), then layer
+# this tutorial's overrides on top via `_self_`.
+defaults:
+  - default
+  - _self_
+
+# Top-level flag (declared in SONNConfig); set true to resume training from
+# the latest checkpoint in `train.checkpoint_dir`.
+resume: false
+
+# Hydra: keep auto-chdir disabled so the YAML's relative paths still resolve
+# from the launch cwd rather than outputs/<date>/<time>/. The README launches
+# tutorials from the repo root (`python -m tutorials.ccpp.ccpp`); pin the
+# per-run output dir under the tutorial folder so that documented command keeps
+# its train.log / .hydra artifacts tutorial-local instead of dropping an
+# `outputs/` tree at the repo root. (`tutorials/ccpp/outputs` is gitignored.)
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# --- Model -------------------------------------------------------------------
+model:
+  type: regressor
+  # CCPP output is dominated by a near-linear dependence on ambient temperature
+  # and exhaust vacuum, so `linear_cov` (y = w0 + w1*xi + w2*xj + w3*xi*xj)
+  # carries most of the signal on its own. `quadratic` adds explicit x² terms
+  # for the mild curvature (turbine output saturates at the temperature
+  # extremes), and a single four-input `polyquad` neuron lets one candidate see
+  # all of AT, V, AP, RH at once — natural here, since the four ambient
+  # variables jointly set the plant's operating point.
+  # Per-neuron-type activation: each entry below sets its own `activation` in
+  # its options dict. Entries that omit `activation:` default to None →
+  # `nn.Identity()`.
+  ref_functions:
+    - linear_cov:
+        activation: ""
+    - quadratic:
+        activation: ""
+    - cubic:
+        activation: ""
+    - polyquad:
+        - squares: True
+        - dim: 4
+        - activation: ""
+    - polyquad:
+        - squares: True
+        - dim: 5
+        - activation: ""
+    - polyquad:
+        - squares: True
+        - dim: 10
+        - activation: ""
+  # Shortcut keeps the raw 4 inputs available to every layer — useful because
+  # layer 0 already discovers the bulk of the (linear) signal, and later layers
+  # should be able to add residual interaction terms over the raw variables
+  # rather than only over layer-0 combinations.
+  shortcut: True
+  # Only 4 features → C(4,2) = 6 unordered pairs for linear_cov / quadratic and
+  # C(4,4) = 1 for polyquad(dim=4) at layer 0; with shortcut the input width
+  # (and candidate count) grows at deeper layers. 6 survivors keep the pruned
+  # network diagram readable.
+  nbest_neurons: 120
+  # Cap on the candidate ensemble built per layer per family. 60 comfortably
+  # covers every unordered combination at layer 0 and lightly caps the wider
+  # deeper layers (shortcut adds the 4 raw inputs to each layer's survivors).
+  max_neuron_models: 1200
+  # After StandardScaler the per-feature range is roughly ±3.3 σ, so the
+  # worst-case |xi*xj| at xavier init is ~11, and a full 4-input polyquad sums
+  # ~10 such terms. 1e+4 is ample headroom without ever binding the clamp
+  # inside the regular operating range.
+  output_clamp_value: 1.0e+4
+
+  # No output-projection head: for a plain regressor the last layer's
+  # best-error neuron already emits the prediction, and report() reads it
+  # directly. Leave the head off (out_proj is None → the train_out_proj pass in
+  # ccpp.py is skipped). num_out_neurons is unused while this is False.
+  use_output_projection: False
+  num_out_neurons: 6
+
+# --- Training ----------------------------------------------------------------
+train:
+  seed: 10
+  # ~6100 train samples fit in a single batch, so each LBFGS step is a true
+  # full-batch update with stable curvature pairs.
+  batch_size: 8192
+  device: cuda
+  dtype: float32
+
+  criterion_type: validate
+  error_alpha: 0.5
+  layer_err_criterion: top
+  criterion_minimum_width: 2
+  stop_train_epsilon_condition: 0.001
+  # CCPP is a shallow, mostly-linear surface — early-stop on the validate-error
+  # plateau usually triggers within the first few layers well before this cap.
+  max_layer_count: 50
+
+  # Decorrelate survivors so each layer feeds the next an independent basis.
+  # 0.2 keeps any candidate whose residual norm survives at ≥20 % of its
+  # centered norm after Gram-Schmidt against the already-selected survivors.
+  neuron_selection_method: omp_mixed
+#  neuron_selection_method: plain
+  neuron_selection_orth_threshold: 0.05
+
+  # Mild L2 (ridge) penalty on each neuron's polynomial coefficient fit.
+  # PolyQuadratic(dim=4) has 1 + 4 + 4·5/2 = 15 weights per neuron; a small
+  # penalty keeps the higher-arity primitives from over-fitting the residual
+  # noise. Only the polynomial coefficients are penalized; the dev/test metrics
+  # reported by report() always see ridge_alpha=0, so they measure pure
+  # predictive quality. Tune via Hydra multirun:
+  #   python -m tutorials.ccpp.ccpp -m train.ridge_alpha=0.001,0.01,0.05
+  ridge_alpha: 0.001
+
+  # LBFGS — convex weight fit per neuron-model. On a per-neuron MSE objective
+  # this converges in tens of iterations (essentially iterative closed-form).
+  optimizer:
+    name: lbfgs
+    verbose: True
+    optimizer_params:
+      lr: 1e-1
+      min_lr: 1e-2
+      gamma: 0.5
+      history_size: 10
+      clip_norm: 5.0
+  steps: 500
+  shuffle: True
+
+  eval_step_interval: 5
+  eval_smoothing_factor: 0.2
+  early_stop_tolerance_steps: 3
+  early_stop_patience: 1e-3
+  early_stop_completion_percentage: 100
+  train_loss_tol: 0.001
+  train_loss_window: 20
+
+  # Checkpointing — local to the tutorial folder so artifacts don't collide
+  # with the other tutorials. Path is relative to the launch cwd; the README
+  # runs tutorials from the repo root (`python -m tutorials.ccpp.ccpp`), so
+  # this resolves to <repo>/tutorials/ccpp/checkpoints. get_checkpoint_dir
+  # mkdirs only the final component (no parents=True), and tutorials/ccpp
+  # already exists, so the dir is created cleanly. `checkpoints` is gitignored.
+  save_interval: 500
+  save_last_layer: True
+  keep_last_n: 5
+  skip_saving_at_epoch_end: True
+  checkpoint_dir: "checkpoints"
+
+  # Per-layer joint fine-tune is off: the plain-regressor path reports the
+  # best neuron's raw output directly, so the temporary (d_layer, 1) head this
+  # would fit is never used downstream.
+  layer_finetune: False
+
+  # Kept for parity with the other regression tutorials; only consulted when
+  # use_output_projection is True (it isn't here), so these values are inert
+  # for the default run.
+  out_proj_train:
+    optimizer: lbfgs
+    max_steps: 200
+    lr: 0.1
+    weight_decay: 1.0e-4
+    eval_interval: 5
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-5
+    early_stop_patience: 10
+    early_stop_min_delta: 1.0e-5
+    lbfgs_history_size: 20
+    lbfgs_max_iter: 20
+    lbfgs_line_search: strong_wolfe

@@ -106,12 +106,15 @@ class SONN(SONNModule):
 
         # Resolve the heterogeneous `model.ref_functions` list (some entries
         # are bare names, some are single-key mappings carrying options) into
-        # a uniform dict keyed by RefFunctionType. See
-        # `_parse_ref_function_entry` for the accepted shapes.
-        self.ref_functions: dict[RefFunctionType, Optional[dict]] = {}
+        # an ordered list of (RefFunctionType, options) pairs. A list rather
+        # than a dict keyed by type, so the same family may appear more than
+        # once with different options (e.g. a polyquad dim=4 *and* a polyquad
+        # dim=10), and so per-layer neuron creation follows the YAML order.
+        # See `_parse_ref_function_entry` for the accepted entry shapes.
+        self.ref_functions: list[tuple[RefFunctionType, Optional[dict]]] = []
         for entry in self.param.model.ref_functions:
             ref_type, options = _parse_ref_function_entry(entry)
-            self.ref_functions[ref_type] = options
+            self.ref_functions.append((ref_type, options))
 
         # Cache the parsed enum next to the (string-typed) config field. Don't
         # overwrite `self.param.train.criterion_type` — under structured-config
@@ -616,50 +619,54 @@ class SONN(SONNModule):
         #           dim: 5
         #           activation: tanh               # → Tanh
 
-        def _make_neuron_args(ref_type: RefFunctionType) -> tuple[tuple, dict]:
-            """Build (args, kwargs) for one ref-function family.
+        def _make_neuron_args(options: Optional[dict]) -> tuple[tuple, dict]:
+            """Build (args, kwargs) for one ref-function entry.
 
-            Pops `activation` from the per-type options dict; falls back to
-            None (Identity) when the entry doesn't set it. Everything else
-            in options becomes a kwarg to the neuron constructor.
+            Pops `activation` from the entry's option dict; falls back to
+            None (Identity) when unset. Everything else in options becomes a
+            kwarg to the neuron constructor (e.g. polyquad's `dim` / `squares`).
             """
-            raw_options = self.ref_functions.get(ref_type) or {}
-            # Copy so popping doesn't mutate the cached options dict on
-            # subsequent layers — `_parse_ref_function_entry` caches it
-            # once in SONN.__init__ and we'd otherwise drain it.
-            options = dict(raw_options) if isinstance(raw_options, dict) else {}
+            # Copy so popping doesn't mutate the options dict cached on
+            # self.ref_functions — it's parsed once in SONN.__init__ and reused
+            # on every layer, so we'd otherwise drain it.
+            options = dict(options) if isinstance(options, dict) else {}
             activation = options.pop("activation", None)
             args = (n, self.d_model, activation, layer_index, len(layer))
             kwargs = {"max_neuron_models": self.param.model.max_neuron_models, **options}
             return args, kwargs
 
+        # RefFunctionType → neuron class. The loop walks self.ref_functions in
+        # YAML order, so each entry — including repeated families such as two
+        # polyquads with different `dim`s — builds its own neuron.
+        neuron_cls_by_type = {
+            RefFunctionType.rfLinear:        LinearPolynomNeuron,     # y = w0 + w1 x1 + w2 x2
+            RefFunctionType.rfLinearCov:     LinearCovPolynomNeuron,  # + w3 x1 x2
+            RefFunctionType.rfQuadratic:     QuadraticPolynomNeuron,  # full 2nd degree
+            RefFunctionType.rfCubic:         CubicPolynomNeuron,      # full 3rd degree
+            RefFunctionType.rfPolyQuadratic: PolyQuadratic,           # 2nd degree over `dim` inputs
+        }
+
         neuron_models = []
+        for ref_type, options in self.ref_functions:
+            a, kw = _make_neuron_args(options)
+            neuron_models.append(neuron_cls_by_type[ref_type](*a, **kw))
 
-        # y = w0 + w1*x1 + w2*x2
-        if RefFunctionType.rfLinear in self.ref_functions:
-            a, kw = _make_neuron_args(RefFunctionType.rfLinear)
-            neuron_models.append(LinearPolynomNeuron(*a, **kw))
-
-        # y = w0 + w1*x1 + w2*x2 + w3*x1*x2
-        if RefFunctionType.rfLinearCov in self.ref_functions:
-            a, kw = _make_neuron_args(RefFunctionType.rfLinearCov)
-            neuron_models.append(LinearCovPolynomNeuron(*a, **kw))
-
-        # y = full polynom of the 2-nd degree
-        if RefFunctionType.rfQuadratic in self.ref_functions:
-            a, kw = _make_neuron_args(RefFunctionType.rfQuadratic)
-            neuron_models.append(QuadraticPolynomNeuron(*a, **kw))
-
-        # y = full polynom of the 3-rd degree
-        if RefFunctionType.rfCubic in self.ref_functions:
-            a, kw = _make_neuron_args(RefFunctionType.rfCubic)
-            neuron_models.append(CubicPolynomNeuron(*a, **kw))
-
-        # y = polynom of the 2-rd degree with n inputs (squares / dim from
-        # the options dict; activation handled by `_make_neuron_args`).
-        if RefFunctionType.rfPolyQuadratic in self.ref_functions:
-            a, kw = _make_neuron_args(RefFunctionType.rfPolyQuadratic)
-            neuron_models.append(PolyQuadratic(*a, **kw))
+        # Drop any family whose required input arity exceeds the number of
+        # inputs available to this layer (n). A polyquad(dim=k) needs k distinct
+        # inputs; the pair-based families need 2. When n is smaller its
+        # candidate enumeration is empty (create_src_idxs → 0 index-tuples) and
+        # the module holds 0 neurons, which would otherwise crash in forward on
+        # an empty (float-typed) index tensor. Skipping lets a too-wide polyquad
+        # sit out the early, narrow layers and join once `shortcut` widening
+        # supplies enough inputs deeper in the network.
+        for nm in neuron_models:
+            if nm.num_neurons == 0:
+                logger.warning(
+                    "Layer #%d has %d input(s), fewer than the %d that %s "
+                    "requires; skipping this neuron family for the layer.",
+                    layer_index, n, nm.dim, nm.get_short_name(),
+                )
+        neuron_models = [nm for nm in neuron_models if nm.num_neurons > 0]
 
         neuron_models = [module.to(device=self.param.train.device) for module in neuron_models]
         if len(neuron_models) == 0:

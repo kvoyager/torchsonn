@@ -117,7 +117,7 @@ print(f"features used: {model.get_selected_features()}")
 
 ## Tutorials
 
-Four end-to-end examples live under `tutorials/`, each with every config
+Five end-to-end examples live under `tutorials/`, each with every config
 key overridable on the command line:
 
 ```bash
@@ -129,6 +129,10 @@ python -m tutorials.california_housing.california_housing
 
 # UCI Concrete compressive-strength regression — reports MSE / MAE / R².
 python -m tutorials.concrete.concrete
+
+# UCI Combined Cycle Power Plant regression — 5×2 cross-validation, reports
+# mean ± std of RMSE / MAE / R² over the 10 folds (Tüfekci & Kaya benchmark).
+python -m tutorials.ccpp.ccpp
 
 # Otto Group product classification — multi-class log loss, out_proj fine-tune.
 python tutorials/otto/otto_classification.py
@@ -155,10 +159,10 @@ that render the layer-error curve, the confusion matrix, and the graphviz
 network diagrams inline.
 
 Every tutorial except `tutorials/otto/otto_classification.py` plots its
-results, so they need the `[viz]` extra — iris, california_housing, and
-concrete render network diagrams (graphviz), and iris plus both notebooks
-call `SONN.plot_layer_error` (matplotlib). The otto script runs on a base
-install.
+results, so they need the `[viz]` extra — iris, california_housing,
+concrete, and ccpp render network diagrams (graphviz), and iris plus both
+notebooks call `SONN.plot_layer_error` (matplotlib). The otto script runs on
+a base install.
 
 ## Configuration
 
