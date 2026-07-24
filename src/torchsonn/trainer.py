@@ -1165,7 +1165,6 @@ class Trainer:
                         self.save_checkpoint(last_ckpt)
 
             epoch += 1
-            torch.cuda.empty_cache()
             if stop:
                 break
         tbar.close()
