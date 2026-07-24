@@ -264,7 +264,27 @@ class BasePolynomNeuron(SONNModule, ABC):
     @classmethod
     def from_checkpoint_metadata(cls, metadata: dict[str, Any]) -> "BasePolynomNeuron":
         neuron_cls = cls._registry[metadata["cls"]]
-        obj = neuron_cls(
+        obj = neuron_cls._construct_from_metadata(metadata)
+        if "proj_num_classes" in metadata:
+            n = metadata["src_idxs"].shape[0]
+            nc = metadata["proj_num_classes"]
+            obj.proj_weight = nn.Parameter(torch.zeros(n, nc))
+            obj.proj_bias   = nn.Parameter(torch.zeros(n, nc))
+        return obj
+
+    @classmethod
+    def _construct_from_metadata(cls, metadata: dict[str, Any]) -> "BasePolynomNeuron":
+        """Rebuild a bare neuron (no projection yet) from saved metadata.
+
+        Split out from from_checkpoint_metadata so subclasses whose weight
+        width (num_w) depends on constructor args beyond `dim` can forward
+        those saved fields — the reconstructed weight must already have the
+        checkpoint's shape before load_state_dict copies the tensors in. The
+        default forwards exactly the fields the base __init__ consumes; e.g.
+        the orthogonal-polynomial neurons override this to also pass their
+        saved `degree` / `cross` / `squash`.
+        """
+        return cls(
             num_feat=metadata["num_feat"],
             num_src_feat=metadata["num_src_feat"],
             activation=metadata["activation"],
@@ -273,12 +293,6 @@ class BasePolynomNeuron(SONNModule, ABC):
             dim=metadata["dim"],
             max_neuron_models=metadata["src_idxs"].shape[0],
         )
-        if "proj_num_classes" in metadata:
-            n = metadata["src_idxs"].shape[0]
-            nc = metadata["proj_num_classes"]
-            obj.proj_weight = nn.Parameter(torch.zeros(n, nc))
-            obj.proj_bias   = nn.Parameter(torch.zeros(n, nc))
-        return obj
 
     def to(self, *args: Any, **kwargs: Any) -> "BasePolynomNeuron":
         self.src_idxs = self.src_idxs.to(*args, **kwargs)
@@ -320,7 +334,11 @@ class BasePolynomNeuron(SONNModule, ABC):
         return False if criterion_type == CriterionType.cmpValidate else True
 
     def forward(self, inp: torch.Tensor) -> torch.Tensor:
-        x = torch.index_select(inp, 1, self.src_idxs.view(-1)).view(inp.shape[0], -1, 2)
+        # Reshape the gathered inputs into per-neuron groups of `self.dim`. dim
+        # is 2 for the pair ("binary") neurons and the orthogonal-polynomial
+        # default, but the orthogonal-polynomial family also supports dim > 2,
+        # so this must follow self.dim rather than a hardcoded pair width.
+        x = torch.index_select(inp, 1, self.src_idxs.view(-1)).view(inp.shape[0], -1, self.dim)
         x_args = self.get_args(x)
         # out = (self.weight * x_args).sum(dim=-1) + self.bias.squeeze(-1)
         out = (self.weight * x_args).sum(dim=-1)

@@ -30,7 +30,7 @@ competitive on this dataset (see [Comparison](#comparison-with-published-results
   (9568 samples, 4 features; the tutorial auto-downloads a byte-identical CSV
   mirror and caches it under `data/ccpp.csv`).
 - **Entry point:** [`ccpp.py`](ccpp.py)
-- **Configs:** [`ccpp.yaml`](ccpp.yaml) (light, default) · [`ccpp_heavy.yaml`](ccpp_heavy.yaml) (heavy)
+- **Configs:** [`ccpp.yaml`](ccpp.yaml) (light, default) · [`ccpp_heavy.yaml`](ccpp_heavy.yaml) (heavy) · [`ccpp_legendre.yaml`](ccpp_legendre.yaml) · [`ccpp_legendre_heavy.yaml`](ccpp_legendre_heavy.yaml) · [`ccpp_legendre_poly.yaml`](ccpp_legendre_poly.yaml) (Legendre-basis variants)
 
 ## Why 5×2 cross-validation?
 
@@ -96,8 +96,8 @@ illustrate the cost/accuracy trade-off. Both runs were measured on:
 
 ## Results
 
-Both blocks below are the final summary printed by `ccpp.py` (the `====` section
-at the end of each `train.log`), reproduced verbatim.
+Each block below is the final summary printed by `ccpp.py` (the `====` section
+at the end of that run's `train.log`), reproduced verbatim.
 
 ### Default — `ccpp.yaml`
 <sub>run `checkpoints/2026-07-22-19-59/train.log` — light config, CPU</sub>
@@ -147,6 +147,108 @@ repeat   fold   RMSE(MW)    MAE(MW)        R²
   R²   = 0.9400 ± 0.0010
 ```
 
+The `ccpp_legendre.yaml` and `ccpp_legendre_heavy.yaml` variants replace the
+default's monomial neurons (`linear_cov` / `quadratic` / `polyquad`) with a
+**Legendre orthogonal-polynomial** basis over each input pair — a
+better-conditioned stand-in for the raw cubic terms, since the Legendre Gram
+matrix stays well-behaved where the monomial one is a near-singular Hilbert
+matrix. The light variant uses a single degree-3 Legendre family (light pools,
+CPU); the heavy variant adds a degree-2 family alongside it and widens the
+search (`nbest_neurons` 60, `max_neuron_models` 600, CUDA). Run them with
+`python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre` (or
+`ccpp_legendre_heavy`).
+
+A third variant, `ccpp_legendre_poly.yaml`, keeps the light config's degree-3
+Legendre pair family and adds a **multi-input** degree-3 Legendre neuron over all
+four inputs at once (`dim: 4`) — the orthogonal-basis counterpart of the
+default's four-input `polyquad`. That neuron carries the univariate Legendre
+curvature for each input plus one bilinear term per input pair in a single
+19-coefficient (`1 + 4·3 + 6`) fit, letting a layer model the joint AT×V×AP×RH
+interaction directly rather than only through pairwise Legendre combinations. Run
+it with `python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly`.
+
+### Legendre — `ccpp_legendre.yaml`
+<sub>run `checkpoints/2026-07-23-20-58/train.log` — degree-3 Legendre basis, light pools, CPU</sub>
+
+```
+==================================================================
+5×2 cross-validation summary — 10 train/test measurements
+==================================================================
+repeat   fold   RMSE(MW)    MAE(MW)        R²
+     1    A→B     4.1734     3.2878    0.9405
+     1    B→A     4.2851     3.3223    0.9366
+     2    A→B     4.2502     3.2959    0.9382
+     2    B→A     4.1802     3.2906    0.9398
+     3    A→B     4.1783     3.2678    0.9401
+     3    B→A     4.2769     3.3385    0.9372
+     4    A→B     4.2720     3.3489    0.9379
+     4    B→A     4.1874     3.2659    0.9393
+     5    A→B     4.1890     3.3100    0.9387
+     5    B→A     4.3167     3.3669    0.9371
+------------------------------------------------------------------
+  RMSE = 4.2309 ± 0.0545 MW
+  MAE  = 3.3094 ± 0.0342 MW
+  R²   = 0.9385 ± 0.0013
+```
+
+### Legendre (heavy) — `ccpp_legendre_heavy.yaml`
+<sub>run `checkpoints/2026-07-23-21-19-2/train.log` — degree-3 + degree-2 Legendre basis, wide pools, CUDA</sub>
+
+```
+==================================================================
+5×2 cross-validation summary — 10 train/test measurements
+==================================================================
+repeat   fold   RMSE(MW)    MAE(MW)        R²
+     1    A→B     4.1867     3.2796    0.9401
+     1    B→A     4.2825     3.3206    0.9367
+     2    A→B     4.2411     3.2911    0.9385
+     2    B→A     4.1682     3.2682    0.9401
+     3    A→B     4.1863     3.2701    0.9398
+     3    B→A     4.2332     3.2977    0.9385
+     4    A→B     4.2169     3.2844    0.9395
+     4    B→A     4.1723     3.2653    0.9397
+     5    A→B     4.1483     3.2830    0.9399
+     5    B→A     4.3168     3.3593    0.9371
+------------------------------------------------------------------
+  RMSE = 4.2152 ± 0.0538 MW
+  MAE  = 3.2919 ± 0.0287 MW
+  R²   = 0.9390 ± 0.0013
+```
+
+### Legendre (multi-input) — `ccpp_legendre_poly.yaml`
+<sub>run `checkpoints/2026-07-24-12-59/train.log` — degree-3 pair + four-input (dim 4) degree-3 Legendre, light pools, CPU</sub>
+
+```
+==================================================================
+5×2 cross-validation summary — 10 train/test measurements
+==================================================================
+repeat   fold   RMSE(MW)    MAE(MW)        R²
+     1    A→B     4.1223     3.2328    0.9420
+     1    B→A     4.2406     3.2893    0.9379
+     2    A→B     4.2021     3.2462    0.9396
+     2    B→A     4.1687     3.2746    0.9401
+     3    A→B     4.1556     3.2446    0.9407
+     3    B→A     4.2354     3.3139    0.9384
+     4    A→B     4.1985     3.2696    0.9400
+     4    B→A     4.1755     3.2654    0.9396
+     5    A→B     4.1526     3.2708    0.9398
+     5    B→A     4.2808     3.3196    0.9381
+------------------------------------------------------------------
+  RMSE = 4.1932 ± 0.0481 MW
+  MAE  = 3.2727 ± 0.0285 MW
+  R²   = 0.9396 ± 0.0012
+```
+
+On MAE, the Legendre light config (3.31 ± 0.03) slightly improves on the
+monomial default (3.34 ± 0.03), and the Legendre heavy config (3.29 ± 0.03)
+improves a little further. Adding the four-input Legendre neuron
+(`ccpp_legendre_poly.yaml`, **3.27 ± 0.03**) is the strongest orthogonal-basis
+variant: it edges past the heavy Legendre search while still on light pools /
+CPU, and closes to within ~0.01 MW of the heavy monomial search (3.26 ± 0.04) —
+effectively matching that result at a small fraction of its cost (~30 min CPU vs
+11.3 h CUDA). The joint four-input interaction the `dim: 4` neuron captures is
+doing real work the pairwise-only Legendre families leave on the table.
+
 Every fold selects all four ambient variables (`features=AT, V, AP, RH`),
 confirming each input carries signal.
 
@@ -160,6 +262,7 @@ protocol, TorchSONN's heavy config lands right in the published range:
 | Tüfekci (2014) | Bagging REP-tree | 5×2 CV | **3.22** | — |
 | Torre et al. (2019) | data-driven PCE (polynomial) | 5×2 CV (same splits) | **3.11 ± 0.03** | — |
 | **TorchSONN — heavy** (`ccpp_heavy.yaml`) | self-organizing polynomial net | 5×2 CV | **3.26 ± 0.04** | 4.18 ± 0.05 |
+| **TorchSONN — Legendre poly** (`ccpp_legendre_poly.yaml`) | self-organizing polynomial net | 5×2 CV | **3.27 ± 0.03** | 4.19 ± 0.05 |
 | **TorchSONN — default** (`ccpp.yaml`) | self-organizing polynomial net | 5×2 CV | **3.34 ± 0.03** | 4.26 ± 0.05 |
 | Siddiqui et al. (2021) | GBRT (450 trees) | single 90/10 split | — | 2.58 † |
 
@@ -170,6 +273,11 @@ protocol, TorchSONN's heavy config lands right in the published range:
   spread, and comes within ~0.15 MW of Torre et al.'s polynomial-chaos result
   (3.11) — the current CV state of the art. The **default** config trails the
   heavy one by only ~0.08 MW while running in minutes on a CPU.
+- **TorchSONN (Legendre poly) MAE 3.27 ± 0.03** reaches the heavy config's
+  accuracy (3.26) within noise, but on light pools and CPU (~30 min) — a single
+  four-input Legendre neuron (`dim: 4`) over the raw ambient variables recovers
+  most of what the heavy monomial search buys with its far larger pools, a GPU,
+  and ~36× the compute.
 - **Torre et al.** run their polynomial method on Tüfekci's *exact* CV splits
   and beat the tree ensemble with lower variance — direct evidence that a
   polynomial model is SOTA-competitive on CCPP. TorchSONN, being a

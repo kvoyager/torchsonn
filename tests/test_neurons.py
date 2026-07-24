@@ -6,7 +6,9 @@ from torch import nn
 
 from torchsonn.neurons import (
     BasePolynomNeuron,
+    ChebyshevPolynomNeuron,
     CubicPolynomNeuron,
+    LegendrePolynomNeuron,
     LinearCovPolynomNeuron,
     LinearPolynomNeuron,
     PolyQuadratic,
@@ -280,6 +282,274 @@ class TestPolyQuadratic:
         pq = PolyQuadratic(4, 4, None, 0, 0, dim=2)
         with pytest.raises(NotImplementedError):
             pq.get_args(torch.randn(2, 2, 2))
+
+class TestOrthogonalNeurons:
+    @pytest.mark.parametrize(
+        "cls,short_prefix,name_word",
+        [
+            (LegendrePolynomNeuron, "Legendre", "Legendre"),
+            (ChebyshevPolynomNeuron, "Chebyshev", "Chebyshev"),
+        ],
+    )
+    def test_defaults_forward_and_metadata(self, cls, short_prefix, name_word):
+        # Default degree=3, cross=True → num_w = 1 + 2*3 + 1 = 8, matching
+        # CubicPolynomNeuron's width (same layout, orthogonal basis).
+        n = cls(num_feat=4, num_src_feat=4, activation=None, layer_index=0, start_index=0)
+        assert n.num_w == 8
+        assert n.degree == 3 and n.cross is True and n.squash is True
+        x = torch.randn(7, 4)
+        out = n(x)
+        # First layer enumerates all C(4,2) = 6 pairs.
+        assert out.shape == (7, 6)
+        assert n.get_short_name() == f"{short_prefix}3"
+        assert name_word in n.get_name()
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    @pytest.mark.parametrize(
+        "degree,cross,expected_num_w",
+        [
+            (1, False, 3),   # 1 + 2*1
+            (1, True, 4),    # + bilinear
+            (2, False, 5),   # 1 + 2*2
+            (2, True, 6),
+            (3, True, 8),    # == Cubic
+            (5, True, 12),   # 1 + 2*5 + 1
+        ],
+    )
+    def test_num_w_variants(self, cls, degree, cross, expected_num_w):
+        n = cls(3, 3, None, 0, 0, degree=degree, cross=cross)
+        assert n.num_w == expected_num_w
+        assert n.weight.shape[1] == expected_num_w
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_degree_must_be_positive(self, cls):
+        with pytest.raises(ValueError):
+            cls(3, 3, None, 0, 0, degree=0)
+
+    def test_chebyshev_basis_values(self):
+        # squash=False so the raw closed forms apply; cross=True adds xi*xj.
+        n = ChebyshevPolynomNeuron(2, 2, None, 0, 0, degree=3, cross=True, squash=False)
+        x = torch.tensor([[[0.3, -0.7]]])  # [B=1, T=1, dim=2]
+        args = n.get_args(x)
+        xi, xj = 0.3, -0.7
+        # T_0=1, T_1=x, T_2=2x^2-1, T_3=4x^3-3x
+        T = lambda k, v: {0: 1.0, 1: v, 2: 2 * v * v - 1, 3: 4 * v**3 - 3 * v}[k]
+        expected = torch.tensor([[[
+            1.0,
+            T(1, xi), T(1, xj),
+            T(2, xi), T(2, xj),
+            T(3, xi), T(3, xj),
+            xi * xj,
+        ]]])
+        assert torch.allclose(args, expected, atol=1e-6)
+
+    def test_legendre_basis_values(self):
+        n = LegendrePolynomNeuron(2, 2, None, 0, 0, degree=3, cross=True, squash=False)
+        x = torch.tensor([[[0.3, -0.7]]])
+        args = n.get_args(x)
+        xi, xj = 0.3, -0.7
+        # P_0=1, P_1=x, P_2=(3x^2-1)/2, P_3=(5x^3-3x)/2
+        P = lambda k, v: {0: 1.0, 1: v, 2: 0.5 * (3 * v * v - 1), 3: 0.5 * (5 * v**3 - 3 * v)}[k]
+        expected = torch.tensor([[[
+            1.0,
+            P(1, xi), P(1, xj),
+            P(2, xi), P(2, xj),
+            P(3, xi), P(3, xj),
+            xi * xj,
+        ]]])
+        assert torch.allclose(args, expected, atol=1e-6)
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_squash_bounds_basis_columns(self, cls):
+        # |P_k(u)|, |T_k(u)| <= 1 on [-1, 1]; tanh maps any input into (-1, 1),
+        # so with squash=True every column stays bounded even for huge inputs.
+        n = cls(2, 2, None, 0, 0, degree=6, cross=True, squash=True)
+        x = torch.full((1, 1, 2), 50.0)
+        args = n.get_args(x)
+        assert args.abs().max() <= 1.0 + 1e-6
+
+    def test_no_squash_lets_columns_grow(self):
+        # Without squashing, a raw input outside [-1, 1] blows the basis up —
+        # exactly the conditioning problem squash=True exists to avoid.
+        n = ChebyshevPolynomNeuron(2, 2, None, 0, 0, degree=5, cross=False, squash=False)
+        x = torch.full((1, 1, 2), 3.0)
+        args = n.get_args(x)
+        assert args.abs().max() > 100.0  # T_5(3) = 3363
+
+    def test_no_cross_drops_bilinear_column(self):
+        n = ChebyshevPolynomNeuron(2, 2, None, 0, 0, degree=2, cross=False, squash=False)
+        x = torch.tensor([[[0.5, 0.25]]])
+        args = n.get_args(x)
+        # [1, T1(xi), T1(xj), T2(xi), T2(xj)] — no xi*xj term.
+        assert args.shape[-1] == 5
+        assert args.shape[-1] == n.num_w
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_checkpoint_roundtrip_preserves_shape(self, cls):
+        # from_checkpoint_metadata must rebuild the weight at the checkpoint's
+        # width; num_w depends on degree/cross, not dim, so those must survive.
+        n = cls(4, 4, None, 0, 0, degree=4, cross=False, squash=False)
+        meta = {
+            "cls": cls.__name__,
+            "num_feat": 4,
+            "num_src_feat": 4,
+            "activation": None,
+            "layer_index": 0,
+            "start_index": 0,
+            "dim": 2,
+            "degree": 4,
+            "cross": False,
+            "squash": False,
+            "src_idxs": n.src_idxs,
+        }
+        restored = BasePolynomNeuron.from_checkpoint_metadata(meta)
+        assert isinstance(restored, cls)
+        assert restored.num_w == n.num_w
+        assert restored.weight.shape == n.weight.shape
+        assert restored.degree == 4
+        assert restored.cross is False
+        assert restored.squash is False
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_activation_and_max_neuron_models(self, cls):
+        n = cls(6, 6, "tanh", 0, 0, max_neuron_models=4, degree=2)
+        assert isinstance(n.activation, nn.Tanh)
+        assert n.weight.shape[0] == 4
+        assert n.src_idxs.shape == (4, 2)
+
+
+class TestMultiInputOrthogonalNeurons:
+    """dim > 2: additive univariate terms + pairwise (cross) interactions."""
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    @pytest.mark.parametrize(
+        "dim,degree,cross,expected_num_w",
+        [
+            (3, 1, False, 4),    # 1 + 3*1
+            (3, 1, True, 7),     # + C(3,2)=3 pairwise cross terms
+            (3, 3, True, 13),    # 1 + 3*3 + 3
+            (4, 3, True, 19),    # 1 + 4*3 + C(4,2)=6 — the worked example
+            (4, 3, False, 13),   # 1 + 4*3
+            (5, 2, True, 21),    # 1 + 5*2 + C(5,2)=10
+        ],
+    )
+    def test_num_w(self, cls, dim, degree, cross, expected_num_w):
+        n = cls(6, 6, None, 0, 0, max_neuron_models=4, dim=dim, degree=degree, cross=cross)
+        assert n.num_w == expected_num_w
+        assert n.weight.shape[1] == expected_num_w
+        # One bilinear column per input pair, none when cross is off.
+        assert len(n._cross_pairs) == (dim * (dim - 1) // 2 if cross else 0)
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_dim_must_be_at_least_two(self, cls):
+        with pytest.raises(ValueError):
+            cls(6, 6, None, 0, 0, dim=1)
+
+    def test_cross_terms_are_pairwise_not_nway_product(self):
+        # The critical dim > 2 correctness property: the cross block holds the
+        # C(dim,2) pairwise products u_i*u_j, NOT the single dim-way product
+        # u_0*u_1*...*u_{dim-1} that torch.prod(u, dim=-1) would give.
+        n = LegendrePolynomNeuron(3, 3, None, 0, 0, max_neuron_models=1,
+                                  dim=3, degree=1, cross=True, squash=False)
+        a, b, c = 0.5, -0.3, 0.2
+        x = torch.tensor([[[a, b, c]]])  # [B=1, T=1, dim=3]
+        args = n.get_args(x)
+        # degree 1 ⇒ P_1(v)=v, so: [1, a, b, c, a*b, a*c, b*c]
+        expected = torch.tensor([[[1.0, a, b, c, a * b, a * c, b * c]]])
+        assert args.shape[-1] == n.num_w == 7
+        assert torch.allclose(args, expected, atol=1e-6)
+        # Guard the exact bug: the 3-way product must be absent from the row.
+        nway = a * b * c
+        assert not torch.any((args - nway).abs() < 1e-6)
+
+    def test_multi_input_univariate_block_ordering(self):
+        # Full row for dim=3, degree=2, cross=True on the Chebyshev basis:
+        # [1, T1(a),T1(b),T1(c), T2(a),T2(b),T2(c), a*b,a*c,b*c] — the univariate
+        # columns are grouped by degree, then by input, then the pairwise block.
+        n = ChebyshevPolynomNeuron(3, 3, None, 0, 0, max_neuron_models=1,
+                                   dim=3, degree=2, cross=True, squash=False)
+        a, b, c = 0.5, -0.3, 0.2
+        x = torch.tensor([[[a, b, c]]])
+        args = n.get_args(x)
+        T2 = lambda v: 2 * v * v - 1  # T_2(x) = 2x^2 - 1
+        expected = torch.tensor([[[
+            1.0,
+            a, b, c,
+            T2(a), T2(b), T2(c),
+            a * b, a * c, b * c,
+        ]]])
+        assert args.shape[-1] == n.num_w == 10
+        assert torch.allclose(args, expected, atol=1e-6)
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_src_idxs_and_forward_shape(self, cls):
+        # dim-ary src tuples and an end-to-end forward through the ensemble.
+        n = cls(5, 5, None, 0, 0, max_neuron_models=4, dim=3, degree=3)
+        assert n.src_idxs.shape == (4, 3)
+        assert n.weight.shape[0] == 4
+        out = n(torch.randn(7, 5))
+        assert out.shape == (7, 4)
+        assert torch.isfinite(out).all()
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_exhaustive_enumeration_all_dim_tuples(self, cls):
+        # max_neuron_models=None enumerates every unordered dim-tuple: C(4,3)=4.
+        n = cls(4, 4, None, 0, 0, dim=3)
+        assert n.num_neurons == 4
+        assert n.src_idxs.shape == (4, 3)
+        tuples = {tuple(row.tolist()) for row in n.src_idxs}
+        assert tuples == {(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)}
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_zero_neurons_when_fewer_features_than_dim(self, cls):
+        # num_feat < dim ⇒ no valid input tuple ⇒ empty ensemble, which
+        # SONN.create_layer detects (num_neurons == 0) and skips for the layer.
+        n = cls(2, 2, None, 0, 0, max_neuron_models=6, dim=4)
+        assert n.num_neurons == 0
+
+    def test_short_name_encodes_arity_only_when_non_default(self):
+        # Pair neuron keeps the historical short name; multi-input appends xN.
+        pair = LegendrePolynomNeuron(4, 4, None, 0, 0, degree=3, dim=2)
+        multi = LegendrePolynomNeuron(6, 6, None, 0, 0, max_neuron_models=4, degree=3, dim=4)
+        assert pair.get_short_name() == "Legendre3"
+        assert multi.get_short_name() == "Legendre3x4"
+        assert "4 inputs" in multi.get_name()
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_checkpoint_roundtrip_preserves_dim_and_width(self, cls):
+        # num_w now depends on dim, so _construct_from_metadata must forward the
+        # saved dim to rebuild the weight at the checkpoint's width.
+        n = cls(6, 6, None, 0, 0, max_neuron_models=4, dim=4, degree=3, cross=True, squash=False)
+        meta = {
+            "cls": cls.__name__,
+            "num_feat": 6,
+            "num_src_feat": 6,
+            "activation": None,
+            "layer_index": 0,
+            "start_index": 0,
+            "dim": 4,
+            "degree": 3,
+            "cross": True,
+            "squash": False,
+            "src_idxs": n.src_idxs,
+        }
+        restored = BasePolynomNeuron.from_checkpoint_metadata(meta)
+        assert isinstance(restored, cls)
+        assert restored.dim == 4
+        assert restored.num_w == n.num_w == 19
+        assert restored.weight.shape == n.weight.shape
+        assert len(restored._cross_pairs) == 6
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_squash_bounds_multi_input_columns(self, cls):
+        # tanh maps every input into (-1, 1), where |P_k|, |T_k| <= 1 and the
+        # pairwise products are bounded too — so no column blows up even for
+        # huge raw inputs, exactly as in the dim=2 case.
+        n = cls(4, 4, None, 0, 0, dim=4, degree=6, cross=True, squash=True)
+        x = torch.full((1, 1, 4), 50.0)
+        args = n.get_args(x)
+        assert args.abs().max() <= 1.0 + 1e-6
+
 
 def test_all_known_activations_resolve():
     # Sanity: every registered name builds a fresh module.

@@ -10,6 +10,11 @@ from torchsonn.neurons.binary import (
     CubicPolynomNeuron,
 )
 from torchsonn.neurons.poly import PolyQuadratic
+from torchsonn.neurons.orthopoly import (
+    BaseOrthogonalNeuron,
+    LegendrePolynomNeuron,
+    ChebyshevPolynomNeuron,
+)
 
 
 __all__ = [
@@ -19,6 +24,9 @@ __all__ = [
     "QuadraticPolynomNeuron",
     "CubicPolynomNeuron",
     "PolyQuadratic",
+    "BaseOrthogonalNeuron",
+    "LegendrePolynomNeuron",
+    "ChebyshevPolynomNeuron",
     "generate_unique_pairs",
     "generate_unique_combinations",
 ]

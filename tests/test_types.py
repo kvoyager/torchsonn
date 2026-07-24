@@ -13,6 +13,8 @@ class TestRefFunctionType:
             (RefFunctionType.rfQuadratic, "Quadratic"),
             (RefFunctionType.rfCubic, "Cubic"),
             (RefFunctionType.rfPolyQuadratic, "PolyQuadratic"),
+            (RefFunctionType.rfLegendre, "Legendre"),
+            (RefFunctionType.rfChebyshev, "Chebyshev"),
         ],
     )
     def test_get_name(self, value, name):
@@ -35,6 +37,10 @@ class TestRefFunctionType:
             ("quad", RefFunctionType.rfQuadratic),
             ("cubic", RefFunctionType.rfCubic),
             ("polyquad", RefFunctionType.rfPolyQuadratic),
+            ("legendre", RefFunctionType.rfLegendre),
+            ("leg", RefFunctionType.rfLegendre),
+            ("chebyshev", RefFunctionType.rfChebyshev),
+            ("cheb", RefFunctionType.rfChebyshev),
         ],
     )
     def test_get_from_string(self, arg, expected):

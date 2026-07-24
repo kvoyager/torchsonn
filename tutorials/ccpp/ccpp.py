@@ -66,7 +66,7 @@ import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 from sklearn import metrics
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm as _TqdmBase
 
@@ -248,9 +248,10 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     # a razor-thin band and stalling layer growth. After z-scoring Σy² ≈ N, the
     # no-skill baseline is exactly 1.0 and improvements are crisp.
     x_scaler = StandardScaler().fit(X_train)
-    X_train = x_scaler.transform(X_train).astype(np.float32)
-    X_dev   = x_scaler.transform(X_dev).astype(np.float32)
-    X_test  = x_scaler.transform(X_te_half).astype(np.float32)
+    # x_scaler = MinMaxScaler(feature_range=(-1, 1)).fit(X_train)
+    X_train = x_scaler.transform(X_train).astype(np.float32) / 3.0
+    X_dev   = x_scaler.transform(X_dev).astype(np.float32) / 3.0
+    X_test  = x_scaler.transform(X_te_half).astype(np.float32) / 3.0
 
     y_scaler = StandardScaler().fit(y_train.reshape(-1, 1))
     y_train_s = y_scaler.transform(y_train.reshape(-1, 1)).ravel().astype(np.float32)

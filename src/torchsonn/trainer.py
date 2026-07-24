@@ -995,7 +995,7 @@ class Trainer:
             initial=int(global_step),
             file=sys.stdout,
             ncols=140,
-            desc="Training",
+            desc=f"Training {type(neuron_model).__name__}",
             dynamic_ncols=True,
             leave=True,
             disable=not model.param.train.optimizer.verbose or not _rank0,
@@ -1059,31 +1059,6 @@ class Trainer:
                         | torch.isnan(val_losses)
                     )
 
-                    # Number of completed models (all-reduce across ranks when distributed
-                    # so the count reflects the full ensemble, not just the local slice).
-                    _local_done = early_stop_flags.sum()
-                    if self._is_dist():
-                        dist.all_reduce(_local_done, op=dist.ReduceOp.SUM)
-                    completed_models = int(_local_done.item())
-                    completion_percentage = 100.0 * completed_models / ensemble_size
-
-                    # Update tqdm description with current step and val loss
-                    val_losses_nonan = val_losses[~torch.isnan(val_losses)]
-                    if val_losses_nonan.numel() > 0:
-                        val_loss_mean = val_losses_nonan.mean().item()
-                        val_loss_min = val_losses_nonan.min().item()
-                        val_loss_max = val_losses_nonan.max().item()
-                    else:
-                        val_loss_mean = val_loss_min = val_loss_max = float("nan")
-                    # Update tqdm postfix
-                    tbar.set_postfix({
-                        "epoch": epoch,
-                        "step": global_step,
-                        "lr": f"{lr.mean().item():.2e}",
-                        "val_loss": f"[{val_loss_min:.3f}, {val_loss_mean:.3f}, {val_loss_max:.3f}]",
-                        "completed": f"{completed_models}/{ensemble_size}"
-                    }, refresh=True)
-
                     # Exponential moving average smoothing
                     smoothing_factor = model.param.train.eval_smoothing_factor
                     if global_step > 1:
@@ -1110,13 +1085,43 @@ class Trainer:
                     early_stop_flags = early_stop_flags | current_early_stop_flags
                     # early_stop_flags = early_stop_flags | current_early_stop_flags | val_losses > model.param.train.optimizer.optimizer_params.max_grad
 
-                    # All-reduce the "all stopped" flag so every rank agrees to stop simultaneously.
-                    _all_stopped = early_stop_flags.all()
+                    # On-device stop condition (0-d bool tensors; completion-% is
+                    # compared on device so no host sync yet). `completed` counts
+                    # models stopped so far — including those that hit tolerance
+                    # this very eval, since current_early_stop_flags was just OR'd
+                    # in above. All-reduce across ranks when distributed so the
+                    # decision reflects the full ensemble, not just the local slice.
+                    completed = early_stop_flags.sum()
+                    all_stopped = early_stop_flags.all()
                     if self._is_dist():
-                        _all_t = _all_stopped.to(torch.uint8)
+                        dist.all_reduce(completed, op=dist.ReduceOp.SUM)
+                        _all_t = all_stopped.to(torch.uint8)
                         dist.all_reduce(_all_t, op=dist.ReduceOp.MIN)
-                        _all_stopped = _all_t.bool()
-                    if _all_stopped or completion_percentage > model.param.train.early_stop_completion_percentage or global_step > model.param.train.steps:
+                        all_stopped = _all_t.bool()
+                    completion_stop = completed * 100 > float(model.param.train.early_stop_completion_percentage) * ensemble_size
+
+                    # Progress-bar scalars are cosmetic and each needs a GPU->CPU
+                    # .item(); refresh them only every eval_display_interval evals,
+                    # and only when a bar is actually shown. nan-safe reductions
+                    # avoid the data-dependent boolean-mask indexing (itself a sync);
+                    # posinf/neginf are pinned so only NaN is rewritten and a
+                    # diverged candidate still reads as inf, not FLT_MAX.
+                    display_interval = max(1, int(model.param.train.eval_display_interval))
+                    if not tbar.disable and eval_step % display_interval == 0:
+                        val_loss_mean = val_losses.nanmean().item()
+                        val_loss_min = torch.nan_to_num(val_losses, nan=float("inf"), posinf=float("inf"), neginf=float("-inf")).min().item()
+                        val_loss_max = torch.nan_to_num(val_losses, nan=float("-inf"), posinf=float("inf"), neginf=float("-inf")).max().item()
+                        tbar.set_postfix({
+                            "epoch": epoch,
+                            "step": global_step,
+                            "lr": f"{lr.mean().item():.2e}",
+                            "val_loss": f"[{val_loss_min:.3f}, {val_loss_mean:.3f}, {val_loss_max:.3f}]",
+                            "completed": f"{int(completed.item())}/{ensemble_size}",
+                        }, refresh=True)
+
+                    # The single correctness sync per eval: has the whole ensemble
+                    # stopped (or the step budget run out — a free host-int test)?
+                    if bool((all_stopped | completion_stop).item()) or global_step > model.param.train.steps:
                         # Snap total to the current step so the bar renders as
                         # 100% on the final line — otherwise an early-stop at
                         # step 80 of a 500-step budget leaves a permanent

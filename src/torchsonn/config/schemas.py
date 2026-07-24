@@ -189,6 +189,13 @@ class TrainConfig:
     neuron_selection_orth_threshold: float = 0.3
 
     eval_step_interval: int = 1000
+    # How often (in eval passes) to refresh the tqdm progress bar's scalar
+    # readout. The bar's mean/min/max/lr/completed values each need a GPU->CPU
+    # sync (.item()); they are cosmetic, so read them back only every
+    # eval_display_interval evals rather than every eval. Does NOT affect
+    # early-stop timing or results — the stop decision is computed on-device and
+    # checked every eval regardless. 1 = refresh every eval (default cadence).
+    eval_display_interval: int = 1
     eval_smoothing_factor: float = 0.2
 
     save_interval: int = 1000

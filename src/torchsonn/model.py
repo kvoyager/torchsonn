@@ -24,6 +24,8 @@ from torchsonn.neurons import (
     QuadraticPolynomNeuron,
     CubicPolynomNeuron,
     PolyQuadratic,
+    LegendrePolynomNeuron,
+    ChebyshevPolynomNeuron,
 )
 from torchsonn.loss import NormMSE
 from torchsonn.types import RefFunctionType, CriterionType, LayerCreationError
@@ -309,6 +311,12 @@ class SONN(SONNModule):
             'linear_cov': y = w0 + w1*x1 + w2*x2 + w3*x1*x2
             'quadratic': full polynom of the 2-nd degree
             'cubic': - full polynom of the 3-rd degree
+            'legendre': Legendre orthogonal-polynomial basis over the neuron's
+                inputs (options: degree, cross, squash, dim). dim defaults to 2
+                (a pair neuron); dim > 2 gives a multi-input neuron with additive
+                univariate terms plus pairwise (cross) interactions.
+            'chebyshev': Chebyshev orthogonal-polynomial basis over the neuron's
+                inputs (options: degree, cross, squash, dim; see 'legendre')
             examples of using:
              - Regressor(ref_functions='linear')
              - Regressor(ref_functions=('linear_cov', 'quadratic', 'cubic', 'linear'))
@@ -644,6 +652,8 @@ class SONN(SONNModule):
             RefFunctionType.rfQuadratic:     QuadraticPolynomNeuron,  # full 2nd degree
             RefFunctionType.rfCubic:         CubicPolynomNeuron,      # full 3rd degree
             RefFunctionType.rfPolyQuadratic: PolyQuadratic,           # 2nd degree over `dim` inputs
+            RefFunctionType.rfLegendre:      LegendrePolynomNeuron,   # Legendre basis, degree `degree`
+            RefFunctionType.rfChebyshev:     ChebyshevPolynomNeuron,  # Chebyshev basis, degree `degree`
         }
 
         neuron_models = []

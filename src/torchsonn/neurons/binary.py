@@ -1,8 +1,9 @@
 """Pair-input ("binary") polynomial neurons.
 
-Each of these consumes exactly two inputs per neuron (dim=2 implicit in the
-.view(..., -1, 2) reshape in BasePolynomNeuron.forward / .get_args). The
-distinction between classes is purely the polynomial-feature set produced by
+Each of these consumes exactly two inputs per neuron: they never pass `dim`, so
+it defaults to 2 and BasePolynomNeuron.forward reshapes the gathered inputs into
+pairs (the general `.view(..., -1, self.dim)` reshape resolves to width 2 here).
+The distinction between classes is purely the polynomial-feature set produced by
 get_args — the constant term, linear, covariance, square, cube monomials.
 """
 import torch

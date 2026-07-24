@@ -15,6 +15,8 @@ class RefFunctionType(Enum):
     rfQuadratic = 2
     rfCubic = 3
     rfPolyQuadratic = 4
+    rfLegendre = 5
+    rfChebyshev = 6
 
     @classmethod
     def get_name(cls, value: "RefFunctionType") -> str:
@@ -30,6 +32,10 @@ class RefFunctionType(Enum):
             return 'Cubic'
         elif value == cls.rfPolyQuadratic:
             return 'PolyQuadratic'
+        elif value == cls.rfLegendre:
+            return 'Legendre'
+        elif value == cls.rfChebyshev:
+            return 'Chebyshev'
         else:
             return 'Unknown'
 
@@ -47,6 +53,10 @@ class RefFunctionType(Enum):
             return RefFunctionType.rfCubic
         elif arg == 'polyquad':
             return RefFunctionType.rfPolyQuadratic
+        elif arg in ('legendre', 'leg'):
+            return RefFunctionType.rfLegendre
+        elif arg in ('chebyshev', 'cheb'):
+            return RefFunctionType.rfChebyshev
         else:
             raise ValueError(arg)
 

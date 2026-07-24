@@ -538,6 +538,86 @@ def test_create_layer_with_all_ref_functions():
     assert len(layer.neuron_models) == 5
 
 
+def test_create_layer_with_orthogonal_ref_functions():
+    cfg = _make_cfg(
+        model={
+            "type": "regressor",
+            "num_classes": 1,
+            "nbest_neurons": 3,
+            "soft_binner": False,
+            "max_neuron_models": 6,
+            "ref_functions": [
+                {"legendre": {"degree": 4}},
+                {"chebyshev": {"degree": 2, "cross": False, "squash": False}},
+            ],
+        }
+    )
+    m = SONN(cfg, d_model=5)
+    layer = m.create_layer(0)
+    assert len(layer.neuron_models) == 2
+    leg, cheb = layer.neuron_models
+    assert leg.get_short_name() == "Legendre4"
+    assert leg.num_w == 1 + 2 * 4 + 1  # degree 4 + bilinear
+    assert cheb.get_short_name() == "Chebyshev2"
+    assert cheb.cross is False and cheb.squash is False
+    assert cheb.num_w == 1 + 2 * 2  # no bilinear column
+    # Layer forward runs end to end over both orthogonal families.
+    out = layer(torch.randn(8, 5))
+    assert out.shape[0] == 8
+    assert torch.isfinite(out).all()
+
+
+def test_create_layer_with_multi_input_legendre():
+    # The `dim` option flows through the config into the orthogonal neuron,
+    # giving a multi-input Legendre (additive univariate + pairwise cross).
+    cfg = _make_cfg(
+        model={
+            "type": "regressor",
+            "num_classes": 1,
+            "nbest_neurons": 3,
+            "soft_binner": False,
+            "max_neuron_models": 8,
+            "ref_functions": [
+                {"legendre": {"degree": 3, "dim": 4, "squash": False}},
+            ],
+        }
+    )
+    m = SONN(cfg, d_model=6)
+    layer = m.create_layer(0)
+    assert len(layer.neuron_models) == 1
+    leg = layer.neuron_models[0]
+    assert leg.dim == 4
+    assert leg.get_short_name() == "Legendre3x4"
+    assert leg.num_w == 1 + 4 * 3 + 6  # univariate 4*3 + C(4,2) pairwise cross
+    assert leg.src_idxs.shape[1] == 4  # 4-ary input tuples
+    out = layer(torch.randn(8, 6))
+    assert out.shape[0] == 8
+    assert torch.isfinite(out).all()
+
+
+def test_multi_input_legendre_skipped_when_layer_too_narrow():
+    # A dim=5 neuron needs 5 inputs; a 3-feature first layer can't supply them,
+    # so create_layer must drop that family rather than build a 0-neuron module.
+    cfg = _make_cfg(
+        model={
+            "type": "regressor",
+            "num_classes": 1,
+            "nbest_neurons": 3,
+            "soft_binner": False,
+            "max_neuron_models": 8,
+            "ref_functions": [
+                {"legendre": {"degree": 2, "dim": 5}},  # needs 5 inputs
+                "linear_cov",                            # pair neuron, always fits
+            ],
+        }
+    )
+    m = SONN(cfg, d_model=3)
+    layer = m.create_layer(0)
+    # Only the pair neuron survives; the too-wide Legendre family is skipped.
+    assert len(layer.neuron_models) == 1
+    assert layer.neuron_models[0].get_short_name() == "LinearCov"
+
+
 def test_create_layer_neuron_proj_sets_projection():
     cfg = _make_cfg(
         model={
