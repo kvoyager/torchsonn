@@ -299,14 +299,6 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     if bool(getattr(config, "finetune_end_to_end", False)):
         drop_head = bool(getattr(config, "finetune_drop_head", False))
         prune_first = bool(getattr(config, "finetune_prune_first", False))
-        if prune_first and not drop_head:
-            # out_proj reads num_out_neurons columns; prune() leaves one and
-            # SONN.infer zero-pads the rest, so the head would be evaluated on
-            # mostly-zero input and the model would silently stop predicting.
-            raise ValueError(
-                "finetune_prune_first requires finetune_drop_head: pruning "
-                "leaves a single neuron, which out_proj cannot read."
-            )
         if drop_head and model.out_proj is not None:
             logger.info("Dropping the out_proj head before end-to-end fine-tuning")
             model.out_proj = None

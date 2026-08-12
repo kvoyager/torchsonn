@@ -2352,20 +2352,57 @@ class Trainer:
         return torch.cat(result, dim=0), torch.cat(targets, dim=0)
 
     def prune(self, model: SONN) -> None:
+        """Strip the network down to the neurons that actually reach the output.
 
+        The last layer is cut to the columns the model reads, and every earlier
+        layer is then cut to whatever its successor still references.
+
+        How many columns the model reads depends on the head. Without one,
+        `SONN.infer` returns the best-error column and a single neuron suffices.
+        With `out_proj` it reads `in_features` columns, chosen by
+        `_best_neuron_columns` — so collapsing the layer to one neuron would
+        leave the head consuming zero-padding on every other input and silently
+        destroy the model rather than raising. Keep exactly the columns the head
+        consumes instead.
+
+        The head needs no reindexing: the retained neurons keep their
+        `err_values`, so re-running `_best_neuron_columns` on the pruned layer
+        re-derives the same neurons in the same ascending-error order, which is
+        the order the head's inputs were fitted in.
+        """
         last_layer = model.layers[-1]
-        best_module_idx, best_neuron_idx = model.get_best_neuron_model(last_layer)
-        best_module = last_layer.neuron_models[best_module_idx]
-        best_module.prune(best_neuron_idx)
-        last_layer.neuron_models = nn.ModuleList([best_module])
+        dev_last = last_layer.module_idxs.device
+        n_keep = 1 if model.out_proj is None else int(model.out_proj.in_features)
+        n_keep = min(n_keep, int(last_layer.err_values.shape[0]))
+
+        # Sorted, not left in topk's error order: module_idxs is laid out
+        # module-by-module and the rest of this method (and a second prune()
+        # call) relies on that ordering being preserved.
+        used = last_layer.err_values.topk(n_keep, largest=False).indices.sort().values
+        kept_idxs = last_layer.module_idxs[used]
+
+        new_modules: list = []
+        renumbered_rows = []
+        new_idx = 0
+        for module_idx in torch.unique(kept_idxs[:, 0]):
+            rows = kept_idxs[kept_idxs[:, 0] == module_idx]
+            module = last_layer.neuron_models[module_idx]
+            module.prune(rows[:, 1])
+            new_modules.append(module)
+            k = rows.shape[0]
+            renumbered_rows.append(torch.stack([
+                torch.full((k,), new_idx, dtype=torch.long, device=dev_last),
+                torch.arange(k, dtype=torch.long, device=dev_last),
+            ], dim=1))
+            new_idx += 1
+
+        last_layer.neuron_models = NeuronModuleList(new_modules)
         # Keep module_idxs / err_values in sync with the pruned neuron list so
         # a second prune() call (e.g. the iris tutorial that prunes for the
         # `_pruned_model` plot after already pruning for the regular one)
         # doesn't index the modules with stale rows.
-        device_l = best_module.weight.device
-        best_err_pos = last_layer.err_values.topk(1, largest=False).indices
-        last_layer.err_values = last_layer.err_values[best_err_pos]
-        last_layer.module_idxs = torch.tensor([[0, 0]], dtype=torch.long, device=device_l)
+        last_layer.err_values = last_layer.err_values[used]
+        last_layer.module_idxs = torch.cat(renumbered_rows)
 
         # Walk layers from second-to-last down to 0 with an index, because we
         # may delete entries from model.layers mid-iteration when a layer

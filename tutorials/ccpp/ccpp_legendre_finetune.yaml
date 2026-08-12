@@ -104,12 +104,13 @@ finetune_end_to_end: true
 # only refines it, against exactly the readout report() will score.
 finetune_drop_head: false
 
-# Requires finetune_drop_head (ccpp.py raises otherwise): out_proj reads
-# num_out_neurons columns and prune() leaves one, so the head would be fed
-# mostly zero-padding. Kept off here for that reason. It was a measured no-op
-# for accuracy anyway when the head *was* dropped — off-path weights have zero
-# gradient, so they never move whether pruned away or not, and fold 1 matched
-# the unpruned pass to four decimals at every learning rate tried.
+# Prune to the read path before the pass. Safe with the head on: prune() keeps
+# the num_out_neurons columns out_proj consumes and is output-preserving either
+# way. Left off because it is a measured no-op for accuracy — a neuron that
+# does not reach the output has zero gradient, so it never moves whether pruned
+# away or not, and fold 1 matched the unpruned pass to four decimals at every
+# learning rate tried. Turn it on to make the trained model and the rendered
+# ccpp_pruned_model.svg the same object.
 finetune_prune_first: false
 
 # Hydra: keep auto-chdir disabled so the YAML's relative paths still resolve

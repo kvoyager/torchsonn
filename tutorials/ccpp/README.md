@@ -69,10 +69,27 @@ python -m tutorials.ccpp.ccpp -m train.ridge_alpha=0.001,0.01,0.05   # multirun 
 Each run writes a self-contained folder `checkpoints/YYYY-MM-DD-HH-MM/` holding
 one `train.log` plus a `fold_NN/` checkpoint subfolder per fold. After the CV
 loop, the discovered network from the final fold is rendered to
-[`ccpp_model.svg`](ccpp_model.svg) (full) and
-[`ccpp_pruned_model.svg`](ccpp_pruned_model.svg) (pruned to the single
-best-error path — a readable "discovered formula"). Rendering needs the `[viz]`
-extra (`pip install "torchsonn[viz]"` + system Graphviz).
+[`ccpp_model.svg`](ccpp_model.svg) (the whole layer stack) and
+[`ccpp_pruned_model.svg`](ccpp_pruned_model.svg) (the same network reduced to
+the neurons that actually reach the output). Rendering needs the `[viz]` extra
+(`pip install "torchsonn[viz]"` + system Graphviz).
+
+How much the second one reduces depends on whether the config has an output
+head, and the difference is worth understanding before reading either diagram:
+
+- **Without a head** (`ccpp.yaml` and every other non-fine-tuned config) the
+  prediction is one neuron's output, so pruning collapses the network to the
+  single best-error path — a readable "discovered formula", which is the
+  diagram's main purpose.
+- **With a head** (the [`*_finetune` configs](#fine-tuning-the-discovered-network),
+  which set `use_output_projection: True`) the prediction is a fitted linear
+  combination of `num_out_neurons` columns, so all of them reach the output and
+  there is usually nothing to prune. The two SVGs then come out identical, and
+  the model is not reducible to a single formula. Both diagrams draw the head
+  as an `out_proj` node with an edge from every column it reads.
+
+The committed SVGs are whatever the last run produced, so they may be from
+either kind of config; the `out_proj` node tells you which.
 
 ## The two base configs
 

@@ -326,11 +326,11 @@ class SONNConfig:
     # measures better; dropping it collapses the single-column readout and the
     # pass has to rebuild one. (CCPP only.)
     finetune_drop_head: bool = False
-    # With `finetune_end_to_end`: prune to the single best-error path first, so
-    # the pass optimizes just that chain instead of a whole layer of neurons
-    # that no longer feed anything. Requires `finetune_drop_head` — out_proj
-    # reads `num_out_neurons` columns and pruning leaves one, so the head would
-    # be fed mostly zero-padding. (CCPP only.)
+    # With `finetune_end_to_end`: prune to the read path first, so the pass
+    # optimizes only neurons that reach the output. How much that removes
+    # depends on the head — without one the network collapses to a single
+    # chain; with `out_proj` the last layer keeps the `num_out_neurons` columns
+    # the head consumes, so the saving is smaller. (CCPP only.)
     finetune_prune_first: bool = False
 
 

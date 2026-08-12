@@ -75,6 +75,13 @@ class PlotModel:
                                'fontsize': '12', 'fontcolor': self.io_font_color, 'rank': 'same'})
         self.node_param = ({'style': 'filled', 'shape': 'rect', 'color': self.pen_color, 'fillcolor': self.node_color,
                                'fontsize': '10'})
+        # The out_proj head, when there is one. Styled like the I/O nodes rather
+        # than the neuron nodes because it is not a discovered polynomial — it
+        # is a fitted linear readout, and the diagram should not suggest
+        # otherwise.
+        self.head_node_param = ({'style': 'filled', 'shape': 'rect', 'color': self.io_pen_color,
+                                 'fillcolor': self.io_node_color, 'fontsize': '11',
+                                 'fontcolor': self.io_font_color})
         self.g.node(self.output, **self.io_node_param)
         self.g.graph_attr.update(label='Self-organizing deep learning polynomial neural network\n ', labelloc='t', center='true',
                                  fontsize='18')
@@ -124,6 +131,61 @@ class PlotModel:
     def add_edge(self, a: str, b: str) -> None:
         return self.g.edge(a, b, color=self.connection_color, fillcolor=self.connection_fill_color, weight='1')
 
+    @staticmethod
+    def _cumulative_column(layer: "object", module_idx: int, neuron_idx: int) -> int:
+        """Column of (module_idx, neuron_idx) in the layer's concatenated output.
+
+        Node labels are keyed on this cumulative index — the loop in plot()
+        counts straight through every module — whereas `get_best_neuron_model`
+        and `module_idxs` report an index *within* a module. Conflating the two
+        mislabels the readout edge whenever the target is not in the first
+        module.
+        """
+        col = 0
+        for i, module in enumerate(layer.neuron_models):
+            if i == int(module_idx):
+                return col + int(neuron_idx)
+            col += module.num_neurons
+        return col
+
+    @staticmethod
+    def _module_for_column(layer: "object", col: int) -> "object":
+        """The neuron module owning column `col` — it supplies get_short_name()."""
+        offset = 0
+        for module in layer.neuron_models:
+            if col < offset + module.num_neurons:
+                return module
+            offset += module.num_neurons
+        return layer.neuron_models[-1]
+
+    def _add_readout(self, last_layer: "object") -> None:
+        """Draw whatever turns the last layer into the model's prediction.
+
+        Without a head that is a single edge from the best-error neuron — the
+        column `SONN.infer` returns. With `out_proj` it is a fitted
+        `Linear(in_features, out_features)` over the `in_features` lowest-error
+        columns, so drawing only the best neuron would show a formula the model
+        does not compute.
+        """
+        out_proj = getattr(self.model, "out_proj", None)
+        if out_proj is None:
+            module_idx, neuron_idx = self.model.get_best_neuron_model(last_layer)
+            col = self._cumulative_column(last_layer, module_idx, neuron_idx)
+            module = last_layer.neuron_models[int(module_idx)]
+            self.add_edge(self._get_neuron_name(col, module, last_layer.neuron_idxs), self.output)
+            return
+
+        cols = self.model._best_neuron_columns(last_layer, out_proj.in_features)
+        label = f"out_proj\nLinear({out_proj.in_features}, {out_proj.out_features})"
+        if len(cols) < out_proj.in_features:
+            # SONN.infer zero-pads when the layer is narrower than the head.
+            label += f"\n({out_proj.in_features - len(cols)} inputs zero-padded)"
+        self.g.node(label, **self.head_node_param)
+        for col in cols:
+            module = self._module_for_column(last_layer, col)
+            self.add_edge(self._get_neuron_name(col, module, last_layer.neuron_idxs), label)
+        self.add_edge(label, self.output)
+
     def plot(self) -> None:
         if len(self.model.layers) == 0:
             return
@@ -153,11 +215,7 @@ class PlotModel:
                         self.add_connection(self.model.layers, neuron_module, neuron_idx, u_index)
                     neuron_idx += 1
 
-        last_layer = self.model.layers[-1]
-        best_module_idx, best_neuron_idx = self.model.get_best_neuron_model(last_layer)
-        last_neuron = last_layer.neuron_models[best_module_idx]
-
-        self.add_edge(self._get_neuron_name(best_neuron_idx, last_neuron, last_layer.neuron_idxs), self.output)
+        self._add_readout(self.model.layers[-1])
 
         dot_path = shutil.which("dot")
         if dot_path is None:
