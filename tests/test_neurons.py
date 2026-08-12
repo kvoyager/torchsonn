@@ -305,6 +305,109 @@ class TestOrthogonalNeurons:
         assert name_word in n.get_name()
 
     @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_squash_method_defaults_to_sigma(self, cls):
+        n = cls(4, 4, None, 0, 0)
+        assert n.squash_method == "sigma"
+        assert n.squash_norm is not None
+        # Per-neuron-input-slot stats: the leading axis must match num_neurons
+        # because Trainer.create_loss_functions vmaps every buffer at in_dims=0.
+        assert n.squash_norm.mean.shape == (n.num_neurons, n.dim)
+        assert "sigma-squashed" in n.get_name()
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_tanh_method_carries_no_statistics(self, cls):
+        n = cls(4, 4, None, 0, 0, squash_method="tanh")
+        assert n.squash_norm is None
+        assert not n.needs_squash_stats
+        assert "tanh-squashed" in n.get_name()
+        x = torch.randn(5, 6, 2) * 50
+        assert torch.allclose(n._squash(x), torch.tanh(x))
+
+    def test_unknown_squash_method_rejected(self):
+        with pytest.raises(ValueError):
+            LegendrePolynomNeuron(4, 4, None, 0, 0, squash_method="softsign")
+
+    def test_sigma_method_without_stats_refuses_rather_than_using_tanh(self):
+        """Silently falling back to tanh would swap the nonlinearity under the
+        user without changing any reported config — fail loudly instead."""
+        n = LegendrePolynomNeuron(4, 4, None, 0, 0)
+        n.squash_norm = None
+        with pytest.raises(RuntimeError, match="sigma"):
+            n._squash(torch.randn(3, 6, 2))
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_fit_squash_gathers_per_input_slot_stats(self, cls):
+        n = cls(4, 4, None, 0, 0)
+        mean = torch.tensor([10.0, 20.0, 30.0, 40.0])
+        std = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        n.fit_squash(mean, std)
+        # neuron k's slot j must carry the stats of the feature column it reads
+        for k, (i, j) in enumerate(n.src_idxs.tolist()):
+            assert n.squash_norm.mean[k].tolist() == [mean[i], mean[j]]
+            assert n.squash_norm.std[k].tolist() == [std[i], std[j]]
+
+    def test_fit_squash_neutralizes_a_constant_feature(self):
+        n = LegendrePolynomNeuron(3, 3, None, 0, 0)
+        n.fit_squash(torch.tensor([0.0, 5.0, 0.0]), torch.tensor([1.0, 0.0, 1.0]))
+        # std 0 → unit scale, so the constant column maps to 0 rather than
+        # dividing float noise by ~0 and saturating at random.
+        assert (n.squash_norm.std > 0).all()
+        x = torch.full((4, n.num_neurons, 2), 5.0)
+        assert torch.isfinite(n._squash(x)).all()
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_prune_keeps_squash_stats_aligned(self, cls):
+        n = cls(5, 5, None, 0, 0)
+        n.fit_squash(torch.arange(5.0), torch.ones(5))
+        keep = torch.tensor([2, 0, 7])
+        expected = n.squash_norm.mean[keep].clone()
+        n.prune(keep)
+        assert n.squash_norm.mean.shape == (n.num_neurons, n.dim)
+        assert n.squash_norm.std.shape == (n.num_neurons, n.dim)
+        # not just the right shape — the right rows, in the right order
+        assert torch.equal(n.squash_norm.mean, expected)
+        assert torch.isfinite(n(torch.randn(6, 5))).all()
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
+    def test_sigma_squash_bounds_wildly_scaled_inputs(self, cls):
+        n = cls(4, 4, None, 0, 0, degree=6)
+        n.fit_squash(torch.full((4,), 100.0), torch.full((4,), 25.0))
+        x = torch.randn(64, 4) * 25.0 + 100.0
+        args = n.get_args(
+            torch.index_select(x, 1, n.src_idxs.view(-1)).view(64, -1, n.dim)
+        )
+        # |P_k| <= 1 on [-1, 1]; unsquashed these columns would explode.
+        assert args.abs().max() <= 1.0 + 1e-6
+        assert torch.isfinite(n(x)).all()
+
+    def test_squash_knobs_survive_checkpoint_metadata(self):
+        n = LegendrePolynomNeuron(4, 4, None, 0, 0, squash_n_sigma=3.0,
+                                  squash_core_range=0.5)
+        n.fit_squash(torch.arange(4.0), torch.ones(4) * 2)
+        restored = BasePolynomNeuron.from_checkpoint_metadata(
+            {name: getattr(n, name) for name in n.params_metadata_names}
+        )
+        assert restored.squash_method == "sigma"
+        assert restored.squash_norm.n_sigma == 3.0
+        assert restored.squash_norm.core_range == 0.5
+        # buffers must already have the right shape for load_state_dict
+        assert restored.squash_norm.mean.shape == n.squash_norm.mean.shape
+        restored.load_state_dict(n.state_dict(), strict=False)
+        assert torch.equal(restored.squash_norm.mean, n.squash_norm.mean)
+
+    def test_legacy_metadata_without_squash_keys_restores_as_tanh(self):
+        """Checkpoints predating the configurable squash were tanh-squashed;
+        defaulting them to the current 'sigma' default would restore them with
+        a different — and uncalibrated — nonlinearity."""
+        n = LegendrePolynomNeuron(4, 4, None, 0, 0)
+        meta = {name: getattr(n, name) for name in n.params_metadata_names}
+        for key in ("squash_method", "squash_n_sigma", "squash_core_range"):
+            meta.pop(key)
+        restored = BasePolynomNeuron.from_checkpoint_metadata(meta)
+        assert restored.squash_method == "tanh"
+        assert restored.squash_norm is None
+
+    @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
     @pytest.mark.parametrize(
         "degree,cross,expected_num_w",
         [

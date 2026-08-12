@@ -56,14 +56,24 @@ model:
     # stand-in for the raw-power terms x, x², x³ — the Legendre Gram matrix is well
     # behaved where the monomial one is a near-singular Hilbert matrix — so they
     # capture the plant's mild saturation curvature without the ill-conditioning
-    # higher powers bring. squash: False feeds the StandardScaler'd inputs to the
-    # recurrence raw; they run to ±3.3 σ, outside the [-1, 1] interval where the
-    # basis stays bounded and orthogonal (the library default squash: True tanh-
-    # maps inputs into it first — the standard Chebyshev-KAN trick), so the higher-
-    # degree columns take large values, but the per-neuron ridge-regularized LBFGS
-    # fit absorbs the scale. cross defaults to True, adding the xi*xj interaction
-    # term, so the degree-3 neuron has 1 + 2·3 + 1 = 8 coefficients and the
-    # degree-2 neuron has 1 + 2·2 + 1 = 6.
+    # higher powers bring.
+    #
+    # squash: False feeds the scaled inputs to the recurrence raw; they run to
+    # ±3.3 σ, outside the [-1, 1] interval where the basis stays bounded and
+    # orthogonal, so the higher-degree columns take large values — but the
+    # per-neuron ridge-regularized LBFGS fit absorbs the scale. This is the one
+    # Legendre-bearing config in the tutorial still set that way, deliberately:
+    # every ccpp_legendre*.yaml has since moved to squash: True and this keeps an
+    # unsquashed reference point (and matches the logged run the README quotes).
+    # Flip it to True to map inputs into [-1, 1] first, via whichever
+    # model.squash_method is set — 'sigma', a mean/std-calibrated
+    # SigmaSquashNorm, by default; or 'tanh', the standard Chebyshev-KAN trick.
+    # On the pure-Legendre configs that trade costs ~0.01 MW of MAE and returns
+    # roughly half the fold-to-fold spread; see the README's squash section.
+    #
+    # cross defaults to True, adding the xi*xj interaction term, so the degree-3
+    # neuron has 1 + 2·3 + 1 = 8 coefficients and the degree-2 neuron has
+    # 1 + 2·2 + 1 = 6.
     - legendre:
         degree: 2
         squash: False
@@ -82,8 +92,10 @@ model:
   # nbest_neurons sets each layer's survivor pool (and thus the next layer's
   # input width under `shortcut`), and max_neuron_models caps the candidate
   # ensemble built per family per layer. The light values below keep the full
-  # 10-fold run tractable on CPU; raising them broadens the search, as the heavy
-  # configs (ccpp_heavy.yaml, ccpp_legendre_heavy.yaml) do at 60 / 600.
+  # 10-fold run tractable on CPU (≈56 min for the logged run — five families is
+  # noticeably more per layer than ccpp.yaml's three); raising them broadens the
+  # search, as ccpp_legendre_heavy.yaml does at 60 / 600 and ccpp_heavy.yaml at
+  # 120 / 1200.
   #
   # Only 4 features → C(4,2) = 6 unordered pairs for each pair family (linear_cov,
   # quadratic, and the two legendre) and C(4,4) = 1 for polyquad(dim=4) at

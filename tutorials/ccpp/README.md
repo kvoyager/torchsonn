@@ -30,7 +30,7 @@ competitive on this dataset (see [Comparison](#comparison-with-published-results
   (9568 samples, 4 features; the tutorial auto-downloads a byte-identical CSV
   mirror and caches it under `data/ccpp.csv`).
 - **Entry point:** [`ccpp.py`](ccpp.py)
-- **Configs:** [`ccpp.yaml`](ccpp.yaml) (light, default) · [`ccpp_heavy.yaml`](ccpp_heavy.yaml) (heavy) · [`ccpp_legendre.yaml`](ccpp_legendre.yaml) · [`ccpp_legendre_heavy.yaml`](ccpp_legendre_heavy.yaml) · [`ccpp_legendre_poly.yaml`](ccpp_legendre_poly.yaml) (Legendre-basis variants)
+- **Configs:** [`ccpp.yaml`](ccpp.yaml) (light, default) · [`ccpp_heavy.yaml`](ccpp_heavy.yaml) (heavy) · [`ccpp_legendre.yaml`](ccpp_legendre.yaml) · [`ccpp_legendre_heavy.yaml`](ccpp_legendre_heavy.yaml) · [`ccpp_legendre_poly.yaml`](ccpp_legendre_poly.yaml) · [`ccpp_legendre_poly_heavy.yaml`](ccpp_legendre_poly_heavy.yaml) (Legendre-basis variants) · [`ccpp_mix.yaml`](ccpp_mix.yaml) (monomial + Legendre families side by side) · [`ccpp_legendre_finetune.yaml`](ccpp_legendre_finetune.yaml) · [`ccpp_legendre_poly_finetune.yaml`](ccpp_legendre_poly_finetune.yaml) · [`ccpp_legendre_heavy_finetune.yaml`](ccpp_legendre_heavy_finetune.yaml) · [`ccpp_legendre_poly_heavy_finetune.yaml`](ccpp_legendre_poly_heavy_finetune.yaml) ([fine-tuned variants](#fine-tuning-the-discovered-network) — the strongest results here)
 
 ## Why 5×2 cross-validation?
 
@@ -53,6 +53,9 @@ python -m tutorials.ccpp.ccpp
 
 # Heavy config — larger pools + cubic/poly5/poly10 neurons, CUDA.
 python -m tutorials.ccpp.ccpp --config-name=ccpp_heavy
+
+# Best accuracy per minute — Legendre + the fine-tuning stack, CPU (~51 min).
+python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly_finetune
 ```
 
 Every config key is overridable on the command line via Hydra:
@@ -71,7 +74,11 @@ loop, the discovered network from the final fold is rendered to
 best-error path — a readable "discovered formula"). Rendering needs the `[viz]`
 extra (`pip install "torchsonn[viz]"` + system Graphviz).
 
-## The two configs
+## The two base configs
+
+These two are the reference points; the Legendre variants below are derived from
+them, and [All configs at a glance](#all-configs-at-a-glance) puts every config
+in one table.
 
 | Setting | `ccpp.yaml` (default) | `ccpp_heavy.yaml` |
 |---|---|---|
@@ -83,21 +90,69 @@ extra (`pip install "torchsonn[viz]"` + system Graphviz).
 
 The light config is deliberately cheap so the full 10-fold run is tractable; the
 heavy config is the larger search used while exploring the model. As the results
-below show, the heavy config buys only ~0.08 MW of MAE for ~36× the compute.
+below show, the heavy config buys only ~0.08 MW of MAE for ~36× the compute —
+and both are beaten by a light-pool Legendre config with
+[fine-tuning](#fine-tuning-the-discovered-network) in under an hour on a CPU.
 
 ### Hardware
 
-The wall-clock figures above are hardware-dependent and quoted only to
-illustrate the cost/accuracy trade-off. Both runs were measured on:
+Every wall-clock figure in this README is hardware-dependent and quoted only to
+illustrate the cost/accuracy trade-off. All runs were measured on the same
+machine:
 
-- **CPU** (default config, `device: cpu`) — 12th-gen Intel Core i9-12900
-  (16 cores: 8 P + 8 E) → ≈ 19 min.
-- **GPU** (heavy config, `device: cuda`) — NVIDIA GeForce RTX 5080 → ≈ 11.3 h.
+- **CPU** (`device: cpu` configs) — 12th-gen Intel Core i9-12900
+  (16 cores: 8 P + 8 E); ≈ 19 min for the default config.
+- **GPU** (`device: cuda` configs) — NVIDIA GeForce RTX 5080; ≈ 11.3 h for the
+  heavy config.
 
 ## Results
 
 Each block below is the final summary printed by `ccpp.py` (the `====` section
 at the end of that run's `train.log`), reproduced verbatim.
+
+### All configs at a glance
+
+Sorted by MAE, the canonical CCPP metric. Wall-clock is hardware-dependent —
+see [Hardware](#hardware) — and quoted only for the cost/accuracy trade-off.
+All `ccpp_legendre*` configs run `squash: True` with the default `sigma`
+method; the per-config sections below give the side-by-side against the earlier
+`squash: False` runs. `ccpp_mix.yaml` is the exception and stays unsquashed.
+The `*_finetune` rows add the [fine-tuning stack](#fine-tuning-the-discovered-network)
+on top of the config they are named after, and nothing else.
+
+| Config | Families | Pools (nbest/max) | Device | Wall-clock | MAE (MW) | RMSE (MW) | R² |
+|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `ccpp_legendre_poly_heavy_finetune.yaml` | `linear_cov` + Legendre pair & dim 4/6 | 60/600 | CUDA | ≈ 14.7 h | **3.1284 ± 0.0485** | 4.0943 ± 0.0662 | 0.9424 ± 0.0017 |
+| `ccpp_legendre_heavy_finetune.yaml` | Legendre pair (deg 3 + deg 2) | 60/600 | CUDA | ≈ 2.5 h | 3.1408 ± 0.0620 | **4.0890 ± 0.0688** | **0.9426 ± 0.0017** |
+| `ccpp_legendre_poly_finetune.yaml` | Legendre pair + dim 4 | 8/60 | CPU | ≈ 51 min | 3.1495 ± 0.0696 | 4.0940 ± 0.0773 | 0.9424 ± 0.0021 |
+| `ccpp_legendre_finetune.yaml` | Legendre pair (deg 3) | 8/60 | CPU | ≈ 65 min | 3.1748 ± 0.0520 | 4.1152 ± 0.0539 | 0.9418 ± 0.0014 |
+| `ccpp_heavy.yaml` | monomial, + `cubic` / `polyquad`(5, 10) | 120/1200 | CUDA | ≈ 11.3 h | 3.2599 ± 0.0356 | 4.1815 ± 0.0486 | 0.9400 ± 0.0010 |
+| `ccpp_legendre_poly_heavy.yaml` | `linear_cov` + Legendre pair & dim 4/6 | 60/600 | CUDA | ≈ 8.8 h | 3.2777 ± 0.0200 | 4.2111 ± 0.0395 | 0.9391 ± 0.0008 |
+| `ccpp_legendre_poly.yaml` | Legendre pair + dim 4 | 8/60 | CPU | ≈ 25 min | 3.2782 ± 0.0135 | 4.2174 ± 0.0339 | 0.9389 ± 0.0007 |
+| `ccpp_legendre_heavy.yaml` | Legendre pair (deg 3 + deg 2) | 60/600 | CUDA | ≈ 1.4 h | 3.3035 ± 0.0162 | 4.2339 ± 0.0350 | 0.9384 ± 0.0008 |
+| `ccpp_mix.yaml` | monomial + Legendre pair (deg 2 + 3) | 8/60 | CPU | ≈ 56 min | 3.3050 ± 0.0263 | 4.2251 ± 0.0470 | 0.9387 ± 0.0010 |
+| `ccpp_legendre.yaml` | Legendre pair (deg 3) | 8/60 | CPU | ≈ 12 min | 3.3084 ± 0.0147 | 4.2518 ± 0.0322 | 0.9379 ± 0.0007 |
+| `ccpp.yaml` (default) | `linear_cov`, `quadratic`, `polyquad`(4) | 8/60 | CPU | ≈ 19 min | 3.3423 ± 0.0256 | 4.2593 ± 0.0511 | 0.9377 ± 0.0012 |
+
+The **fine-tuned configs sweep the top of the table** on all three metrics, and
+by a wide margin: every one of them beats the 11.3 h heavy monomial search that
+previously led, and the best of them does so by 0.13 MW of MAE. Two of the four
+run on a CPU in under an hour.
+
+They are also barely distinguishable from one another. The four span
+3.1284–3.1748 MAE — a 0.046 MW range against fold spreads of ±0.05–0.07 — while
+their cost spans 51 minutes of CPU to 14.7 hours of GPU, a factor of ~17. The
+14.7 h poly-heavy run takes the best MAE by 0.021 MW over the 51-minute
+poly-light one, which is well inside the noise, and does *not* take the best
+RMSE or R². Once the fine-tune is on, the search budget stops mattering.
+
+Among the searches themselves the picture is the one the sections below
+develop: `ccpp_legendre_poly.yaml` matches the 8.8 h poly-heavy GPU run
+(3.2782 ± 0.0135 vs 3.2777 ± 0.0200) on light pools and a CPU in ~25 minutes, so
+pool width buys almost nothing on this dataset while neuron *arity* does. The
+Legendre configs also carry the tightest spreads, a direct consequence of the
+squash — though note the fine-tune trades some of that back (±0.06–0.07 against
+±0.01–0.02), which the fine-tuning section discusses.
 
 ### Default — `ccpp.yaml`
 <sub>run `checkpoints/2026-07-22-19-59/train.log` — light config, CPU</sub>
@@ -166,118 +221,350 @@ curvature for each input plus one bilinear term per input pair in a single
 19-coefficient (`1 + 4·3 + 6`) fit, letting a layer model the joint AT×V×AP×RH
 interaction directly rather than only through pairwise Legendre combinations. Run
 it with `python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly`.
+`ccpp_legendre_poly_heavy.yaml` scales that idea up: `linear_cov` plus degree-2
+and degree-3 Legendre families at pair, `dim: 4` and `dim: 6` arity, over the
+heavy config's wide pools on CUDA.
+
+Finally, `ccpp_mix.yaml` keeps the default's monomial families *and* adds two
+Legendre ones (degree 2 and 3), so per-layer selection weighs the two bases
+head-to-head on the same run. It is the one Legendre-bearing config still on
+`squash: False`, deliberately: its number below comes from that run, and it is
+kept as the unsquashed reference point. Run it with
+`python -m tutorials.ccpp.ccpp --config-name=ccpp_mix`.
+
+### The squash switch
+
+**All four `ccpp_legendre*` configs run `squash: True`** — each input is mapped into
+[-1, 1], the only interval where the basis is bounded and orthogonal, before the
+recurrence. The mapping is `model.squash_method`, `sigma` by default: standardize
+on the training set's per-feature mean/std (measured once per layer, on that
+layer's actual inputs), pass everything within ±2 σ through linearly onto ±0.75,
+and saturate only the tail. They also previously ran `squash: False`, feeding the
+recurrence the scaled features raw at up to ±3.3 σ, and each section below carries
+the before/after. The effect is the same in all four cases and worth stating once:
+
+| Config | MAE Δ | RMSE Δ | σ(MAE) | σ(RMSE) | σ(R²) | Wall-clock |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `ccpp_legendre.yaml` | −0.001 | +0.021 | −57 % | −41 % | −46 % | 17 → 12 min |
+| `ccpp_legendre_heavy.yaml` | +0.012 | +0.019 | −44 % | −35 % | −38 % | 2.9 → 1.4 h |
+| `ccpp_legendre_poly.yaml` | +0.006 | +0.024 | −53 % | −30 % | −42 % | 30 → 25 min |
+| `ccpp_legendre_poly_heavy.yaml` | +0.026 | +0.039 | −50 % | −35 % | −38 % | 13.9 → 8.8 h |
+
+The central estimate gives up a little — always well inside one unsquashed
+standard deviation — while the fold-to-fold spread falls by a third to a half on
+every metric, and the runs get **1.2–2× faster**. Both follow from the same
+cause: bounding the basis inputs removes the part of each fold's conditioning
+that depended on how extreme *that fold's* tail happened to be, so the folds
+stop disagreeing with each other and the per-neuron LBFGS fits hit their
+early-stop criterion in fewer steps. Worth having when the number you report is
+a CV mean, since the tighter spread is what makes small differences between
+configs readable at all.
 
 ### Legendre — `ccpp_legendre.yaml`
-<sub>run `checkpoints/2026-07-23-20-58/train.log` — degree-3 Legendre basis, light pools, CPU</sub>
+<sub>run `checkpoints/2026-08-09-18-08/train.log` — degree-3 Legendre basis, `squash: True` (sigma), light pools, CPU</sub>
 
 ```
 ==================================================================
 5×2 cross-validation summary — 10 train/test measurements
 ==================================================================
 repeat   fold   RMSE(MW)    MAE(MW)        R²
-     1    A→B     4.1734     3.2878    0.9405
-     1    B→A     4.2851     3.3223    0.9366
-     2    A→B     4.2502     3.2959    0.9382
-     2    B→A     4.1802     3.2906    0.9398
-     3    A→B     4.1783     3.2678    0.9401
-     3    B→A     4.2769     3.3385    0.9372
-     4    A→B     4.2720     3.3489    0.9379
-     4    B→A     4.1874     3.2659    0.9393
-     5    A→B     4.1890     3.3100    0.9387
-     5    B→A     4.3167     3.3669    0.9371
+     1    A→B     4.2419     3.3059    0.9385
+     1    B→A     4.2800     3.3163    0.9368
+     2    A→B     4.2849     3.3131    0.9372
+     2    B→A     4.2092     3.2782    0.9389
+     3    A→B     4.2315     3.2996    0.9385
+     3    B→A     4.2740     3.3212    0.9373
+     4    A→B     4.2707     3.3220    0.9379
+     4    B→A     4.2349     3.3131    0.9379
+     5    A→B     4.2013     3.2920    0.9383
+     5    B→A     4.2898     3.3230    0.9379
 ------------------------------------------------------------------
-  RMSE = 4.2309 ± 0.0545 MW
-  MAE  = 3.3094 ± 0.0342 MW
-  R²   = 0.9385 ± 0.0013
+  RMSE = 4.2518 ± 0.0322 MW
+  MAE  = 3.3084 ± 0.0147 MW
+  R²   = 0.9379 ± 0.0007
 ```
+
+The [`squash: True` switch](#the-squash-switch) leaves the central estimate essentially
+where it was — MAE is flat at −0.001, RMSE a hair worse at +0.021, itself under
+one previous standard deviation — but **halves the fold-to-fold spread**:
+
+| `ccpp_legendre.yaml` | MAE (MW) | RMSE (MW) | R² |
+|---|:--:|:--:|:--:|
+| `squash: False` (previous) | 3.3094 ± 0.0342 | 4.2309 ± 0.0545 | 0.9385 ± 0.0013 |
+| `squash: True` (sigma, current) | 3.3084 ± 0.0147 | 4.2518 ± 0.0322 | 0.9379 ± 0.0007 |
+
+The standard deviations drop by 57 %, 41 % and 46 % — the largest reduction of
+the four configs, and the tightest MAE spread in this tutorial. The unsquashed
+run's slightly better RMSE point estimate is consistent with the raw
+high-degree columns buying a little extra headroom on the folds that happened
+to suit them.
 
 ### Legendre (heavy) — `ccpp_legendre_heavy.yaml`
-<sub>run `checkpoints/2026-07-23-21-19-2/train.log` — degree-3 + degree-2 Legendre basis, wide pools, CUDA</sub>
+<sub>run `checkpoints/2026-08-09-19-40/train.log` — degree-3 + degree-2 Legendre basis, `squash: True` (sigma), wide pools, CUDA</sub>
 
 ```
 ==================================================================
 5×2 cross-validation summary — 10 train/test measurements
 ==================================================================
 repeat   fold   RMSE(MW)    MAE(MW)        R²
-     1    A→B     4.1867     3.2796    0.9401
-     1    B→A     4.2825     3.3206    0.9367
-     2    A→B     4.2411     3.2911    0.9385
-     2    B→A     4.1682     3.2682    0.9401
-     3    A→B     4.1863     3.2701    0.9398
-     3    B→A     4.2332     3.2977    0.9385
-     4    A→B     4.2169     3.2844    0.9395
-     4    B→A     4.1723     3.2653    0.9397
-     5    A→B     4.1483     3.2830    0.9399
-     5    B→A     4.3168     3.3593    0.9371
+     1    A→B     4.2274     3.3015    0.9390
+     1    B→A     4.2768     3.3092    0.9369
+     2    A→B     4.2621     3.3253    0.9379
+     2    B→A     4.1870     3.2875    0.9396
+     3    A→B     4.2222     3.3081    0.9388
+     3    B→A     4.2393     3.3096    0.9383
+     4    A→B     4.2543     3.3201    0.9384
+     4    B→A     4.1898     3.2763    0.9392
+     5    A→B     4.1979     3.2832    0.9384
+     5    B→A     4.2824     3.3139    0.9381
 ------------------------------------------------------------------
-  RMSE = 4.2152 ± 0.0538 MW
-  MAE  = 3.2919 ± 0.0287 MW
-  R²   = 0.9390 ± 0.0013
+  RMSE = 4.2339 ± 0.0350 MW
+  MAE  = 3.3035 ± 0.0162 MW
+  R²   = 0.9384 ± 0.0008
 ```
+
+Same trade as the light config, and the same magnitude:
+
+| `ccpp_legendre_heavy.yaml` | MAE (MW) | RMSE (MW) | R² |
+|---|:--:|:--:|:--:|
+| `squash: False` (previous) | 3.2919 ± 0.0287 | 4.2152 ± 0.0538 | 0.9390 ± 0.0013 |
+| `squash: True` (sigma, current) | 3.3035 ± 0.0162 | 4.2339 ± 0.0350 | 0.9384 ± 0.0008 |
+
+Note what the wide pools buy over the light config once both are squashed:
+3.3035 vs 3.3084 MAE, a 0.005 MW gap against a 0.016 MW fold spread — the
+degree-2 family and the 7.5×/10× wider survivor and candidate pools are, on
+this dataset, spending 1.4 h of GPU time to reproduce a 12-minute CPU run.
+Pairwise Legendre neurons have simply run out of structure to find; adding
+*arity* rather than pool width is what moves the number (next section).
 
 ### Legendre (multi-input) — `ccpp_legendre_poly.yaml`
-<sub>run `checkpoints/2026-07-24-12-59/train.log` — degree-3 pair + four-input (dim 4) degree-3 Legendre, light pools, CPU</sub>
+<sub>run `checkpoints/2026-08-09-18-35/train.log` — degree-3 pair + four-input (dim 4) degree-3 Legendre, `squash: True` (sigma), light pools, CPU</sub>
 
 ```
 ==================================================================
 5×2 cross-validation summary — 10 train/test measurements
 ==================================================================
 repeat   fold   RMSE(MW)    MAE(MW)        R²
-     1    A→B     4.1223     3.2328    0.9420
-     1    B→A     4.2406     3.2893    0.9379
-     2    A→B     4.2021     3.2462    0.9396
-     2    B→A     4.1687     3.2746    0.9401
-     3    A→B     4.1556     3.2446    0.9407
-     3    B→A     4.2354     3.3139    0.9384
-     4    A→B     4.1985     3.2696    0.9400
-     4    B→A     4.1755     3.2654    0.9396
-     5    A→B     4.1526     3.2708    0.9398
-     5    B→A     4.2808     3.3196    0.9381
+     1    A→B     4.2037     3.2824    0.9396
+     1    B→A     4.2429     3.2729    0.9379
+     2    A→B     4.2537     3.2899    0.9381
+     2    B→A     4.1673     3.2578    0.9401
+     3    A→B     4.1971     3.2635    0.9395
+     3    B→A     4.2397     3.2974    0.9383
+     4    A→B     4.2248     3.2781    0.9392
+     4    B→A     4.1951     3.2711    0.9390
+     5    A→B     4.1797     3.2719    0.9390
+     5    B→A     4.2701     3.2975    0.9385
 ------------------------------------------------------------------
-  RMSE = 4.1932 ± 0.0481 MW
-  MAE  = 3.2727 ± 0.0285 MW
-  R²   = 0.9396 ± 0.0012
+  RMSE = 4.2174 ± 0.0339 MW
+  MAE  = 3.2782 ± 0.0135 MW
+  R²   = 0.9389 ± 0.0007
 ```
 
-On MAE, the Legendre light config (3.31 ± 0.03) slightly improves on the
-monomial default (3.34 ± 0.03), and the Legendre heavy config (3.29 ± 0.03)
-improves a little further. Adding the four-input Legendre neuron
-(`ccpp_legendre_poly.yaml`, **3.27 ± 0.03**) is the strongest orthogonal-basis
-variant: it edges past the heavy Legendre search while still on light pools /
-CPU, and closes to within ~0.01 MW of the heavy monomial search (3.26 ± 0.04) —
-effectively matching that result at a small fraction of its cost (~30 min CPU vs
-11.3 h CUDA). The joint four-input interaction the `dim: 4` neuron captures is
+Switching this config's two Legendre families to `squash: True` reproduces the
+pattern seen on the light config — the same trade, at about the same size:
+
+| `ccpp_legendre_poly.yaml` | MAE (MW) | RMSE (MW) | R² |
+|---|:--:|:--:|:--:|
+| `squash: False` (previous) | 3.2727 ± 0.0285 | 4.1932 ± 0.0481 | 0.9396 ± 0.0012 |
+| `squash: True` (sigma, current) | 3.2782 ± 0.0135 | 4.2174 ± 0.0339 | 0.9389 ± 0.0007 |
+
+The central estimate gives up a little — MAE +0.006, RMSE +0.024, both inside
+one previous standard deviation — while the spread falls 53 %, 30 % and 42 %.
+The effect on the mean is modest here for a specific reason: `ccpp.py` already
+divides the StandardScaler'd features by 3 (`ccpp.py:252`), so they largely sit
+inside [-1, 1] before any squash runs — the training log confirms it, reporting
+`std range [0.3333, 0.3333]` when it calibrates layer 0. The sigma squash is the
+principled version of that hand-rolled rescale — it measures the actual
+per-feature mean/std instead of assuming a divisor, it re-measures at every
+layer (where the `/3` says nothing about the survivors' scale: by layer 4 the log
+shows std spanning 0.33–0.96), and it bounds the tail the `/3` leaves outside.
+What it mainly buys on this dataset is fold-to-fold consistency rather than raw
+accuracy.
+
+### Legendre (multi-input, heavy) — `ccpp_legendre_poly_heavy.yaml`
+<sub>run `checkpoints/2026-08-09-21-04/train.log` — linear_cov + pair and multi-input (dim 4 & 6) Legendre families, `squash: True` (sigma), wide pools, CUDA</sub>
+
+```
+==================================================================
+5×2 cross-validation summary — 10 train/test measurements
+==================================================================
+repeat   fold   RMSE(MW)    MAE(MW)        R²
+     1    A→B     4.1979     3.2924    0.9398
+     1    B→A     4.2345     3.2707    0.9381
+     2    A→B     4.2375     3.2877    0.9386
+     2    B→A     4.1583     3.2504    0.9404
+     3    A→B     4.1783     3.2565    0.9401
+     3    B→A     4.2249     3.2776    0.9387
+     4    A→B     4.2265     3.2927    0.9392
+     4    B→A     4.1905     3.2688    0.9392
+     5    A→B     4.1721     3.2632    0.9392
+     5    B→A     4.2910     3.3168    0.9379
+------------------------------------------------------------------
+  RMSE = 4.2111 ± 0.0395 MW
+  MAE  = 3.2777 ± 0.0200 MW
+  R²   = 0.9391 ± 0.0008
+```
+
+This config pays the largest squash penalty of the four on the central estimate,
+and takes the largest speed-up:
+
+| `ccpp_legendre_poly_heavy.yaml` | MAE (MW) | RMSE (MW) | R² |
+|---|:--:|:--:|:--:|
+| `squash: False` (previous) | 3.2518 ± 0.0400 | 4.1726 ± 0.0605 | 0.9402 ± 0.0013 |
+| `squash: True` (sigma, current) | 3.2777 ± 0.0200 | 4.2111 ± 0.0395 | 0.9391 ± 0.0008 |
+
+MAE +0.026 and RMSE +0.039 — both still inside one unsquashed standard
+deviation, but this is the one config where the unsquashed run's point estimate
+was genuinely the best in the tutorial (3.2518) and the squashed one is not. The
+spread halves in exchange (−50 % / −35 % / −38 %) and the run drops from 13.9 h
+to 8.8 h. Which you prefer depends on what you report: the unsquashed
+configuration remains available (`squash: False` on each `legendre` entry) and is
+the right pick if the best single number matters more than its reproducibility.
+
+### Reading the Legendre results
+
+On MAE, the Legendre light config (3.31 ± 0.01 — the tightest spread of any
+config here) slightly improves on the monomial default (3.34 ± 0.03), and the
+heavy Legendre search (3.30 ± 0.02) adds essentially nothing for its 1.4 h of
+GPU time. What does move the number is **arity, not pool width**: adding the
+four-input Legendre neuron (`ccpp_legendre_poly.yaml`, **3.28 ± 0.01**) is the
+single largest step in the family, and it comes on light pools and a CPU in
+~25 minutes. The joint four-input interaction the `dim: 4` neuron captures is
 doing real work the pairwise-only Legendre families leave on the table.
+
+Scaling that up buys nothing further here: `ccpp_legendre_poly_heavy.yaml` —
+`linear_cov` plus degree-2/3 Legendre families at pair, `dim: 4` and `dim: 6`
+arity over wide pools on CUDA — lands at **3.2777 ± 0.0200** against the light
+multi-input config's **3.2782 ± 0.0135**, i.e. the same number to within a
+twentieth of a standard deviation, for 8.8 h of GPU against 25 min of CPU. Both
+remain ~0.018 MW behind the heavy monomial search (3.26 ± 0.04) — which held
+the best central estimate on every metric until the fine-tuned configs below.
 
 Every fold selects all four ambient variables (`features=AT, V, AP, RH`),
 confirming each input carries signal.
 
+## Fine-tuning the discovered network
+
+Everything above stops as soon as the structural search does. That leaves real
+accuracy on the table, because **nothing in the search ever optimizes a layer
+jointly, and nothing optimizes across layers at all**: each neuron is fitted
+independently against the target, blind to its neighbours, and once a layer is
+selected its coefficients are frozen for the rest of the run. Layer 0 is chosen
+without any knowledge of what layer 3 will do with it, and is never revisited.
+
+The `*_finetune` configs add three stages on top of the config they are named
+after, changing nothing else — same families, same pools, same device, same
+seed:
+
+1. **Per-layer joint fine-tune** (`train.layer_finetune`) — after a layer's
+   survivors are selected, train their polynomial coefficients together through
+   a temporary `Linear(d_layer, 1)` head. First time a layer is optimized as a
+   whole, so overlapping neurons can specialize instead of all chasing the same
+   dominant AT/V signal.
+2. **Output head** (`model.use_output_projection`) — a real `out_proj` fitted
+   over the finished, frozen network. This is **not optional**: stage 1 turns
+   the survivors into a *basis* for a head rather than individual predictors, so
+   the usual single-best-neuron readout collapses without it (MAE ~13). Keep
+   `num_out_neurons` equal to `nbest_neurons`, or the head is fitted over fewer
+   columns than the fine-tune optimized — at 6-of-8 that cost 0.05 MW and
+   doubled the fold spread.
+3. **End-to-end pass** (`finetune_end_to_end`) — unfreeze the entire model,
+   head included, and train it jointly with AdamW at `lr 1e-5` under a
+   reduce-on-plateau schedule. This is the only point at which a gradient flows
+   the whole way through the network.
+
+### Results
+
+| Config | base MAE | **fine-tuned MAE** | Δ | RMSE | R² | Wall-clock |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `ccpp_legendre_poly_heavy_finetune.yaml` | 3.2777 ± 0.0200 | **3.1284 ± 0.0485** | −0.149 | 4.0943 ± 0.0662 | 0.9424 ± 0.0017 | ≈ 14.7 h CUDA |
+| `ccpp_legendre_heavy_finetune.yaml` | 3.3035 ± 0.0162 | **3.1408 ± 0.0620** | −0.163 | 4.0890 ± 0.0688 | 0.9426 ± 0.0017 | ≈ 2.5 h CUDA |
+| `ccpp_legendre_poly_finetune.yaml` | 3.2782 ± 0.0135 | **3.1495 ± 0.0696** | −0.129 | 4.0940 ± 0.0773 | 0.9424 ± 0.0021 | ≈ 51 min CPU |
+| `ccpp_legendre_finetune.yaml` | 3.3084 ± 0.0147 | **3.1748 ± 0.0520** | −0.134 | 4.1152 ± 0.0539 | 0.9418 ± 0.0014 | ≈ 65 min CPU |
+
+<sub>runs `checkpoints/2026-08-11-15-58`, `2026-08-11-13-10`, `2026-08-11-12-13`,
+`2026-08-11-10-19` — all four converged on 10/10 folds</sub>
+
+The stack is worth **0.13–0.16 MW of MAE** on all four configs, which is 6–11×
+the fold-to-fold spread of the base runs — far too large to be noise. It also
+reorders the table: the cheapest fine-tuned config (51 min CPU) beats the
+11.3 h monomial GPU search by 0.11 MW.
+
+Three observations worth drawing out:
+
+- **The fine-tune substitutes for search budget.** Fine-tuned *light* pools
+  (3.1495, 8/60, CPU) beat every un-fine-tuned config including the two heavy
+  GPU searches. Between the fine-tuned configs themselves the spread is only
+  0.046 MW — inside one standard deviation — while their cost spans a factor of
+  ~17, from 51 min CPU to 14.7 h GPU. The widest search does take the best MAE,
+  but by 0.021 MW over the cheapest, and it loses on RMSE and R². Once the
+  fine-tune is on, which base config you started from barely matters.
+- **It costs spread.** Every fine-tuned run has a wider fold spread than its
+  base (±0.052–0.070 vs ±0.013–0.016). The gain is ~2.5× that widened spread so
+  the ranking is not in doubt, but the tight reproducibility the squash bought
+  is partly given back.
+- **Convergence must be checked.** All three runs above show `finetune early
+  stop` on 10/10 folds (the light config needed `max_steps: 20000` to get
+  there — at 5000 only 6/10 converged and it scored 3.1916). If a run's log
+  does not print that line for every fold, its numbers are truncated rather
+  than converged, not a property of the method.
+
+### The end-to-end pass needs its head
+
+One negative result is recorded in `ccpp_legendre_finetune.yaml` because it is
+easy to re-derive by accident. Stage 3 was first written to *drop* the head and
+fine-tune the bare network against its own best-error neuron, aiming for a pure
+polynomial model with no learned readout. That scored **3.4637 ± 0.2730** —
+worse than doing nothing. Removing the head collapses the readout to MAE ~12
+and the pass has to rebuild a predictor from there, reaching near-head quality
+on 7 of 10 folds and a bad basin on the other 3. A learning-rate sweep over two
+decades and pruning to the best path first both failed to fix it. Keeping the
+head makes the pass monotone instead: every fold's dev loss improved or held.
+
 ## Comparison with published results
 
 The canonical CCPP metric under 5×2 CV is **MAE**. On that apples-to-apples
-protocol, TorchSONN's heavy config lands right in the published range:
+protocol, TorchSONN's strongest configs land right in the published range:
 
 | Study | Method | Protocol | MAE (MW) | RMSE (MW) |
 |-------|--------|----------|:--------:|:---------:|
 | Tüfekci (2014) | Bagging REP-tree | 5×2 CV | **3.22** | — |
 | Torre et al. (2019) | data-driven PCE (polynomial) | 5×2 CV (same splits) | **3.11 ± 0.03** | — |
+| **TorchSONN — Legendre poly heavy + fine-tune** (`ccpp_legendre_poly_heavy_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.13 ± 0.05** | 4.09 ± 0.07 |
+| **TorchSONN — Legendre heavy + fine-tune** (`ccpp_legendre_heavy_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.14 ± 0.06** | 4.09 ± 0.07 |
+| **TorchSONN — Legendre poly + fine-tune** (`ccpp_legendre_poly_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.15 ± 0.07** | 4.09 ± 0.08 |
+| **TorchSONN — Legendre + fine-tune** (`ccpp_legendre_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.17 ± 0.05** | 4.12 ± 0.05 |
 | **TorchSONN — heavy** (`ccpp_heavy.yaml`) | self-organizing polynomial net | 5×2 CV | **3.26 ± 0.04** | 4.18 ± 0.05 |
-| **TorchSONN — Legendre poly** (`ccpp_legendre_poly.yaml`) | self-organizing polynomial net | 5×2 CV | **3.27 ± 0.03** | 4.19 ± 0.05 |
+| **TorchSONN — Legendre poly** (`ccpp_legendre_poly.yaml`) | self-organizing polynomial net | 5×2 CV | **3.28 ± 0.01** | 4.22 ± 0.03 |
 | **TorchSONN — default** (`ccpp.yaml`) | self-organizing polynomial net | 5×2 CV | **3.34 ± 0.03** | 4.26 ± 0.05 |
 | Siddiqui et al. (2021) | GBRT (450 trees) | single 90/10 split | — | 2.58 † |
 
 **Reading the table:**
 
-- **TorchSONN (heavy) MAE 3.26 ± 0.04** matches the canonical Tüfekci (2014)
-  tree-ensemble benchmark (3.22) to within one standard deviation of the CV
-  spread, and comes within ~0.15 MW of Torre et al.'s polynomial-chaos result
-  (3.11) — the current CV state of the art. The **default** config trails the
-  heavy one by only ~0.08 MW while running in minutes on a CPU.
-- **TorchSONN (Legendre poly) MAE 3.27 ± 0.03** reaches the heavy config's
-  accuracy (3.26) within noise, but on light pools and CPU (~30 min) — a single
-  four-input Legendre neuron (`dim: 4`) over the raw ambient variables recovers
-  most of what the heavy monomial search buys with its far larger pools, a GPU,
-  and ~36× the compute.
+- **TorchSONN's fine-tuned configs are competitive with the CV state of the
+  art.** The best (3.13 ± 0.05) clears the canonical Tüfekci (2014) tree-ensemble
+  benchmark (3.22) by ~0.09 MW and sits ~0.02 MW from Torre et al.'s
+  polynomial-chaos result (3.11 ± 0.03) — a gap well inside the combined
+  fold-to-fold spread, so the two are not distinguishable on this protocol. All
+  four fine-tuned configs land in that band (3.13–3.17).
+- **The fine-tune, not the search, is what closed the gap.** Without it the best
+  config was 3.26 ± 0.04; the [fine-tuning stack](#fine-tuning-the-discovered-network)
+  is worth 0.13–0.16 MW on every config it was applied to. The cheapest
+  fine-tuned run (`ccpp_legendre_poly_finetune.yaml`, 3.15, ~51 min CPU) beats
+  the 11.3 h monomial GPU search by 0.11 MW, and comes within 0.02 MW of the
+  14.7 h fine-tuned poly-heavy run at ~1/17 of its cost. On this dataset a joint
+  optimization pass buys far more than a wider architecture search.
+- **Un-fine-tuned, pool width buys almost nothing; arity does.**
+  `ccpp_legendre_poly.yaml` (3.28 ± 0.01, light pools, ~25 min CPU) matches the
+  8.8 h `ccpp_legendre_poly_heavy.yaml` GPU run to within a twentieth of a
+  standard deviation. A single four-input Legendre neuron (`dim: 4`) recovers
+  most of what the heavy monomial search buys with ~27× the compute.
+- These Legendre figures are the `squash: True` runs, which trade ~0.01–0.03 MW
+  of MAE for roughly half the fold-to-fold spread — see
+  [The squash switch](#the-squash-switch). The fine-tuned rows trade some of
+  that spread back (±0.05–0.07), which is why their error bars are wider than
+  the searches they are built on.
 - **Torre et al.** run their polynomial method on Tüfekci's *exact* CV splits
   and beat the tree ensemble with lower variance — direct evidence that a
   polynomial model is SOTA-competitive on CCPP. TorchSONN, being a

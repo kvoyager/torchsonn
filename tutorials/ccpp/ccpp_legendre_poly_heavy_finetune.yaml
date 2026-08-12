@@ -1,0 +1,438 @@
+# UCI Combined Cycle Power Plant regression — 9568 samples, 4 features, target
+# is net hourly electrical output PE in MW (Tüfekci & Kaya, 2014).
+#
+# ccpp_legendre_poly_heavy.yaml + the per-layer joint fine-tune
+# (`train.layer_finetune`) + the linear output head the fine-tune requires
+# (`use_output_projection`). Same families, same pools, same device, same seed
+# as that config — the fine-tune and its head are the only difference:
+#   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly_heavy
+#   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly_heavy_finetune
+#
+# The two settings are one change, not two: the fine-tune turns the survivors
+# into a basis for a head, so removing the head collapses the readout (MAE ~13).
+# See the use_output_projection note below.
+#
+# This recipe is the light config's, where it is the tutorial's best result:
+#   ccpp_legendre.yaml           MAE 3.3084 +/- 0.0147
+#   ccpp_legendre_finetune.yaml  MAE 3.2365 +/- 0.0386   (same change as here)
+# Baseline for THIS config is ccpp_legendre_poly_heavy.yaml:
+#   MAE 3.2777 +/- 0.0200   RMSE 4.2111 +/- 0.0395   R2 0.9391 +/- 0.0008
+# NOT YET RUN — no 5x2 CV numbers for this file. The base run is ~8.8 h on CUDA across seven families, and this adds a 60-wide fine-tune per layer on top. This is the expensive one — consider ccpp_legendre_poly_finetune.yaml first, since on the base configs the light multi-input model already matches this one's MAE.
+#
+# Compose against the SONNConfig schema first (defaults filled in), then layer
+# this tutorial's overrides on top via `_self_`.
+defaults:
+  - default
+  - _self_
+
+# Top-level flag (declared in SONNConfig); set true to resume training from
+# the latest checkpoint in `train.checkpoint_dir`.
+resume: false
+
+# === The point of this config =================================================
+# Top-level flag (declared in SONNConfig, read by ccpp.py after
+# load_model_checkpoint): drop model.out_proj, then call
+# Trainer.train_finetune over every parameter in the network.
+#
+# The pass optimizes `_finetune_prediction` — for a headless regressor, the
+# best-error neuron's column — so it trains exactly what `_predict_mw` reads.
+# Gradients reach every layer through that one column, so earlier layers are
+# refined for their contribution to it rather than for their own per-neuron
+# error. Tuned by `train.finetune_train` at the bottom of this file, which is a
+# *separate* block from `out_proj_train` precisely so this pass can use a much
+# smaller learning rate than the per-layer fine-tunes.
+#
+# The refined weights are not checkpointed; the fold's metrics come from the
+# in-memory model. Set false to get ccpp_legendre_finetune.yaml back exactly.
+finetune_end_to_end: true
+
+# Keep the out_proj head through the end-to-end pass, and train it along with
+# everything else. This is the whole difference from the earlier version of
+# this config, which dropped the head first.
+#
+# Dropping it was a mistake worth recording. The per-layer fine-tune leaves the
+# survivors as a *basis* for the head, not as individual predictors, so
+# removing it collapsed the readout to MAE ~12 and the pass had to rebuild a
+# predictor from there. It got most of the way back (3.4637 +/- 0.2730) but
+# landed in a bad basin on 3 of 10 folds and never matched the head version.
+# Keeping the head means the pass starts from a model that already works and
+# only refines it, against exactly the readout report() will score.
+finetune_drop_head: false
+
+# Requires finetune_drop_head (ccpp.py raises otherwise): out_proj reads
+# num_out_neurons columns and prune() leaves one, so the head would be fed
+# mostly zero-padding. Kept off here for that reason. It was a measured no-op
+# for accuracy anyway when the head *was* dropped — off-path weights have zero
+# gradient, so they never move whether pruned away or not, and fold 1 matched
+# the unpruned pass to four decimals at every learning rate tried.
+finetune_prune_first: false
+
+# Hydra: keep auto-chdir disabled so the YAML's relative paths still resolve
+# from the launch cwd rather than outputs/<date>/<time>/. The README launches
+# tutorials from the repo root (`python -m tutorials.ccpp.ccpp`); pin the
+# per-run output dir under the tutorial folder so that documented command keeps
+# its train.log / .hydra artifacts tutorial-local instead of dropping an
+# `outputs/` tree at the repo root. (`tutorials/ccpp/outputs` is gitignored.)
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# --- Model -------------------------------------------------------------------
+model:
+  type: regressor
+  # CCPP output is dominated by a near-linear dependence on ambient temperature
+  # and exhaust vacuum, with mild saturation curvature at the temperature
+  # extremes and interactions among the four ambient variables that jointly set
+  # the plant's operating point.
+  #
+  # This is the heavy multi-input Legendre variant: the widest search in the
+  # tutorial on the orthogonal-basis side. It takes ccpp_legendre_poly.yaml's
+  # idea — pair Legendre neurons plus a multi-input one over all four ambient
+  # variables at once, the orthogonal-basis analog of the default ccpp.yaml's
+  # `polyquad(dim=4)` — and scales it on three axes at once: a `linear_cov`
+  # family to anchor the near-linear bulk, both degree 2 and degree 3 of every
+  # Legendre family, arity up to `dim: 6`, and the heavy configs' wide pools
+  # (60 / 600) on CUDA.
+  #
+  # Read the README before reaching for it: on CCPP all that extra search buys
+  # nothing measurable over the light ccpp_legendre_poly.yaml — 3.2777 ± 0.0200
+  # MAE against 3.2782 ± 0.0135, i.e. the same number, for ≈8.8 h of GPU time
+  # against ≈25 min of CPU. It is kept as the evidence for that statement, and
+  # as the starting point for a wider search on a dataset where arity beyond
+  # dim 4 actually pays.
+  # Per-neuron-type activation: each entry below sets its own `activation` in
+  # its options dict. Entries that omit `activation:` default to None →
+  # `nn.Identity()`.
+  ref_functions:
+    # CCPP's surface is dominated by a near-linear dependence on AT and V, so a
+    # cheap 4-coefficient linear_cov (w0 + w1*xi + w2*xj + w3*xi*xj) is often the
+    # honest choice for a layer's residual; including it lets selection reach for
+    # a Legendre family only where the curvature earns the extra columns.
+    - linear_cov:
+        activation: ""
+    # (1) Legendre orthogonal-polynomial neurons over each input pair — the
+    # ccpp_legendre.yaml baseline family, at both degrees. Their basis
+    # {P1, P2, ...} is a better-conditioned stand-in for the raw-power terms
+    # x, x², x³ — the Legendre Gram matrix is well behaved where the monomial one
+    # is a near-singular Hilbert matrix — so they capture the plant's mild
+    # saturation curvature without the ill-conditioning higher powers bring.
+    # squash: True maps each input into [-1, 1] — the only interval where the
+    # basis is bounded and orthogonal — before the recurrence runs, via
+    # model.squash_method ('sigma' by default: standardize on the training set's
+    # per-feature mean/std, measured once per layer on that layer's own inputs,
+    # pass everything within ±2 σ through linearly onto ±0.75, and saturate only
+    # beyond that). Set squash: False to feed the recurrence raw at up to
+    # ±3.3 σ — what this config did before, and the one place in the tutorial
+    # where unsquashed wins on the central estimate (3.2518 vs 3.2777 MAE), at
+    # the cost of double the fold-to-fold spread and a 13.9 h run. cross defaults
+    # to True, adding the xi*xj interaction term, so a degree-3 pair Legendre
+    # neuron has 1 + 2·3 + 1 = 8 coefficients and a degree-2 one 1 + 2·2 + 1 = 6.
+    - legendre:
+        degree: 2
+        squash: True
+        activation: ""
+    - legendre:
+        degree: 3
+        squash: True
+        activation: ""
+    # (2) Multi-input Legendre neurons over `dim: 4` and `dim: 6` inputs. A
+    # dim-d degree-k neuron's design row is the constant, the univariate Legendre
+    # columns P1..Pk for each of the d inputs (d·k), and one bilinear ui·uj per
+    # input pair (C(d,2)) — additive univariate curvature plus pairwise
+    # interactions, without the full tensor-product blow-up. So dim 4 / degree 3
+    # is 1 + 12 + 6 = 19 coefficients (vs C(4+3,3) = 35 for the full product) and
+    # dim 6 / degree 3 is 1 + 18 + 15 = 34.
+    #
+    # At layer 0 there are only 4 features, so the dim-4 family has exactly
+    # C(4,4) = 1 candidate — it consumes all four ambient variables at once, the
+    # orthogonal-basis counterpart of ccpp.yaml's four-input polyquad — and the
+    # dim-6 family has none at all (SONN.create_layer drops any family whose
+    # arity exceeds the layer's input width, so dim 6 only starts contributing at
+    # layer 1). Under `shortcut` the deeper layers' wider input set (survivors +
+    # the 4 raw features) yields many more combinations of both, capped by
+    # max_neuron_models. squash: True for the same reason as the pair families;
+    # even the 34-coefficient dim-6 fit is well determined against each fold's
+    # ~3800 training rows.
+    - legendre:
+        degree: 2
+        dim: 4
+        squash: True
+        activation: ""
+    - legendre:
+        degree: 2
+        dim: 6
+        squash: True
+        activation: ""
+    - legendre:
+        degree: 3
+        dim: 4
+        squash: True
+        activation: ""
+    - legendre:
+        degree: 3
+        dim: 6
+        squash: True
+        activation: ""
+  # Shortcut keeps the raw 4 inputs available to every layer — useful because
+  # layer 0 already discovers the bulk of the (linear) signal, and later layers
+  # should be able to add residual interaction terms over the raw variables
+  # rather than only over layer-0 combinations. It is also what lets the
+  # multi-input families grow past their layer-0 candidate counts: deeper layers
+  # see survivors + the 4 raw features, so C(n, 4) climbs well above 1 and the
+  # dim-6 family (which has no layer-0 candidate at all) starts contributing.
+  shortcut: True
+  # 5×2 cross-validation trains the model 10 times (once per fold), so per-fit
+  # cost is what makes the whole run tractable. These two knobs dominate it:
+  # nbest_neurons sets each layer's survivor pool (and thus the next layer's
+  # input width under `shortcut`), and max_neuron_models caps the candidate
+  # ensemble built per family per layer. This variant takes the heavy configs'
+  # wide values (60 / 600) — ≈8.8 h on CUDA for the logged run; the light values
+  # (8 / 60, a single degree-3 pair family plus one dim-4 family) live in
+  # ccpp_legendre_poly.yaml and finish in ≈25 min on CPU for the same MAE:
+  #   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly
+  #
+  # At layer 0 the pair families enumerate C(4,2) = 6 candidates each and the
+  # dim-4 families exactly C(4,4) = 1 (all far under max_neuron_models, so they
+  # are built in full) while the dim-6 families are skipped for want of inputs;
+  # with `shortcut` the input width — and so every family's candidate count —
+  # grows at deeper layers, which is where the 600 cap actually bites.
+  nbest_neurons: 60
+  max_neuron_models: 600
+  # With squash: True every Legendre column is evaluated on [-1, 1], so |P_k|
+  # <= 1 and the per-neuron output is bounded by the sum of |coefficients| —
+  # orders of magnitude under this clamp, which therefore never binds. Kept at
+  # the squash: False value so the two variants stay directly comparable (there
+  # the columns ran on the raw ±3.3 σ range, where P3 reaches ~85 at the
+  # extremes and the clamp was real headroom rather than a formality).
+  output_clamp_value: 1.0e+4
+
+  # === REQUIRED by layer_finetune — do not set this back to False ============
+  # Every config in this tutorial *without* a fine-tune runs
+  # use_output_projection: False, because for a plain regressor the last layer's
+  # best-error neuron already emits the prediction and report() reads that column
+  # directly. That works only because each neuron is fitted independently against
+  # the target, so every survivor is individually calibrated to y.
+  #
+  # layer_finetune destroys that property by design: it trains the survivors
+  # jointly through a temporary Linear(d_layer, 1) head, so they stop being
+  # competing predictors and become a *basis* the head combines. Nothing anchors
+  # any single neuron to y's scale or mean afterwards — the head absorbs both.
+  # Measured on ccpp_legendre_finetune.yaml, reading one column raw then gives
+  # MAE ~13 against 3.33, and even an optimal affine rescale only reaches ~10.
+  # So the head has to be kept: report() reads out_proj, the object the
+  # fine-tune was optimizing all along.
+  use_output_projection: True
+  # KEEP THIS EQUAL TO nbest_neurons (60). The fine-tune's temporary head
+  # spans layer.d_model — every survivor — so the weights are optimized as a
+  # basis for a head over *all* of them; fitting the final head over a subset
+  # throws away signal the fine-tune deliberately placed in the dropped columns.
+  # Measured on the light config, everything else fixed: 6-of-8 gave MAE
+  # 3.2869 +/- 0.0732, 8-of-8 gave 3.2365 +/- 0.0386 — dropping two of eight
+  # columns cost 0.05 MW and doubled the fold spread.
+  num_out_neurons: 60
+
+# --- Training ----------------------------------------------------------------
+train:
+  seed: 10
+  # Each fold's ~3800 train samples fit in a single batch, so every LBFGS step
+  # is a true full-batch update with stable curvature pairs.
+  batch_size: 8192
+  # Seven families at 600 candidates each build pools large enough to amortize
+  # GPU kernel-launch overhead, so CUDA is clearly the faster choice here —
+  # unlike the light ccpp_legendre_poly.yaml, whose small per-neuron problems
+  # run faster on CPU. Override with `train.device=cpu` to run without the GPU,
+  # but expect the ≈8.8 h logged run to grow substantially.
+  device: cuda
+  dtype: float32
+
+  criterion_type: validate
+  error_alpha: 0.5
+  layer_err_criterion: top
+  criterion_minimum_width: 2
+  stop_train_epsilon_condition: 0.001
+  # CCPP is a shallow, mostly-linear surface — early-stop on the validate-error
+  # plateau usually triggers within the first few layers well before this cap.
+  max_layer_count: 50
+
+  # Decorrelate survivors so each layer feeds the next an independent basis.
+  # 0.2 keeps any candidate whose residual norm survives at ≥20 % of its
+  # centered norm after Gram-Schmidt against the already-selected survivors.
+  neuron_selection_method: omp_mixed
+#  neuron_selection_method: plain
+  neuron_selection_orth_threshold: 0.05
+
+  # Mild L2 (ridge) penalty on each neuron's polynomial coefficient fit. The
+  # families here span 4 coefficients (linear_cov) to 34 (dim 6, degree 3); a
+  # small penalty keeps the fit from chasing residual noise in the higher-degree
+  # and cross columns — it matters most for the widest neurons, which is also
+  # why this config is the most worth sweeping. Only the polynomial coefficients
+  # are penalized; the dev/test metrics reported by report() always see
+  # ridge_alpha=0, so they measure pure predictive quality. Tune via Hydra
+  # multirun:
+  #   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly_heavy -m train.ridge_alpha=0.001,0.01,0.05
+  ridge_alpha: 0.001
+
+  # LBFGS — convex weight fit per neuron-model. On a per-neuron MSE objective
+  # this converges in tens of iterations (essentially iterative closed-form).
+  optimizer:
+    name: lbfgs
+    verbose: True
+    optimizer_params:
+      lr: 1e-1
+      min_lr: 1e-2
+      gamma: 0.5
+      history_size: 10
+      clip_norm: 5.0
+  steps: 500
+  shuffle: True
+
+  eval_step_interval: 5
+  eval_smoothing_factor: 0.2
+  early_stop_tolerance_steps: 3
+  early_stop_patience: 1e-3
+  early_stop_completion_percentage: 100
+  train_loss_tol: 0.001
+  train_loss_window: 20
+
+  # Checkpointing — local to the tutorial folder so artifacts don't collide
+  # with the other tutorials. Path is relative to the launch cwd; the README
+  # runs tutorials from the repo root (`python -m tutorials.ccpp.ccpp`), so
+  # this resolves to <repo>/tutorials/ccpp/checkpoints. get_checkpoint_dir
+  # mkdirs only the final component (no parents=True), and tutorials/ccpp
+  # already exists, so the dir is created cleanly. `checkpoints` is gitignored.
+  save_interval: 500
+  save_last_layer: True
+  keep_last_n: 5
+  skip_saving_at_epoch_end: True
+  checkpoint_dir: "checkpoints"
+
+  # === Stage 1 of 2: the per-layer fine-tune ==================================
+  # Per-layer joint fine-tune, run by train_layer after neuron_selection has
+  # picked the layer's survivors and before the layer-completed checkpoint.
+  #
+  # What it does: freezes the whole model, unfreezes exactly the surviving
+  # neurons' polynomial `weight`s, attaches a temporary nn.Linear(d_layer, 1)
+  # head, and trains the two together against the model's loss (NormMSE for a
+  # regressor) on the train split, early-stopping on the dev split. The head is
+  # thrown away; only the refined polynomial coefficients persist, and the real
+  # out_proj head is fitted separately at the end of the run.
+  #
+  # Why it helps: the per-neuron fits that precede it are independent — each
+  # neuron minimizes its own error against the target, blind to what the other
+  # survivors are doing. This pass is the first time the layer is optimized as a
+  # whole, so overlapping neurons can specialize instead of all chasing the same
+  # dominant AT/V signal. Every deeper layer then trains on the refined outputs.
+  #
+  # On the light config this was worth 0.072 MW of MAE (3.3084 -> 3.2365), about
+  # 1.9x that run's own fold spread, and it made the run *shorter*: layers that
+  # carry more signal trip the growth criterion sooner (4-5 layers vs 7-8).
+  # Whether the same holds on ccpp_legendre_poly_heavy.yaml — which starts from
+  # MAE 3.2777 +/- 0.0200 — is what this config measures.
+  #
+  # Cost note: this adds one optimization per layer over the full training
+  # split, on top of the per-neuron fits, and the head it fits here is
+  # 60 wide. The base run is ~8.8 h on CUDA across seven families, and this adds a 60-wide fine-tune per layer on top. This is the expensive one — consider ccpp_legendre_poly_finetune.yaml first, since on the base configs the light multi-input model already matches this one's MAE.
+  #
+  # proj_weight / proj_bias are deliberately left frozen: the loss doesn't flow
+  # through them in this pass.
+  layer_finetune: True
+
+  # Hyperparameters for the fine-tune. NOTE: this block is named for
+  # train_out_proj and drives BOTH passes — layer_finetune shares it verbatim
+  # (schemas.py keeps the config surface small this way). In the non-fine-tune
+  # configs these values are inert; here they are live for both, so a change
+  # affects every per-layer fine-tune and the final head fit together.
+  # Values carried over unchanged from ccpp_legendre_finetune.yaml, where they
+  # were the settings that produced MAE 3.2365 +/- 0.0386.
+  out_proj_train:
+    # lbfgs keeps the fine-tune in the same regime as the rest of the config,
+    # and each fold's ~3060 train rows are a natural full batch. Unlike the
+    # per-neuron fits this objective is *not* convex — the polynomial weights
+    # and the head's weights multiply — so LBFGS lands in a local minimum; for a
+    # single refinement pass that is expected and fine. 'adam' / 'sgd' are the
+    # alternatives and are worth trying here, where the head is 60 wide and
+    # full-batch curvature is correspondingly more expensive than at width 8.
+    optimizer: lbfgs
+    # Budget per layer. Each step is a full LBFGS .step(closure), itself up to
+    # lbfgs_max_iter inner iterations. Early stopping normally ends it well
+    # before the cap — if the log shows layers running to 100 without printing
+    # "finetune early stop", raise this, because the numbers are then truncated
+    # rather than converged.
+    max_steps: 100
+    lr: 0.1
+    # Manual L2 inside the closure (PyTorch's LBFGS takes no weight_decay),
+    # applied to every trainable parameter — the head *and* the polynomial
+    # weights. Keep it small: these coefficients were already ridge-penalized
+    # during the per-neuron fit (train.ridge_alpha above), and this stacks on
+    # top. Set to 0.0 to let the fine-tune move them freely.
+    weight_decay: 1.0e-4
+    # Evaluate on dev every 5 steps; stop after 6 consecutive evaluations with
+    # no improvement beyond early_stop_min_delta — a 30-step patience window,
+    # long enough to ride out an LBFGS line-search plateau.
+    eval_interval: 5
+    early_stop_patience: 6
+    early_stop_min_delta: 1.0e-5
+    # ReduceLROnPlateau settings — consumed by the adam/sgd path only. The LBFGS
+    # path has no scheduler (its line search sets the step size), so these are
+    # inert unless you switch `optimizer` above.
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-5
+    # LBFGS internals. max_iter is inner iterations per .step(); strong_wolfe is
+    # what keeps a non-convex objective from taking a divergent step.
+    lbfgs_history_size: 20
+    lbfgs_max_iter: 20
+    lbfgs_line_search: strong_wolfe
+
+  # === Stage 2 of 2: the end-to-end pass ======================================
+  # Hyperparameters for Trainer.train_finetune, the pass `finetune_end_to_end`
+  # at the top of this file switches on. A dedicated block, not a reuse of
+  # out_proj_train above: this pass moves every weight in the network at once,
+  # which wants a far gentler step than the per-layer refinements do.
+  finetune_train:
+    # AdamW. train_finetune has no full-batch closure path (it raises on
+    # 'lbfgs'), and for a deep composition of polynomial layers a per-parameter
+    # adaptive step is the right shape anyway. The W matters here: decoupled
+    # weight decay is applied to the weights directly instead of entering the
+    # gradient and being rescaled by the second-moment estimate, so the penalty
+    # means the same thing for a layer-0 coefficient and a layer-4 one, which
+    # plain Adam's L2 does not. 'adam' and 'sgd' are the alternatives.
+    optimizer: adamw
+    # Deliberately tiny. Unlike the head-dropping version of this config, the
+    # pass now starts from a model that already predicts at MAE ~3.25 — every
+    # weight is near a good optimum and the job is refinement, not recovery. A
+    # large step here would discard the structural search rather than polish it.
+    # The plateau schedule below anneals from this, so it is a ceiling.
+    lr: 1.0e-5
+    # Mild, and a genuine regularizer now that AdamW decouples it. Nonzero is
+    # safe here only because the head is kept: the earlier head-dropping variant
+    # had to *grow* the output neuron's coefficients ~3.4x to restore the
+    # target's scale, and any decay pulled directly against that. Set 0.0 to
+    # make this pass equivalent to plain Adam.
+    weight_decay: 1.0e-4
+    # Each fold is one full batch (batch_size 8192 > ~3060 train rows), so a
+    # step is a single full-batch AdamW update, ~44/s on CPU — 20000 steps is
+    # ~7.6 min per fold at the cap, and most folds stop far earlier.
+    #
+    # CHECK THE LOG for "finetune early stop" on every fold. If some fold does
+    # not print it, the budget is binding and that fold's number is truncated
+    # rather than converged. At 5000 this was live: only 6 of 10 folds stopped
+    # (one needed 4900), the other 4 ran to the cap still improving, and the
+    # run still scored MAE 3.1916 — a lower bound. Raised to 20000 for headroom.
+    max_steps: 20000
+    eval_interval: 25
+    early_stop_patience: 20
+    early_stop_min_delta: 1.0e-6
+    # ReduceLROnPlateau, live on this pass (the lbfgs block above ignores it).
+    # Halve the step whenever dev loss stalls for 5 evaluations; with lr_min
+    # 1e-8 that allows ~10 halvings below the 1e-5 start before the schedule
+    # bottoms out, so the tail of the run keeps refining instead of bouncing.
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-8
+    # Inert here (AdamW), kept so the block stays a complete OutProjTrainConfig.
+    lbfgs_history_size: 20
+    lbfgs_max_iter: 20
+    lbfgs_line_search: strong_wolfe

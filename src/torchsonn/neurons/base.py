@@ -382,6 +382,26 @@ class BasePolynomNeuron(SONNModule, ABC):
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
+    @property
+    def needs_squash_stats(self) -> bool:
+        """Whether `fit_squash` would do anything for this neuron.
+
+        Lets the trainer skip the per-layer statistics pass entirely when no
+        neuron in the layer has a data-dependent squash.
+        """
+        return False
+
+    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Calibrate any data-dependent input squash from layer-input statistics.
+
+        `mean` / `std` are per-layer-input-feature vectors of length
+        `num_feat`, measured over the training set before this layer trains.
+        Only the orthogonal-polynomial family currently squashes its inputs, so
+        the base implementation does nothing — see
+        `BaseOrthogonalNeuron.fit_squash`.
+        """
+        return
+
     def prune(self, idxs: torch.Tensor) -> None:
         self.src_idxs = self.src_idxs.index_select(0, idxs)
         self.created_neuron_idxs = self.created_neuron_idxs.index_select(0, idxs)
@@ -389,3 +409,14 @@ class BasePolynomNeuron(SONNModule, ABC):
         if self.proj_weight is not None:
             self.proj_weight = nn.Parameter(self.proj_weight.index_select(0, idxs))
             self.proj_bias   = nn.Parameter(self.proj_bias.index_select(0, idxs))
+        self._prune_extra(idxs)
+
+    def _prune_extra(self, idxs: torch.Tensor) -> None:
+        """Hook for subclasses carrying extra per-neuron state.
+
+        Anything with a leading `num_neurons` axis must be index_select'd here
+        alongside `weight`, or it goes out of alignment with the surviving
+        neurons. This matters most for registered buffers, which
+        `Trainer.create_loss_functions` vmaps with in_dims=0.
+        """
+        return

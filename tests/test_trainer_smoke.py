@@ -311,6 +311,105 @@ def test_train_with_omp_mixed_selection(tmp_path):
     trainer.train(model, train_dl, dev_dl, test_dl, verbose=False)
 
 
+def _offset_dl(n: int, d: int = 4, seed: int = 0) -> DataLoader:
+    """Far off-centre, wide-scale features — identity stats would be visibly
+    wrong, so a calibrated squash has to actually move to pass."""
+    rng = np.random.default_rng(seed)
+    x = (rng.standard_normal((n, d)) * 25.0 + 100.0).astype("float32")
+    y = (x[:, 0] + 0.5 * x[:, 1] * x[:, 2]).astype("float32")
+    ds = SONNDataset(torch.from_numpy(x), torch.from_numpy(y))
+    return DataLoader(ds, batch_size=8)
+
+
+def _legendre_cfg(tmp_path, **model_overrides):
+    cfg = _cfg(tmp_path, max_layer_count=2)
+    return OmegaConf.merge(cfg, OmegaConf.create({
+        "model": {"ref_functions": ["legendre"], "shortcut": True,
+                  **model_overrides},
+    }))
+
+
+@pytest.mark.parametrize("squash_method", ["sigma", "tanh"])
+def test_train_legendre_end_to_end(tmp_path, squash_method):
+    """The orthogonal-polynomial families carry per-neuron buffers that the
+    trainer vmaps at in_dims=0 — a path no other smoke test covers."""
+    cfg = _legendre_cfg(tmp_path, squash_method=squash_method)
+    model = SONN(cfg, d_model=4)
+    trained = Trainer(config=cfg).train(
+        model, _offset_dl(64, seed=1), _offset_dl(24, seed=2),
+        _offset_dl(16, seed=3), verbose=False,
+    )
+    out = trained.infer(torch.randn(5, 4) * 25.0 + 100.0)
+    assert out.shape[0] == 5
+    assert torch.isfinite(out).all()
+
+
+def test_train_calibrates_sigma_squash_on_training_set(tmp_path):
+    cfg = _legendre_cfg(tmp_path)
+    model = SONN(cfg, d_model=4)
+    trained = Trainer(config=cfg).train(
+        model, _offset_dl(64, seed=1), _offset_dl(24, seed=2),
+        _offset_dl(16, seed=3), verbose=False,
+    )
+    neuron = trained.layers[0].neuron_models[0]
+    # Data is centered at 100 with std 25; identity stats (0, 1) would mean the
+    # calibration pass never ran.
+    assert neuron.squash_norm.mean.abs().min() > 50.0
+    assert neuron.squash_norm.std.min() > 5.0
+    # prune must have kept the stats aligned with the surviving neurons
+    assert neuron.squash_norm.mean.shape == (neuron.num_neurons, neuron.dim)
+
+
+def test_fit_layer_squash_matches_actual_layer_inputs(tmp_path):
+    """A deeper layer's inputs are the frozen prefix's outputs concatenated
+    with the shortcut originals — a different width and scale from the raw
+    input, which is what the per-layer (not global) calibration exists for."""
+    cfg = _legendre_cfg(tmp_path)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    train_dl = _offset_dl(64, seed=1)
+
+    layer0 = model.create_layer(0)
+    model.layers.append(layer0)
+    trainer.fit_layer_squash(model, layer0, train_dl)
+    trainer.train_layer(model, layer0, train_dl, _offset_dl(24, seed=2), None)
+
+    layer1 = model.create_layer(1)
+    model.layers.append(layer1)
+    neuron = layer1.neuron_models[0]
+    assert neuron.num_feat == layer0.d_model + model.d_model
+
+    before = neuron.squash_norm.mean.clone()
+    trainer.fit_layer_squash(model, layer1, train_dl)
+
+    with torch.no_grad():
+        feats = torch.cat([model(b[0], skip_last_layer=True) for b in train_dl], 0)
+    assert feats.shape[1] == neuron.num_feat
+    idx = neuron.src_idxs
+    assert torch.allclose(neuron.squash_norm.mean, feats.mean(0)[idx], atol=1e-3)
+    assert torch.allclose(
+        neuron.squash_norm.std, feats.std(0, unbiased=False)[idx], atol=1e-3
+    )
+    assert not torch.allclose(before, neuron.squash_norm.mean)
+
+    # and the squash bounds those deep, wildly-scaled features
+    x = torch.index_select(feats, 1, idx.view(-1)).view(feats.shape[0], -1, neuron.dim)
+    assert neuron._squash(x).abs().max() <= 1.0
+
+
+def test_fit_layer_squash_skipped_without_sigma_neurons(tmp_path):
+    """tanh needs no statistics, so the extra pass must not run at all."""
+    cfg = _legendre_cfg(tmp_path, squash_method="tanh")
+    model = SONN(cfg, d_model=4)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("calibration pass ran for a tanh-squashed layer")
+
+    Trainer(config=cfg).fit_layer_squash(model, layer, _explode)
+
+
 def test_trainer_infer_and_prune(tmp_path):
     cfg = _cfg(tmp_path, max_layer_count=2)
     model = SONN(cfg, d_model=4)

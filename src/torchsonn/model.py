@@ -18,6 +18,7 @@ from torchsonn.modules import SONNModule, SoftBinner
 import torch.nn.functional as F
 from torchsonn.layer import SONNLayer
 from torchsonn.neurons import (
+    BaseOrthogonalNeuron,
     BasePolynomNeuron,
     LinearPolynomNeuron,
     LinearCovPolynomNeuron,
@@ -312,11 +313,17 @@ class SONN(SONNModule):
             'quadratic': full polynom of the 2-nd degree
             'cubic': - full polynom of the 3-rd degree
             'legendre': Legendre orthogonal-polynomial basis over the neuron's
-                inputs (options: degree, cross, squash, dim). dim defaults to 2
+                inputs (options: degree, cross, squash, dim, squash_method,
+                squash_n_sigma, squash_core_range). dim defaults to 2
                 (a pair neuron); dim > 2 gives a multi-input neuron with additive
                 univariate terms plus pairwise (cross) interactions.
+                squash_method selects how inputs are mapped into [-1, 1]:
+                'sigma' (default, mean/std-calibrated SigmaSquashNorm) or
+                'tanh'. It defaults to model.squash_method; set it on the entry
+                to override one family only.
             'chebyshev': Chebyshev orthogonal-polynomial basis over the neuron's
-                inputs (options: degree, cross, squash, dim; see 'legendre')
+                inputs (options: degree, cross, squash, dim, squash_method,
+                squash_n_sigma, squash_core_range; see 'legendre')
             examples of using:
              - Regressor(ref_functions='linear')
              - Regressor(ref_functions=('linear_cov', 'quadratic', 'cubic', 'linear'))
@@ -658,8 +665,18 @@ class SONN(SONNModule):
 
         neuron_models = []
         for ref_type, options in self.ref_functions:
+            neuron_cls = neuron_cls_by_type[ref_type]
             a, kw = _make_neuron_args(options)
-            neuron_models.append(neuron_cls_by_type[ref_type](*a, **kw))
+            if issubclass(neuron_cls, BaseOrthogonalNeuron):
+                # Only the orthogonal-polynomial families squash their inputs;
+                # handing these kwargs to e.g. LinearPolynomNeuron would be a
+                # TypeError. setdefault so a per-entry override in the YAML
+                # (`- legendre: {squash_method: tanh}`) still wins over the
+                # model-wide default.
+                kw.setdefault("squash_method", self.param.model.squash_method)
+                kw.setdefault("squash_n_sigma", self.param.model.squash_n_sigma)
+                kw.setdefault("squash_core_range", self.param.model.squash_core_range)
+            neuron_models.append(neuron_cls(*a, **kw))
 
         # Drop any family whose required input arity exceeds the number of
         # inputs available to this layer (n). A polyquad(dim=k) needs k distinct

@@ -284,6 +284,46 @@ def _run_fold(config: DictConfig, feature_names: list[str],
 
     trainer.load_model_checkpoint(model, config.train.device)
 
+    # Optional final pass: fine-tune the whole network at once (config
+    # `finetune_end_to_end`; see any of the ccpp_legendre*_finetune.yaml
+    # configs, which document the stage and its hyperparameters).
+    #
+    # Runs after load_model_checkpoint so it starts from the best checkpointed
+    # weights rather than whatever the last training step left behind. Removing
+    # out_proj first is the point of the pass, not a detail: with the head gone
+    # `_predict_mw` reads the best-error neuron's column directly, so the
+    # fine-tune optimizes exactly the quantity this fold is scored on, and what
+    # is left at the end is a pure polynomial network with nothing bolted on
+    # top. The refined weights are deliberately not checkpointed — the metrics
+    # below are computed from the in-memory model.
+    if bool(getattr(config, "finetune_end_to_end", False)):
+        drop_head = bool(getattr(config, "finetune_drop_head", False))
+        prune_first = bool(getattr(config, "finetune_prune_first", False))
+        if prune_first and not drop_head:
+            # out_proj reads num_out_neurons columns; prune() leaves one and
+            # SONN.infer zero-pads the rest, so the head would be evaluated on
+            # mostly-zero input and the model would silently stop predicting.
+            raise ValueError(
+                "finetune_prune_first requires finetune_drop_head: pruning "
+                "leaves a single neuron, which out_proj cannot read."
+            )
+        if drop_head and model.out_proj is not None:
+            logger.info("Dropping the out_proj head before end-to-end fine-tuning")
+            model.out_proj = None
+        if prune_first:
+            # Everything outside the scored path contributes nothing to it, so
+            # pruning first leaves only parameters that are actually optimized.
+            # (Measured no-op for accuracy — off-path weights have zero
+            # gradient — but it makes the trained model and the rendered
+            # "discovered formula" the same object.)
+            trainer.prune(model)
+            logger.info("Pruned to the best-error path before fine-tuning: "
+                        "%d layers, %d trainable tensors",
+                        len(model.layers), sum(1 for _ in model.parameters()))
+        logger.info("End-to-end fine-tune of all parameters (head %s)",
+                    "removed" if model.out_proj is None else "kept and trained")
+        trainer.train_finetune(model, train_dl, dev_dl)
+
     y_pred = _predict_mw(trainer, model, test_dl, y_scaler)
     mse = float(metrics.mean_squared_error(y_te_half, y_pred))
     result = {

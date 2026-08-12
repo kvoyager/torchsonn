@@ -117,6 +117,27 @@ class ModelConfig:
     shortcut: bool = True
     normalize: bool = True
 
+    # How the orthogonal-polynomial families (legendre / chebyshev) map their
+    # inputs into [-1, 1], the only interval where those bases are orthogonal
+    # and bounded. Ignored by every other ref function, and by an entry that
+    # sets `squash: false`. A ref_functions entry may override it per family,
+    # e.g. `- legendre: {squash_method: tanh}`.
+    #
+    #   'sigma' (default) — SigmaSquashNorm (modules/sigma_squash_norm.py):
+    #       standardize by the per-feature mean/std, pass everything within
+    #       +/-squash_n_sigma through linearly onto +/-squash_core_range, and
+    #       saturate only beyond that with a C2 rational tail. The statistics
+    #       are measured over the whole training set once per layer, before
+    #       that layer trains (Trainer.fit_layer_squash), which costs one extra
+    #       forward pass over the training split per layer.
+    #   'tanh' — the historical stateless squash. No calibration pass, but it
+    #       compresses the bulk of the distribution: tanh is at 0.76 by 1 sigma.
+    squash_method: str = "sigma"
+    # Half-width of the linear core, in standard deviations, and the output
+    # magnitude reached there. 'sigma' only. core_range must be in (0, 1).
+    squash_n_sigma: float = 2.0
+    squash_core_range: float = 0.75
+
     # Required by the caller (tutorial YAMLs override). Left as Optional so
     # the schema can still load with the library default before the caller
     # supplies a value; SONN.__init__ asserts `nbest_neurons > 1`.
@@ -245,6 +266,15 @@ class TrainConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     out_proj_train: OutProjTrainConfig = field(default_factory=OutProjTrainConfig)
 
+    # Hyperparameters for `Trainer.train_finetune` — the end-to-end pass that
+    # unfreezes every parameter in the network at once, after the structural
+    # search is finished. Separate from `out_proj_train` on purpose: that block
+    # is already shared by the out_proj head fit and the per-layer
+    # `layer_finetune` pass, and an end-to-end pass over a whole network wants
+    # its own (usually much smaller) learning rate. `train_finetune` reads this
+    # block by default; pass an explicit config to override.
+    finetune_train: OutProjTrainConfig = field(default_factory=OutProjTrainConfig)
+
     # When True, train_layer runs an extra per-layer fine-tune pass after
     # neuron_selection: jointly trains the surviving neurons' polynomial
     # `weight`s together with a temporary (d_layer, num_classes) Linear head
@@ -283,6 +313,25 @@ class SONNConfig:
     # only the flag(s) it cares about.
     resume: bool = False
     train_on_first_half: bool = False  # gmdhpy-style split toggle (CA only)
+    # After the structural search (and any out_proj head fit) completes, drop
+    # the head and run `Trainer.train_finetune` over every parameter at once,
+    # against the readout the model will actually be scored on. Leaves a
+    # head-free network, so the pruned "discovered formula" is the whole model.
+    # Tuned via `train.finetune_train`. (CCPP only.)
+    finetune_end_to_end: bool = False
+    # With `finetune_end_to_end`: drop model.out_proj first, so the pass
+    # optimizes the bare network against its own best-error neuron and leaves a
+    # head-free model. Off by default — keeping the head means the pass refines
+    # the whole network against the readout it was actually fitted for, which
+    # measures better; dropping it collapses the single-column readout and the
+    # pass has to rebuild one. (CCPP only.)
+    finetune_drop_head: bool = False
+    # With `finetune_end_to_end`: prune to the single best-error path first, so
+    # the pass optimizes just that chain instead of a whole layer of neurons
+    # that no longer feed anything. Requires `finetune_drop_head` — out_proj
+    # reads `num_out_neurons` columns and pruning leaves one, so the head would
+    # be fed mostly zero-padding. (CCPP only.)
+    finetune_prune_first: bool = False
 
 
 # ---------------------------------------------------------------------------

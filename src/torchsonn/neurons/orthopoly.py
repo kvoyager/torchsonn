@@ -31,19 +31,34 @@ interactions. For n=4, d=3 the width is 1 + 4*3 + 6 = 19.
 Domain caveat: both families are orthogonal — and bounded, |P_k|, |T_k| <= 1 —
 only on [-1, 1]. Real inputs (StandardScaler output, deeper-layer activations)
 routinely land outside it, where T_k(x) ~ (2x)^k explodes and destroys the
-fit's conditioning. `squash=True` (the default) therefore maps each input
-through tanh into (-1, 1) before the recurrence, mirroring the standard trick
-in Chebyshev-KAN. Set squash=False when inputs are already confined to [-1, 1].
+fit's conditioning. `squash=True` (the default) therefore maps each input into
+(-1, 1) before the recurrence. Set squash=False when inputs are already
+confined to [-1, 1].
+
+`squash_method` picks how:
+  * "sigma" (default) — SigmaSquashNorm: standardize by the per-feature
+    mean/std measured on the training set, pass the bulk through linearly, and
+    saturate only the tail. Needs calibrating, which `fit_squash` does once per
+    layer before that layer trains (see Trainer.fit_layer_squash).
+  * "tanh" — the historical stateless squash, and the standard trick in
+    Chebyshev-KAN. Needs no statistics, but spends its useful slope on the bulk
+    of the data: tanh is already at 0.76 by 1 sigma, so typical samples get
+    compressed together before the polynomial basis resolves them.
+Both are calibrated per *neuron input slot*: the stats are gathered through
+`src_idxs`, so every neuron sees its own two (or `dim`) input columns' stats.
 """
 import itertools
 
 import torch
 
+from torchsonn.modules import SigmaSquashNorm
 from torchsonn.neurons.base import (
     ActivationLike,
     BasePolynomNeuron,
     generate_unique_combinations,
 )
+
+SQUASH_METHODS = ("sigma", "tanh")
 
 
 class BaseOrthogonalNeuron(BasePolynomNeuron):
@@ -72,7 +87,10 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
                  degree: int = 3,
                  cross: bool = True,
                  squash: bool = True,
-                 dim: int = 2) -> None:
+                 dim: int = 2,
+                 squash_method: str = "sigma",
+                 squash_n_sigma: float = 2.0,
+                 squash_core_range: float = 0.75) -> None:
         if degree < 1:
             raise ValueError(f"degree must be >= 1, got {degree}")
         if dim < 2:
@@ -81,6 +99,14 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
         self.cross = bool(cross)
         self.squash = bool(squash)
         self.dim = int(dim)
+        self.squash_method = str(squash_method).lower()
+        if self.squash_method not in SQUASH_METHODS:
+            raise ValueError(
+                f"squash_method must be one of {list(SQUASH_METHODS)}, "
+                f"got {squash_method!r}"
+            )
+        self.squash_n_sigma = float(squash_n_sigma)
+        self.squash_core_range = float(squash_core_range)
         # Input index pairs (i, j) for the bilinear cross terms, computed once
         # here so get_args iterates a fixed, construction-time list — vmap-safe,
         # no data-dependent control flow. Empty when cross=False. At dim=2 this
@@ -103,10 +129,30 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
             max_neuron_models=max_neuron_models,
             init_method=init_method,
         )
+        # The squash statistics are per neuron *input slot*, so they carry the
+        # same leading `num_neurons` axis as self.weight. That is load-bearing:
+        # Trainer.create_loss_functions vmaps every buffer with in_dims=0, so a
+        # differently-shaped buffer would silently misalign the ensemble. It
+        # also means prune() has to index them alongside the weight — see
+        # _prune_extra. Built with identity stats (mean 0, std 1) so the neuron
+        # is usable before calibration and so a checkpoint restore has correctly
+        # shaped buffers to load into.
+        self.squash_norm: SigmaSquashNorm | None = None
+        if self.squash and self.squash_method == "sigma":
+            self.squash_norm = SigmaSquashNorm(
+                mean=torch.zeros(self.num_neurons, self.dim),
+                std=torch.ones(self.num_neurons, self.dim),
+                n_sigma=self.squash_n_sigma,
+                core_range=self.squash_core_range,
+            )
+
         # Persist the shape-affecting knobs so _construct_from_metadata can
         # rebuild an identically-shaped neuron from a checkpoint. `dim` is
         # already persisted by BasePolynomNeuron.__init__.
-        self.params_metadata_names.extend(["degree", "cross", "squash"])
+        self.params_metadata_names.extend([
+            "degree", "cross", "squash",
+            "squash_method", "squash_n_sigma", "squash_core_range",
+        ])
 
     @classmethod
     def _construct_from_metadata(cls, metadata: dict) -> "BaseOrthogonalNeuron":
@@ -124,7 +170,43 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
             cross=metadata["cross"],
             squash=metadata["squash"],
             dim=metadata["dim"],
+            # .get for the squash knobs: checkpoints written before the
+            # configurable squash landed carry neither key, and their neurons
+            # were tanh-squashed. Defaulting to the *current* default ("sigma")
+            # would restore them with a different — uncalibrated — nonlinearity
+            # and silently change what the saved model computes.
+            squash_method=metadata.get("squash_method", "tanh"),
+            squash_n_sigma=metadata.get("squash_n_sigma", 2.0),
+            squash_core_range=metadata.get("squash_core_range", 0.75),
         )
+
+    @property
+    def needs_squash_stats(self) -> bool:
+        return self.squash_norm is not None
+
+    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Calibrate the sigma squash from this layer's input statistics.
+
+        `mean` / `std` are per-*layer-input-feature* vectors of length
+        `num_feat`, measured over the training set. Indexing them with
+        `src_idxs` turns them into the (num_neurons, dim) per-input-slot stats
+        the squash needs, so neuron k's slot j is normalized by the statistics
+        of exactly the feature column it consumes.
+
+        No-op unless this neuron actually squashes with the sigma method.
+        """
+        if self.squash_norm is None:
+            return
+        idx = self.src_idxs.to(device=mean.device)
+        self.squash_norm.set_stats(mean[idx], std[idx])
+
+    def _prune_extra(self, idxs: torch.Tensor) -> None:
+        # Keep the per-neuron stats aligned with the surviving rows of weight /
+        # src_idxs. Rebinding the buffer attribute is how nn.Module replaces a
+        # registered buffer in place.
+        if self.squash_norm is not None:
+            self.squash_norm.mean = self.squash_norm.mean.index_select(0, idxs)
+            self.squash_norm.std = self.squash_norm.std.index_select(0, idxs)
 
     def create_src_idxs(
         self, num_feat: int, max_neuron_models: int | None
@@ -187,8 +269,29 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
             p_prev2, p_prev = p_prev, p_k
         return cols
 
+    def _squash(self, x: torch.Tensor) -> torch.Tensor:
+        """Map the raw inputs into (-1, 1), the basis' orthogonality domain."""
+        if not self.squash:
+            return x
+        if self.squash_method == "sigma":
+            if self.squash_norm is None:
+                raise RuntimeError(
+                    "squash_method='sigma' but this neuron has no "
+                    "SigmaSquashNorm attached. Falling back to tanh here would "
+                    "silently swap in a different nonlinearity, so refuse "
+                    "instead — rebuild the neuron, or restore it from a "
+                    "checkpoint written with the same squash_method."
+                )
+            return self.squash_norm(x)
+        if self.squash_method == "tanh":
+            return torch.tanh(x)
+        raise ValueError(
+            f"unknown squash_method {self.squash_method!r}; "
+            f"expected one of {list(SQUASH_METHODS)}"
+        )
+
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
-        u = torch.tanh(x) if self.squash else x
+        u = self._squash(x)
         parts = [torch.ones((*u.shape[:-1], 1), device=u.device, dtype=u.dtype)]
         parts.extend(self._orthopoly_columns(u))
         if self.cross:
@@ -214,7 +317,7 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
 
     def get_name(self) -> str:
         cross = " + pairwise cross terms" if self.cross else ""
-        squash = "tanh-squashed " if self.squash else ""
+        squash = f"{self.squash_method}-squashed " if self.squash else ""
         return (f"{self._basis_name()} basis (degree {self.degree}) over "
                 f"{squash}{self.dim} inputs{cross}")
 

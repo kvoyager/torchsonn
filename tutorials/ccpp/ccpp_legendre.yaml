@@ -46,17 +46,22 @@ model:
     # cubic terms x, x², x³ — the Legendre Gram matrix is well behaved where the
     # monomial one is a near-singular Hilbert matrix — so it captures the plant's
     # mild saturation curvature without the ill-conditioning higher powers bring.
-    # squash: False feeds the StandardScaler'd inputs to the recurrence raw. Note
-    # they run to ±3.3 σ, outside the [-1, 1] interval where the Legendre basis
-    # stays bounded and orthogonal (the library default squash: True tanh-maps
-    # inputs into that interval first — the standard Chebyshev-KAN trick). Off the
-    # interval the higher-degree columns take large values, but the per-neuron
-    # ridge-regularized LBFGS fit absorbs the scale and the folds train cleanly
-    # (see README results). cross defaults to True, adding the xi*xj interaction
-    # term, so a degree-3 Legendre neuron has 1 + 2·3 + 1 = 8 coefficients.
+    # squash: True maps each input into [-1, 1] — the only interval where the
+    # Legendre basis is bounded and orthogonal — before the recurrence runs.
+    # It matters here because StandardScaler leaves the features running to
+    # ±3.3 σ, where the degree-3 column P3 reaches ~85 and the per-fold
+    # conditioning starts to depend on how extreme that fold's tail happens to
+    # be. The mapping is model.squash_method, 'sigma' by default: standardize
+    # by the per-feature mean/std measured on the training set, pass everything
+    # within ±2 σ through linearly onto ±0.75, and saturate only beyond that.
+    # Set squash_method: tanh here to use the stateless alternative, or
+    # squash: False to feed the recurrence raw (what this config did before —
+    # see the README for the side-by-side; it costs about half the fold-to-fold
+    # spread). cross defaults to True, adding the xi*xj interaction term, so a
+    # degree-3 Legendre neuron has 1 + 2·3 + 1 = 8 coefficients.
     - legendre:
         degree: 3
-        squash: False
+        squash: True
         activation: ""
   # Shortcut keeps the raw 4 inputs available to every layer — useful because
   # layer 0 already discovers the bulk of the (linear) signal, and later layers
@@ -68,10 +73,14 @@ model:
   # nbest_neurons sets each layer's survivor pool (and thus the next layer's
   # input width under `shortcut`), and max_neuron_models caps the candidate
   # ensemble built per family per layer. The light values below keep the full
-  # 10-fold run tractable on CPU (≈17 min for the logged run); the wider values
+  # 10-fold run tractable on CPU (≈12 min for the logged run); the wider values
   # used for the heavier search — nbest 60 / max 600, plus a second degree-2
   # family — live in ccpp_legendre_heavy.yaml:
   #   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_heavy
+  #
+  # That heavier search is not worth much on CCPP: it reaches 3.3035 ± 0.0162
+  # MAE against this config's 3.3084 ± 0.0147, for ≈1.4 h of GPU time. Adding
+  # neuron *arity* is what moves the number here — see ccpp_legendre_poly.yaml.
   #
   # Only 4 features → C(4,2) = 6 unordered pairs for the Legendre family at
   # layer 0; with `shortcut` the input width (and so the pair/candidate count)
@@ -81,11 +90,12 @@ model:
   nbest_neurons: 8
 #  max_neuron_models: 600      # heavy — see ccpp_legendre_heavy.yaml
   max_neuron_models: 60
-  # After StandardScaler the per-feature range is roughly ±3.3 σ. With
-  # squash: False the Legendre columns are evaluated on that raw range, where
-  # the degree-3 term P3 reaches ~85 near the extremes; even so the fitted
-  # per-neuron output stays far below 1e+4, so this clamp is generous headroom
-  # that never binds inside the regular operating range.
+  # With squash: True every Legendre column is evaluated on [-1, 1], so |P_k|
+  # <= 1 and the per-neuron output is bounded by the sum of |coefficients|.
+  # That puts it orders of magnitude under this clamp, which therefore never
+  # binds — it is kept at the squash: False value so the two variants stay
+  # directly comparable (unsquashed, P3 reaches ~85 at the ±3.3 σ extremes and
+  # the clamp was real headroom rather than a formality).
   output_clamp_value: 1.0e+4
 
   # No output-projection head: for a plain regressor the last layer's

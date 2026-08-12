@@ -47,19 +47,22 @@ model:
     # better-conditioned stand-in for the raw-power cubic terms x, x², x³ — the
     # Legendre Gram matrix is well behaved where the monomial one is a
     # near-singular Hilbert matrix — so it captures the plant's mild saturation
-    # curvature without the ill-conditioning higher powers bring. squash: False
-    # feeds the StandardScaler'd inputs to the recurrence raw. Note they run to
-    # ±3.3 σ, outside the [-1, 1] interval where the Legendre basis stays bounded
-    # and orthogonal (the library default squash: True tanh-maps inputs into that
-    # interval first — the standard Chebyshev-KAN trick). Off the interval the
-    # higher-degree columns take large values, but the per-neuron
-    # ridge-regularized LBFGS fit absorbs the scale and the folds train cleanly
-    # (see ccpp_legendre results in the README). cross defaults to True, adding
-    # the xi*xj interaction term, so a degree-3 pair Legendre neuron has
+    # curvature without the ill-conditioning higher powers bring. squash: True
+    # maps each input into [-1, 1] — the only interval where the Legendre basis
+    # is bounded and orthogonal — before the recurrence runs, via
+    # model.squash_method ('sigma' by default: standardize on the training
+    # set's per-feature mean/std, pass everything within ±2 σ through linearly
+    # onto ±0.75, saturate only beyond that). Note ccpp.py already divides the
+    # StandardScaler'd features by 3, so they mostly sit inside [-1, 1] to
+    # begin with — the squash is the principled version of that hand-rolled
+    # rescale, and it also bounds the tail the /3 leaves outside. Set
+    # squash: False to feed the recurrence raw (what this config did before —
+    # the README has the side-by-side). cross defaults to True, adding the
+    # xi*xj interaction term, so a degree-3 pair Legendre neuron has
     # 1 + 2·3 + 1 = 8 coefficients.
     - legendre:
         degree: 3
-        squash: False
+        squash: True
         activation: ""
     # (2) Multi-input Legendre neuron over `dim: 4` inputs — the new family. Its
     # design row is the constant, the univariate Legendre columns P1..P3 for each
@@ -71,13 +74,13 @@ model:
     # consumes all four ambient variables at once, the orthogonal-basis
     # counterpart of ccpp.yaml's four-input polyquad. Under `shortcut` the deeper
     # layers' wider input set (survivors + the 4 raw features) yields many more
-    # dim-4 combinations, capped by max_neuron_models. squash: False for the same
+    # dim-4 combinations, capped by max_neuron_models. squash: True for the same
     # reason as the pair family; the 19-coefficient fit is still well determined
     # against each fold's ~3800 training rows.
     - legendre:
         degree: 3
         dim: 4
-        squash: False
+        squash: True
         activation: ""
   # Shortcut keeps the raw 4 inputs available to every layer — useful because
   # layer 0 already discovers the bulk of the (linear) signal, and later layers
@@ -91,23 +94,26 @@ model:
   # nbest_neurons sets each layer's survivor pool (and thus the next layer's
   # input width under `shortcut`), and max_neuron_models caps the candidate
   # ensemble built per family per layer. The light values below (inherited from
-  # ccpp_legendre.yaml) keep the full 10-fold run tractable on CPU; widen them
-  # (and switch to CUDA) as in ccpp_legendre_heavy.yaml for a finer search:
-  #   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_heavy
+  # ccpp_legendre.yaml) keep the full 10-fold run tractable on CPU — ≈25 min for
+  # the logged run. Widening them (and switching to CUDA) is what
+  # ccpp_legendre_poly_heavy.yaml does, and on CCPP it buys nothing: 3.2777 ±
+  # 0.0200 MAE there against 3.2782 ± 0.0135 here, for ≈8.8 h of GPU time.
+  #   python -m tutorials.ccpp.ccpp --config-name=ccpp_legendre_poly_heavy
   #
   # At layer 0 the pair family enumerates C(4,2) = 6 candidates and the dim-4
   # family exactly C(4,4) = 1 (fewer than max_neuron_models, so both are built
   # in full); with `shortcut` the input width — and so both families' candidate
   # counts — grows at deeper layers, where max_neuron_models starts to bite.
-#  nbest_neurons: 60           # heavy — see ccpp_legendre_heavy.yaml
+#  nbest_neurons: 60           # heavy — see ccpp_legendre_poly_heavy.yaml
   nbest_neurons: 8
-#  max_neuron_models: 600      # heavy — see ccpp_legendre_heavy.yaml
+#  max_neuron_models: 600      # heavy — see ccpp_legendre_poly_heavy.yaml
   max_neuron_models: 60
-  # After StandardScaler the per-feature range is roughly ±3.3 σ. With
-  # squash: False the Legendre columns are evaluated on that raw range, where
-  # the degree-3 term P3 reaches ~85 near the extremes; even so the fitted
-  # per-neuron output stays far below 1e+4, so this clamp is generous headroom
-  # that never binds inside the regular operating range.
+  # With squash: True every Legendre column is evaluated on [-1, 1], so
+  # |P_k| <= 1 and the per-neuron output is bounded by the sum of |coefficients|
+  # — orders of magnitude under this clamp, which therefore never binds. Kept at
+  # the squash: False value so the two variants stay directly comparable (there
+  # the columns ran on the raw range, where P3 reaches ~85 at the extremes and
+  # the clamp was real headroom rather than a formality).
   output_clamp_value: 1.0e+4
 
   # No output-projection head: for a plain regressor the last layer's

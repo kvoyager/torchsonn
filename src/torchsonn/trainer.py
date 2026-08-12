@@ -376,6 +376,11 @@ class Trainer:
                 layer = model.create_layer(layer_index)
                 model.layers.append(layer)
                 checkpoint_data = None
+                # Calibrate the input squash before the layer trains. Only on
+                # the freshly-created path: a layer resumed mid-training keeps
+                # the statistics its checkpoint carries, which were fit on this
+                # same training set before it started.
+                self.fit_layer_squash(model, layer, train_dl)
 
             with timed_block(f"train layer #{layer_index}", verbose=verbose):
                 self.train_layer(model, layer, train_dl, dev_dl, checkpoint_data)
@@ -1300,6 +1305,71 @@ class Trainer:
 
         return loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names
 
+    def fit_layer_squash(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
+        """Calibrate the layer's input squash on the whole training set.
+
+        The SigmaSquashNorm squash (`model.squash_method='sigma'`) needs a mean
+        and a std per input feature, and they have to describe the features
+        that actually reach *this* layer: the (preprocessed) raw inputs for
+        layer 0, the frozen prefix's outputs — plus the shortcut-concatenated
+        originals — deeper down. So this runs once per layer, after
+        create_layer and before any of the layer's neurons train, and measures
+        `model(x, skip_last_layer=True)` exactly as train_layer will feed it.
+
+        Costs one extra forward pass over the training split per layer. Skipped
+        outright when no neuron in the layer has a data-dependent squash, which
+        includes every tanh-squashed and non-orthogonal-polynomial model — so
+        configs that don't use it pay nothing.
+        """
+        if not any(nm.needs_squash_stats for nm in layer.neuron_models):
+            return
+
+        device = layer.neuron_models[0].device
+        # Accumulate in float64 whatever train.dtype is: a running sum of
+        # squares over a large split bleeds precision badly in float32, and
+        # this runs once per layer so the extra width is free.
+        total: torch.Tensor | None = None
+        total_sq: torch.Tensor | None = None
+        count = 0
+
+        was_training = model.training
+        model.eval()
+        # no_grad rather than inference_mode: these statistics get copied into
+        # buffers that autograd reads during training, and inference tensors
+        # are barred from autograd-enabled ops.
+        with torch.no_grad():
+            for batch in train_dl:
+                x_inp, _ = self.batch_callback(batch) if self.batch_callback else batch
+                feats = model(x_inp.to(device=device), skip_last_layer=True).double()
+                batch_sum = feats.sum(dim=0)
+                batch_sq = (feats * feats).sum(dim=0)
+                total = batch_sum if total is None else total + batch_sum
+                total_sq = batch_sq if total_sq is None else total_sq + batch_sq
+                count += feats.shape[0]
+        model.train(was_training)
+
+        if count == 0:
+            logger.warning(
+                "Layer #%d squash calibration skipped: training set is empty. "
+                "Neurons keep their identity stats (mean 0, std 1).",
+                layer.layer_index,
+            )
+            return
+
+        mean = total / count
+        # Var as E[x^2] - E[x]^2. Clamped because the cancellation can land a
+        # hair below zero for a near-constant feature; SigmaSquashNorm then
+        # reads the resulting std == 0 as a constant feature and neutralizes it.
+        std = (total_sq / count - mean * mean).clamp(min=0.0).sqrt()
+
+        layer.fit_squash(mean.to(dtype=model.dtype), std.to(dtype=model.dtype))
+        logger.info(
+            "Layer #%d squash calibrated on %d training samples over %d input "
+            "feature(s); |mean| max %.4g, std range [%.4g, %.4g]",
+            layer.layer_index, count, mean.numel(),
+            mean.abs().max().item(), std.min().item(), std.max().item(),
+        )
+
     def _precompute_dl(
         self,
         model: SONN,
@@ -1773,7 +1843,32 @@ class Trainer:
             selected = torch.cat([selected, pad], dim=-1)
         return selected
 
-    def train_finetune(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader) -> None:
+    @staticmethod
+    def _finetune_prediction(model: SONN, x: torch.Tensor) -> torch.Tensor:
+        """Model output shaped to match the target, for the end-to-end pass.
+
+        `SONN.infer` returns a scalar per sample only when a head collapses the
+        last layer (out_proj, or the multi-class log-softmax path). A *headless
+        regressor* instead gets the raw last layer back, shape (N, num_neurons),
+        which the scalar losses cannot be compared against: NormMSE broadcasts
+        (N,) against (N, k) and either raises (k != N) or — after `prune()` has
+        cut the layer to a single neuron, k == 1 — silently expands to (N, N)
+        and optimizes a meaningless quantity.
+
+        So reduce it here exactly the way inference does: take the best-error
+        neuron's column (the value a headless regressor is scored on) and
+        squeeze to (N,). Indexing keeps the gradient path to that neuron and,
+        through it, to every layer feeding it.
+        """
+        out = model.infer(x)
+        if out.ndim <= 1 or model.param.model.type != "regressor":
+            return out
+        if out.shape[-1] == 1:
+            return out.squeeze(-1)
+        return out[:, model._best_neuron_column(model.layers[-1])]
+
+    def train_finetune(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader,
+                       cfg: Any = None) -> None:
         """End-to-end fine-tuning of all SONN parameters.
 
         After SONN's structural search is done every layer is a normal
@@ -1784,10 +1879,13 @@ class Trainer:
         (frozen-feature precomputation is not applicable here).  Use a large
         batch size and/or torch.compile(model) to keep the GPU busy.
 
-        Reuses OutProjTrainConfig (model.param.train.out_proj_train) for LR /
-        scheduler / early-stop hyperparameters.
+        `cfg` is an OutProjTrainConfig-shaped block of LR / scheduler /
+        early-stop hyperparameters; it defaults to
+        `model.param.train.finetune_train`, which exists so an end-to-end pass
+        can use a different (usually much smaller) learning rate than the
+        out_proj / layer_finetune passes that share `out_proj_train`.
         """
-        cfg    = model.param.train.out_proj_train
+        cfg    = cfg if cfg is not None else model.param.train.finetune_train
         device = model.device
 
         for p in model.parameters():
@@ -1795,10 +1893,21 @@ class Trainer:
 
         if cfg.optimizer == "adam":
             opt = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        elif cfg.optimizer == "adamw":
+            # Decoupled weight decay. On a refinement pass over an already-fitted
+            # network this is the better-behaved of the two: the penalty is
+            # applied straight to the weights instead of entering the gradient
+            # (and so the adaptive second-moment estimate), which keeps the decay
+            # from being scaled differently per parameter.
+            opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         elif cfg.optimizer == "sgd":
             opt = torch.optim.SGD(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=0.9)
         else:
-            raise ValueError(f"Unsupported optimizer: {cfg.optimizer!r}")
+            raise ValueError(
+                f"Unsupported optimizer for train_finetune: {cfg.optimizer!r} "
+                "(supported: 'adam', 'adamw', 'sgd'). Note there is no full-batch "
+                "LBFGS path here, unlike train_out_proj / layer_finetune."
+            )
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt, mode="min", factor=cfg.lr_factor, patience=cfg.lr_patience,
@@ -1827,7 +1936,7 @@ class Trainer:
                 x_inp   = x_inp.to(device=device)
                 targets = targets.to(device=device)
 
-                log_probs = model.infer(x_inp)
+                log_probs = self._finetune_prediction(model, x_inp)
                 loss      = model.loss_fn(log_probs, targets).mean()
 
                 opt.zero_grad()
@@ -1847,7 +1956,8 @@ class Trainer:
                     for vbatch in dev_dl:
                         vx, vt = self.batch_callback(vbatch) if self.batch_callback else vbatch
                         val_loss += model.loss_fn(
-                            model.infer(vx.to(device=device)), vt.to(device=device)
+                            self._finetune_prediction(model, vx.to(device=device)),
+                            vt.to(device=device),
                         ).mean().item()
 
                 val_loss /= len(dev_dl)
