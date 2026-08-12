@@ -40,7 +40,6 @@ outputs/
 # those build artifacts; the rendered *.svg diagrams are kept, since the
 # pattern only matches names *ending* in _model.
 tutorials/*/*_model
-
 tutorials/concrete/outputs
 tutorials/concrete/data
 tutorials/iris/outputs
