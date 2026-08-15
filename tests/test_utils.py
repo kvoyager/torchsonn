@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from torchsonn.utils import ParamNamespace, abbrev_floats, timed_block
+from torchsonn.utils import ParamNamespace, abbrev_floats, fmt_err, timed_block
 
 
 class TestParamNamespace:
@@ -77,3 +77,30 @@ class TestAbbrevFloats:
     def test_custom_format(self):
         s = abbrev_floats([1.2345], fmt="{:.1f}")
         assert s == "[1.2]"
+
+    def test_callable_format(self):
+        s = abbrev_floats([1.2345, 3.1e-8], fmt=fmt_err)
+        assert s == "[1.234, 3.100e-08]"
+
+
+class TestFmtErr:
+    def test_readable_values_stay_fixed_point(self):
+        assert fmt_err(0.2837) == "0.284"
+        assert fmt_err(1.0) == "1.000"
+
+    def test_exact_zero_stays_fixed_point(self):
+        assert fmt_err(0.0) == "0.000"
+
+    def test_small_values_go_scientific(self):
+        # the whole point: `f"{8.8e-7:.3f}"` is "0.000"
+        assert fmt_err(8.8395e-07) == "8.840e-07"
+        assert fmt_err(-8.8395e-07) == "-8.840e-07"
+
+    def test_rounding_boundary(self):
+        # 0.0005 survives .3f rounding, 0.0004 does not
+        assert fmt_err(0.0005) == "0.001"
+        assert fmt_err(0.0004) == "4.000e-04"
+
+    def test_non_finite(self):
+        assert fmt_err(float("nan")) == "nan"
+        assert fmt_err(float("inf")) == "inf"

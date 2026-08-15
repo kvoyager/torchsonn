@@ -54,6 +54,7 @@ def test_train_config_defaults_sane():
     assert cfg.seed == 10
     assert cfg.batch_size == 1
     assert cfg.early_stop_tolerance_steps == 10
+    assert cfg.error_normalization == "variance"
 
 
 def test_config_store_has_default():

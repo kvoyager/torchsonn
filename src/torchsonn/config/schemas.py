@@ -181,6 +181,30 @@ class TrainConfig:
     bias_ce_type: str = "js"
     error_alpha: float = 0.5
 
+    # Denominator for the regression criteria — regularity_error, bias_error and
+    # the NormMSE training loss. Also applies to `binary`, which shares those
+    # criteria; there the centered denominator is the Bernoulli variance
+    # N·p(1-p). Multi-class is unaffected: regularity_error_ce normalizes by
+    # H(Y_B) and the bias criteria by label energy, both already proper no-skill
+    # baselines. Validated in SONN.__init__.
+    #
+    #   'variance' (default) — Σ(y - ȳ)². A true fraction of variance
+    #       unexplained (1 - R²): invariant to a constant offset on y, ≈1 at the
+    #       mean predictor, and in [0, ~1] for any dataset — so the absolute
+    #       thresholds below (early_stop_patience, divergence_threshold) mean the
+    #       same thing regardless of target scale.
+    #   'energy'  — Σ y², Ivakhnenko's original and what gmdhpy computes. Its
+    #       baseline is the zero predictor, so it is only meaningful on targets
+    #       that are already centered; on a target with mean 454 and sd 17 the
+    #       denominator is ~700x the variance and the reported error collapses
+    #       into a razor-thin band near zero. Set this only for exact parity with
+    #       classical implementations.
+    #
+    # Neuron ranking is identical either way — the denominator is constant
+    # within one evaluation — so switching affects reported values and the
+    # absolute thresholds, not which neurons survive.
+    error_normalization: str = "variance"
+
     max_layer_count: int = 999
     criterion_minimum_width: int = 5
     stop_train_epsilon_condition: float = 0.001

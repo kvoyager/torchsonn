@@ -13,18 +13,66 @@ from torchsonn.loss import (
 )
 
 
+# A target whose mean dominates its spread — the regime where Sum(y^2) and
+# Sum((y - ybar)^2) diverge. Mean 100, sd ~1.6, so the energy denominator is
+# ~4000x the centered one.
+SHIFTED_Y = torch.tensor([98.0, 99.0, 100.0, 101.0, 102.0])
+OFFSETS = [10.0, 100.0, 1000.0]
+
+
 class TestNormMSE:
     def test_zero_loss_on_exact_match(self):
         loss = NormMSE()
         y = torch.tensor([1.0, 2.0, 3.0])
         assert torch.allclose(loss(y, y), torch.tensor(0.0))
 
-    def test_value(self):
-        loss = NormMSE(eps=0.0)
+    def test_value_energy(self):
+        loss = NormMSE(eps=0.0, centered=False)
         y_true = torch.tensor([1.0, 2.0])
         y_pred = torch.tensor([0.0, 0.0])
         # ||y - ŷ||^2 / ||y||^2 = 5/5 = 1
         assert torch.allclose(loss(y_pred, y_true), torch.tensor(1.0))
+
+    def test_mean_predictor_is_one(self):
+        loss = NormMSE(eps=0.0)
+        y_pred = SHIFTED_Y.mean().expand_as(SHIFTED_Y)
+        assert torch.allclose(loss(y_pred, SHIFTED_Y), torch.tensor(1.0))
+
+    def test_offset_invariance(self):
+        loss = NormMSE()
+        y_pred = torch.tensor([98.5, 99.5, 99.5, 101.5, 101.0])
+        base = loss(y_pred, SHIFTED_Y)
+        for c in OFFSETS:
+            assert torch.allclose(loss(y_pred + c, SHIFTED_Y + c), base, atol=1e-5)
+
+    def test_energy_is_not_offset_invariant(self):
+        # Guards the flag itself: `energy` must still reproduce the old,
+        # offset-dependent behaviour for gmdhpy parity.
+        loss = NormMSE(centered=False)
+        y_pred = torch.tensor([98.5, 99.5, 99.5, 101.5, 101.0])
+        base = loss(y_pred, SHIFTED_Y)
+        shifted = loss(y_pred + 1000.0, SHIFTED_Y + 1000.0)
+        assert shifted.item() < base.item() / 50
+
+    def test_fixed_scale_is_batch_size_independent(self):
+        # Per-batch normalization makes the loss depend on how the eval set was
+        # chunked; a fixed scale does not.
+        y = SHIFTED_Y
+        y_hat = y + torch.tensor([0.5, -0.5, 0.5, -0.5, 0.5])
+        var = y.var(unbiased=False).item()
+        loss = NormMSE(eps=0.0, scale=var)
+
+        whole = loss(y_hat, y)
+        # weight each chunk by its sample count to undo the per-call 1/n
+        chunks = [(y_hat[:2], y[:2]), (y_hat[2:], y[2:])]
+        pooled = sum(loss(p, t) * t.numel() for p, t in chunks) / y.numel()
+        assert torch.allclose(whole, pooled, atol=1e-6)
+
+    def test_constant_target_is_finite(self):
+        loss = NormMSE()
+        y = torch.full((4,), 3.0)
+        out = loss(y + 0.1, y)
+        assert torch.isfinite(out)
 
 
 class TestRegularityError:
@@ -33,15 +81,43 @@ class TestRegularityError:
         out = regularity_error(y, y)
         assert torch.allclose(out, torch.tensor(0.0))
 
-    def test_with_candidate_batch(self):
+    def test_with_candidate_batch_energy(self):
         # 2 candidates, 4 samples
         y_hat = torch.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 0.0, 0.0]])
         y = torch.tensor([1.0, 2.0, 3.0, 4.0])
-        out = regularity_error(y_hat, y)
+        out = regularity_error(y_hat, y, centered=False)
         assert out.shape == (2,)
         assert torch.allclose(out[0], torch.tensor(0.0))
         # zero predictor: sum((y-0)^2)/sum(y^2) = 1
         assert torch.allclose(out[1], torch.tensor(1.0))
+
+    def test_mean_predictor_is_one(self):
+        # The centered baseline is the mean predictor, not the zero predictor.
+        y_hat = torch.stack([
+            SHIFTED_Y,                                # perfect
+            SHIFTED_Y.mean().expand_as(SHIFTED_Y),    # no-skill
+        ])
+        out = regularity_error(y_hat, SHIFTED_Y)
+        assert torch.allclose(out[0], torch.tensor(0.0))
+        assert torch.allclose(out[1], torch.tensor(1.0))
+
+    def test_offset_invariance(self):
+        # A linear model with intercept is translation-invariant, so the
+        # criterion measuring it must be too.
+        y_hat = torch.tensor([[98.5, 99.5, 99.5, 101.5, 101.0]])
+        base = regularity_error(y_hat, SHIFTED_Y)
+        for c in OFFSETS:
+            assert torch.allclose(regularity_error(y_hat + c, SHIFTED_Y + c), base, atol=1e-4)
+
+    def test_ranking_unchanged_by_normalization(self):
+        y_hat = torch.tensor([
+            [98.2, 99.1, 100.1, 100.8, 102.2],
+            [97.0, 99.9, 100.0, 102.0, 101.0],
+            [99.0, 99.0, 99.0, 102.0, 103.0],
+        ])
+        centered = regularity_error(y_hat, SHIFTED_Y)
+        energy = regularity_error(y_hat, SHIFTED_Y, centered=False)
+        assert torch.equal(centered.argsort(), energy.argsort())
 
 
 class TestBiasError:
@@ -58,6 +134,21 @@ class TestBiasError:
         out = bias_error(y_hat_a, y_hat_b, y)
         assert out.shape == (1,)
         assert out[0].item() > 0
+
+    def test_energy_matches_legacy(self):
+        y_hat_a = torch.tensor([[1.0, 2.0, 3.0]])
+        y_hat_b = torch.tensor([[1.0, 2.0, 4.0]])
+        y = torch.tensor([1.0, 2.0, 3.0])
+        out = bias_error(y_hat_a, y_hat_b, y, centered=False)
+        # 1 / sum(y^2) = 1/14
+        assert torch.allclose(out, torch.tensor([1.0 / 14]), atol=1e-6)
+
+    def test_offset_invariance(self):
+        a = torch.tensor([[98.5, 99.5, 99.5, 101.5, 101.0]])
+        b = torch.tensor([[98.0, 99.0, 100.0, 101.0, 102.5]])
+        base = bias_error(a, b, SHIFTED_Y)
+        for c in OFFSETS:
+            assert torch.allclose(bias_error(a, b, SHIFTED_Y + c), base, atol=1e-4)
 
 
 class TestRegularityErrorCE:

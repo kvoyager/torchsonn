@@ -241,12 +241,16 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     )
 
     # Features span very different scales (AP ≈ 1013 mbar vs V ≈ 54 cm Hg);
-    # z-score so polynomial neurons see a comparable dynamic range. The target
-    # is z-scored too — *critical* for SONN's regression criterion, whose
-    # `regularity_error = Σ(y-ŷ)²/Σy²` denominator would otherwise be swamped by
-    # N·μ² (mean PE ≈ 454 MW), collapsing the whole no-skill→perfect range into
-    # a razor-thin band and stalling layer growth. After z-scoring Σy² ≈ N, the
-    # no-skill baseline is exactly 1.0 and improvements are crisp.
+    # z-score so polynomial neurons see a comparable dynamic range. The target is
+    # z-scored too, which keeps the neuron outputs and the out_proj head in the
+    # same O(1) range as the features.
+    #
+    # This used to be *critical* for the regression criterion as well: with
+    # `error_normalization: energy` the denominator is Σy², which for raw MW
+    # (mean PE ≈ 454) is swamped by N·μ² and collapses the whole
+    # no-skill→perfect range into a razor-thin band. Under the default
+    # `variance` the criterion centers y itself, so it is offset-invariant and
+    # this scaling no longer affects it — Σ(y-ȳ)² is the same before and after.
     x_scaler = StandardScaler().fit(X_train)
     # x_scaler = MinMaxScaler(feature_range=(-1, 1)).fit(X_train)
     X_train = x_scaler.transform(X_train).astype(np.float32) / 3.0

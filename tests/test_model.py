@@ -66,6 +66,25 @@ class TestSONNInit:
         assert model.soft_binner is None
         assert model.out_proj is None
         assert model.criterion_type == CriterionType.cmpValidate
+        # regression loss defaults to the centered (variance) denominator
+        assert model.error_centered is True
+        assert model.loss_fn.centered is True
+        assert model.loss_fn.scale is None
+
+    def test_error_normalization_energy(self):
+        cfg = _make_cfg(model={"type": "regressor", "num_classes": 1, "nbest_neurons": 3,
+                                "soft_binner": False, "ref_functions": ["linear_cov"]},
+                        train={"error_normalization": "energy"})
+        model = SONN(cfg, d_model=4)
+        assert model.error_centered is False
+        assert model.loss_fn.centered is False
+
+    def test_error_normalization_rejects_unknown(self):
+        cfg = _make_cfg(model={"type": "regressor", "num_classes": 1, "nbest_neurons": 3,
+                                "soft_binner": False, "ref_functions": ["linear_cov"]},
+                        train={"error_normalization": "l2"})
+        with pytest.raises(ValueError, match="error_normalization"):
+            SONN(cfg, d_model=4)
 
     def test_binary_init(self):
         cfg = _make_cfg(model={"type": "binary", "num_classes": 2, "nbest_neurons": 3,

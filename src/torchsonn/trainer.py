@@ -20,8 +20,8 @@ from torchsonn.data.dataset import SONNDataset
 import numpy as np
 import random
 
-from torchsonn.utils import timed_block, abbrev_floats
-from torchsonn.loss import bias_error, bias_error_l2, bias_error_js
+from torchsonn.utils import timed_block, abbrev_floats, fmt_err
+from torchsonn.loss import NormMSE, bias_error, bias_error_l2, bias_error_js
 
 logger = logging.getLogger(__name__)
 import re
@@ -354,6 +354,11 @@ class Trainer:
         # restore whichever layer achieved the minimum error before final save.
         shared_proj_states: dict[int, dict] = {}
 
+        # Fix the NormMSE denominator to the training-set target spread before
+        # any layer trains. Re-measured on resume too — it describes the data,
+        # not the checkpoint.
+        self._fit_target_scale(model, train_dl)
+
         if resume:
             # load checkpoint
             checkpoint_data = self.from_checkpoint(model)
@@ -671,8 +676,8 @@ class Trainer:
             layer.err = err_values.mean().item()
         else:
             raise NotImplementedError
-        logger.info(f"Current layer error: {layer.err:.3f}")
-        logger.info(f"Layer errors: {abbrev_floats([l.err for l in model.layers])}")
+        logger.info(f"Current layer error: {fmt_err(layer.err)}")
+        logger.info(f"Layer errors: {abbrev_floats([l.err for l in model.layers], fmt=fmt_err)}")
 
         # Optional per-layer joint fine-tune (surviving neurons' polynomial
         # weights + temporary (D, K) head trained end-to-end on CE). Runs
@@ -1421,6 +1426,68 @@ class Trainer:
                     x = model(x_inp, skip_last_layer=True)
                     yield x, targets
 
+    def _fit_target_scale(self, model: SONN, train_dl: DataLoader) -> None:
+        """Fix the NormMSE denominator to the training-set target spread.
+
+        One streaming pass over `train_dl`'s targets — no model forward, the
+        labels are all this needs. Sets `model.loss_fn.scale` to the per-sample
+        variance of the training targets (or their mean square under
+        `error_normalization: energy`), so the regressor's training loss is
+        `Σ(y-ŷ)² / (n_batch · scale)`.
+
+        Fixing the scale rather than recomputing it per batch is what keeps the
+        loss batch-size-independent, safe on a degenerate batch, and on the same
+        scale as the dev-set regularity criterion — see NormMSE's docstring.
+
+        No-op unless the model is a regressor (only that path uses NormMSE).
+        """
+        if not isinstance(model.loss_fn, NormMSE):
+            return
+
+        device = self.config.train.device
+        # float64: `sum_y2 - sum_y**2 / n` cancels, and on a target whose mean
+        # dominates its spread the two terms can differ by several decades —
+        # more than float32 can absorb.
+        n = 0
+        sum_y = torch.zeros((), dtype=torch.float64, device=device)
+        sum_y2 = torch.zeros((), dtype=torch.float64, device=device)
+        for batch in train_dl:
+            _, targets = self.batch_callback(batch) if self.batch_callback else batch
+            t = targets.to(device=device, dtype=torch.float64).reshape(-1)
+            n += t.numel()
+            sum_y += t.sum()
+            sum_y2 += (t * t).sum()
+
+        acc = torch.stack([torch.as_tensor(float(n), dtype=torch.float64, device=device),
+                           sum_y, sum_y2])
+        if self._is_dist():
+            # Every rank must use the same denominator, or the per-neuron losses
+            # they compare are on different scales. Correct whether or not the
+            # loader is sharded: `scale` is invariant to a common factor on all
+            # three accumulators, so summing an unsharded loader across W ranks
+            # gives the same answer as not reducing at all.
+            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
+
+        n, sum_y, sum_y2 = acc.tolist()
+        if n <= 0:
+            logger.warning("empty train dataloader; leaving the NormMSE denominator per-batch")
+            return
+
+        scale = (sum_y2 - sum_y * sum_y / n) / n if model.error_centered else sum_y2 / n
+        if not (scale > model.loss_fn.eps):
+            logger.warning(
+                "training targets have no spread (measured scale %.3g); leaving the NormMSE "
+                "denominator per-batch. A constant target makes the normalized error undefined.",
+                scale,
+            )
+            return
+
+        model.loss_fn.scale = scale
+        logger.info(
+            "NormMSE denominator fixed to the training-set target %s: %.6g",
+            "variance" if model.error_centered else "mean square", scale,
+        )
+
     def ds_loss(
             self,
             model: SONN,
@@ -1493,17 +1560,32 @@ class Trainer:
             ce_model = sum_nll / total_N
             return ce_model / H_Y
         else:
-            # streamed normalized MSE
+            # streamed normalized MSE — mirrors loss/errors.py::regularity_error,
+            # which cannot be called directly here because the eval set is only
+            # ever seen one batch at a time.
             num: torch.Tensor | None = None
-            denom_sum = torch.zeros((), device=device, dtype=torch.float32)
+            # float64 accumulators: under `variance` the denominator is
+            # `Σy² - (Σy)²/N`, and that subtraction cancels — on a target whose
+            # mean dominates its spread the two terms can differ by several
+            # decades, more than float32 can absorb.
+            n_total = 0
+            sum_y = torch.zeros((), device=device, dtype=torch.float64)
+            sum_y2 = torch.zeros((), device=device, dtype=torch.float64)
             for x, targets in self._iter_eval_batches(model, dl, device, skip_model_fwd):
                 preds = pred_fn_vmapped(params_batch, buffers_batch, x, targets)
                 diff_sq = ((preds - targets) ** 2).sum(dim=-1)
                 del preds
                 num = diff_sq if num is None else num + diff_sq
-                denom_sum = denom_sum + (targets.to(denom_sum.dtype) ** 2).sum()
+                t = targets.to(torch.float64)
+                n_total += t.numel()
+                sum_y = sum_y + t.sum()
+                sum_y2 = sum_y2 + (t * t).sum()
             assert num is not None, "empty dataloader passed to regularity_err"
-            return num / denom_sum.clamp_min(eps)
+            if model.error_centered:
+                denom_sum = sum_y2 - sum_y * sum_y / max(n_total, 1)
+            else:
+                denom_sum = sum_y2
+            return num / denom_sum.clamp_min(eps).to(num.dtype)
 
     def bias_err(
             self,
@@ -1553,7 +1635,8 @@ class Trainer:
         elif is_multiclass:  # bias_method == "l2"
             return bias_error_l2(preds_a, preds_b)
         else:  # regression / binary
-            return bias_error(preds_a, preds_b, torch.cat([t1, t2], dim=0))
+            return bias_error(preds_a, preds_b, torch.cat([t1, t2], dim=0),
+                              centered=model.error_centered)
 
     # endregion
 

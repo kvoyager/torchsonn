@@ -6,20 +6,37 @@ LN2 = 0.6931471805599453   # ln(2), the maximum of JS in nats
 
 def regularity_error(y_hat_B: torch.Tensor,
                      y_B:     torch.Tensor,
-                     eps:     float = 1e-12) -> torch.Tensor:
+                     eps:     float = 1e-12,
+                     centered: bool = True) -> torch.Tensor:
     """
-    Classical GMDH regularity criterion (regression) — squared error
-    on subset B, normalized by the squared L2 norm of the targets on B.
+    GMDH regularity criterion (regression) — squared error on subset B,
+    normalized by the spread of the targets on B.
 
-        Δ²(B) = Σ_i (y_i - ŷ_i)² / Σ_i y_i²
+        Δ²(B) = Σ_i (y_i - ŷ_i)² / Σ_i (y_i - ȳ)²      (centered=True)
+        Δ²(B) = Σ_i (y_i - ŷ_i)² / Σ_i y_i²            (centered=False)
 
     ŷ comes from a candidate whose coefficients were fit on subset A
     and evaluated on subset B. Lower is better; Δ² → 0 for a perfect
-    fit, Δ² ≈ 1 for predictions no better than the zero predictor,
-    Δ² > 1 means the model is worse than zero. If your targets aren't
-    centered around zero, consider subtracting the mean first, or
-    normalize by Σ_i (y_i - ȳ)² instead to get a proper R²-like
-    "fraction of variance unexplained."
+    fit, Δ² > 1 means the model is worse than the baseline.
+
+    The centered form is the fraction of variance unexplained (1 - R²):
+    Δ² ≈ 1 for predictions no better than the *mean* predictor, and the
+    value is invariant to a constant offset on y — which matters because
+    a linear-in-coefficients model is itself translation-invariant, so
+    its measured quality must not move when the target is shifted.
+
+    `centered=False` is Ivakhnenko's original Σy², kept for parity with
+    gmdhpy and other classical implementations. Its baseline is the
+    *zero* predictor, which is only a meaningful reference when the
+    targets are already centered: for non-centered targets
+    Σy² ≈ N(ȳ² + var) is dominated by the mean (on a target with mean
+    454 and sd 17 the denominator is ~700x the variance), so Δ² collapses
+    into a razor-thin band near zero and stops being comparable across
+    datasets or against absolute thresholds.
+
+    Candidate ranking is unaffected by the choice — the denominator is a
+    constant within one evaluation — so this is about what the number
+    means, not about which neuron wins.
 
     Parameters
     ----------
@@ -30,7 +47,9 @@ def regularity_error(y_hat_B: torch.Tensor,
         Ground-truth targets on subset B.
     eps : float
         Floor on the denominator, guarding against degenerate targets
-        (all zeros).
+        (constant under `centered`, all-zero otherwise).
+    centered : bool
+        Normalize by the centered sum of squares. Default True.
 
     Returns
     -------
@@ -38,21 +57,29 @@ def regularity_error(y_hat_B: torch.Tensor,
         Regularity error per candidate. Lower is better.
     """
     num   = ((y_hat_B - y_B) ** 2).sum(dim=-1)
-    denom = (y_B ** 2).sum().clamp_min(eps)
+    spread = y_B - y_B.mean() if centered else y_B
+    denom = (spread ** 2).sum().clamp_min(eps)
     return num / denom
 
 
 def bias_error(y_hat_A: torch.Tensor,
                y_hat_B: torch.Tensor,
                y:       torch.Tensor,
-               eps:     float = 1e-12) -> torch.Tensor:
+               eps:     float = 1e-12,
+               centered: bool = True) -> torch.Tensor:
     """
-    Classical GMDH bias criterion (regression) — squared difference
-    between predictions from the candidate fit on A and on B, evaluated
-    on a common set (typically A ∪ B), normalized by squared L2 norm
-    of the targets on that set:
+    GMDH bias criterion (regression) — squared difference between
+    predictions from the candidate fit on A and on B, evaluated on a
+    common set (typically A ∪ B), normalized by the spread of the
+    targets on that set:
 
-        n_B = Σ_i (ŷ_iA - ŷ_iB)² / Σ_i y_i²
+        n_B = Σ_i (ŷ_iA - ŷ_iB)² / Σ_i (y_i - ȳ)²     (centered=True)
+        n_B = Σ_i (ŷ_iA - ŷ_iB)² / Σ_i y_i²           (centered=False)
+
+    See `regularity_error` for why the centered form is the default; the
+    two criteria must use the same denominator, since `cmpComb_validate_bias`
+    combines them as `(1-alpha)*bias + alpha*regularity` and a mismatch
+    would silently re-weight `error_alpha`.
 
     Measures parameter stability: small n_B means the model's
     coefficients are insensitive to which half of the data they were
@@ -78,6 +105,8 @@ def bias_error(y_hat_A: torch.Tensor,
         for the denominator's normalization.
     eps : float
         Floor on the denominator.
+    centered : bool
+        Normalize by the centered sum of squares. Default True.
 
     Returns
     -------
@@ -86,7 +115,8 @@ def bias_error(y_hat_A: torch.Tensor,
         give 0.
     """
     num   = ((y_hat_A - y_hat_B) ** 2).sum(dim=-1)
-    denom = (y ** 2).sum().clamp_min(eps)
+    spread = y - y.mean() if centered else y
+    denom = (spread ** 2).sum().clamp_min(eps)
     return num / denom
 
 
@@ -218,6 +248,11 @@ def bias_error_l2(z_A: torch.Tensor,
     if y is None:
         denom = float(z_A.shape[-1])                    # one-hot: ||y_i||² = 1
     else:
+        # Deliberately NOT centered, unlike the regression criteria: `y` here is
+        # a label encoding (one-hot / soft / ordinal), where Σ||y||² is the
+        # structural scale of the encoding itself (exactly N for one-hot), not a
+        # measure of target spread. Subtracting a mean class vector would make
+        # the denominator depend on class balance rather than on the encoding.
         denom = (y.float() ** 2).sum().clamp_min(1e-12)
     return sq_diff / denom
 

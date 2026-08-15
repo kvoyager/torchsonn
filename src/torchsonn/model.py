@@ -126,6 +126,16 @@ class SONN(SONNModule):
         # `== CriterionType.cmpValidate` comparisons.
         self.criterion_type = CriterionType.get(self.param.train.criterion_type)
 
+        # Same reason as criterion_type: the schema types this `str`, so this is
+        # the only place it gets validated. Cached as a bool because the trainer
+        # reads it per evaluation.
+        _err_norm = self.param.train.error_normalization
+        if _err_norm not in ("variance", "energy"):
+            raise ValueError(
+                f"train.error_normalization must be 'variance' or 'energy', got {_err_norm!r}"
+            )
+        self.error_centered = _err_norm == "variance"
+
         self.feature_names = feature_names       # name of inputs, used to print model
         if isinstance(self.feature_names, np.ndarray):
             self.feature_names = self.feature_names.tolist()
@@ -144,11 +154,15 @@ class SONN(SONNModule):
         if self.param.model.type == "regressor":
             self.shared_proj = None
             self.soft_binner = None
-            # NormMSE = sum((y - y_pred)^2) / (sum(y^2) + eps) —
-            # normalized criterion used by classical GMDH implementations
-            # (gmdhpy etc). Returns a scalar; compute_loss's downstream .mean()
-            # is a no-op on a scalar, so the rest of the pipeline is unchanged.
-            self.loss_fn = NormMSE()
+            # NormMSE = sum((y - y_pred)^2) / sum((y - y_mean)^2), the same
+            # normalization as the regularity criterion so the training loss and
+            # the dev-set error live on one scale. Trainer.train replaces the
+            # per-batch denominator with a fixed training-set variance; see
+            # NormMSE's docstring. `error_normalization: energy` restores the
+            # sum(y^2) form used by classical GMDH implementations (gmdhpy etc).
+            # Returns a scalar; compute_loss's downstream .mean() is a no-op on
+            # a scalar, so the rest of the pipeline is unchanged.
+            self.loss_fn = NormMSE(centered=self.error_centered)
 
             # Regression out_proj is a Linear(num_out, 1) head — a global
             # linear combiner over the top-k survivor outputs of the last

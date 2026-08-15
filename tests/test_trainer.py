@@ -37,6 +37,7 @@ from torch.utils.data import DataLoader
 
 from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
+from torchsonn.loss import regularity_error
 from torchsonn.model import SONN
 from torchsonn.trainer import LayerAccumulator, StepCheckpoint, Trainer
 
@@ -107,6 +108,117 @@ class TestGetCheckpointDir:
         out = Trainer.get_checkpoint_dir(model)
         # the path resolves to <repo>/checkpoints; just check it ends with "checkpoints"
         assert out.name == "checkpoints"
+
+
+def _norm_cfg(tmp_path: Path, normalization: str) -> OmegaConf:
+    return _make_cfg(
+        model={
+            "type": "regressor",
+            "num_classes": 1,
+            "nbest_neurons": 3,
+            "soft_binner": False,
+            "ref_functions": ["linear_cov"],
+        },
+        train={"checkpoint_dir": str(tmp_path), "error_normalization": normalization},
+    )
+
+
+# Target whose mean dominates its spread — the regime where the `variance` and
+# `energy` denominators diverge, and where float32 accumulation of
+# `Σy² - (Σy)²/N` would lose most of its digits.
+def _shifted_targets(n: int = 12) -> tuple[torch.Tensor, torch.Tensor]:
+    torch.manual_seed(0)
+    y = 100.0 + torch.randn(n)
+    preds = torch.stack([y + 0.3 * torch.randn(n), y + 1.5 * torch.randn(n)])
+    return y, preds
+
+
+class TestRegularityErrStreaming:
+    """`Trainer.regularity_err` re-implements `loss.regularity_error` for the
+    streaming case (the eval set is only ever seen one batch at a time), so the
+    two need pinning to each other."""
+
+    @staticmethod
+    def _run(normalization: str, batch_size: int, tmp_path: Path) -> torch.Tensor:
+        y, preds = _shifted_targets()
+        # candidates are encoded as feature columns, so the fake pred_fn below
+        # can hand them back per batch without a real neuron ensemble
+        x = preds.T.contiguous()
+
+        cfg = _norm_cfg(tmp_path, normalization)
+        model = SONN(cfg, d_model=2)
+        trainer = Trainer(cfg)
+        dl = DataLoader(SONNDataset(x, y), batch_size=batch_size)
+
+        def pred_fn(params, buffers, xb, yb):
+            return xb.T                                  # (ensemble=2, batch)
+
+        return trainer.regularity_err(
+            model, pred_fn, {}, {}, dl, "cpu", skip_model_fwd=True,
+        )
+
+    @pytest.mark.parametrize("normalization", ["variance", "energy"])
+    def test_matches_reference_helper(self, normalization, tmp_path):
+        y, preds = _shifted_targets()
+        out = self._run(normalization, batch_size=5, tmp_path=tmp_path)
+        expected = regularity_error(preds, y, centered=normalization == "variance")
+        assert torch.allclose(out, expected, rtol=1e-5)
+
+    def test_batching_does_not_change_result(self, tmp_path):
+        whole = self._run("variance", batch_size=12, tmp_path=tmp_path)
+        chunked = self._run("variance", batch_size=5, tmp_path=tmp_path)
+        assert torch.allclose(whole, chunked, rtol=1e-6)
+
+    def test_variance_and_energy_differ_on_shifted_targets(self, tmp_path):
+        # Guards against the two branches silently collapsing into one.
+        variance = self._run("variance", batch_size=5, tmp_path=tmp_path)
+        energy = self._run("energy", batch_size=5, tmp_path=tmp_path)
+        assert (energy < variance / 100).all()
+        # ...but the candidate ranking is identical either way
+        assert torch.equal(variance.argsort(), energy.argsort())
+
+
+class TestFitTargetScale:
+    def test_sets_training_variance(self, tmp_path):
+        y, _ = _shifted_targets()
+        x = torch.randn(y.numel(), 2)
+        model = SONN(_norm_cfg(tmp_path, "variance"), d_model=2)
+        trainer = Trainer(_norm_cfg(tmp_path, "variance"))
+
+        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=5))
+        assert model.loss_fn.scale == pytest.approx(y.var(unbiased=False).item(), rel=1e-5)
+
+    def test_energy_uses_mean_square(self, tmp_path):
+        y, _ = _shifted_targets()
+        x = torch.randn(y.numel(), 2)
+        model = SONN(_norm_cfg(tmp_path, "energy"), d_model=2)
+        trainer = Trainer(_norm_cfg(tmp_path, "energy"))
+
+        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=5))
+        assert model.loss_fn.scale == pytest.approx((y * y).mean().item(), rel=1e-5)
+
+    def test_constant_target_leaves_scale_unset(self, tmp_path):
+        y = torch.full((8,), 7.0)
+        x = torch.randn(8, 2)
+        model = SONN(_norm_cfg(tmp_path, "variance"), d_model=2)
+        trainer = Trainer(_norm_cfg(tmp_path, "variance"))
+
+        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=4))
+        # falls back to the per-call denominator rather than dividing by ~0
+        assert model.loss_fn.scale is None
+
+    def test_noop_for_classifier(self, tmp_path):
+        cfg = _make_cfg(
+            model={"type": "multi-class", "num_classes": 3, "nbest_neurons": 3,
+                   "ref_functions": ["linear_cov"]},
+            train={"checkpoint_dir": str(tmp_path)},
+        )
+        model = SONN(cfg, d_model=2)
+        trainer = Trainer(cfg)
+        x, y = torch.randn(8, 2), torch.randint(0, 3, (8,))
+        # NLLLoss has no `scale`; the helper must not touch it
+        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=4))
+        assert not hasattr(model.loss_fn, "scale")
 
 
 class TestCleanupCheckpoints:

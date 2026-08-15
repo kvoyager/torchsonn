@@ -137,6 +137,9 @@ method; the per-config sections below give the side-by-side against the earlier
 The `*_finetune` rows add the [fine-tuning stack](#fine-tuning-the-discovered-network)
 on top of the config they are named after, and nothing else.
 
+All rows were logged under torchsonn 0.1.1, whose regression criterion divided
+by `Σy²`; 0.1.2 made `Σ(y-ȳ)²` the default (`train.error_normalization`).
+
 | Config | Families | Pools (nbest/max) | Device | Wall-clock | MAE (MW) | RMSE (MW) | R² |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | `ccpp_legendre_poly_heavy_finetune.yaml` | `linear_cov` + Legendre pair & dim 4/6 | 60/600 | CUDA | ≈ 14.7 h | **3.1284 ± 0.0485** | 4.0943 ± 0.0662 | 0.9424 ± 0.0017 |
