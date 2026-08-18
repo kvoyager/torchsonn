@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.3
+
+### Fixed — `bias_error_l2` reduced over the wrong axis on multi-class logits
+
+`bias_error_l2` was written for the scalar contract in its docstring —
+`(..., N)` neuron outputs, summed over the sample axis — but `Trainer.bias_err`
+hands it the `(ensemble, N, K)` logits the multi-class path produces. It summed
+over the class axis instead, returning a per-sample `(ensemble, N)` tensor
+normalized by `K` rather than one error per candidate normalized by `N`.
+
+Both bias-using criteria raised. Under `criterion_type: validate_bias` the
+tensor broadcast against the `(ensemble,)` regularity error and failed in
+`SONN.get_error`; under `criterion_type: bias` it reached neuron selection and
+failed there on a mask shape. Neither silently selected on a malformed error.
+
+The function now takes a `logits` flag: `logits=True` sums over classes *and*
+samples so `(ensemble, N, K)` collapses to `(ensemble,)`, and takes `N` from
+`shape[-2]` so the denominator stays the one-hot label energy `Σ‖y_i‖² = N`.
+The flag is explicit rather than inferred from `z_A.dim()` because
+`(ensemble, N)` and `(N, K)` are both 2-D and mean different things. The scalar
+form is unchanged.
+
+**What changes for you.** Only multi-class runs with `train.bias_ce_type: l2`
+*and* a bias-using criterion. The default `bias_ce_type` is `js`, whose
+`bias_error_js` was always correct, and the default `criterion_type` is
+`validate`, which computes no bias error at all — so a default configuration is
+unaffected, and no previously-completed run produced a wrong number.
+
 ## 0.1.2
 
 ### Changed — regression criteria now normalize by target variance

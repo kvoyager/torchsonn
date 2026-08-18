@@ -1633,7 +1633,7 @@ class Trainer:
         if is_multiclass and bias_method == "js":
             return bias_error_js(preds_a, preds_b)
         elif is_multiclass:  # bias_method == "l2"
-            return bias_error_l2(preds_a, preds_b)
+            return bias_error_l2(preds_a, preds_b, logits=True)
         else:  # regression / binary
             return bias_error(preds_a, preds_b, torch.cat([t1, t2], dim=0),
                               centered=model.error_centered)

@@ -91,62 +91,88 @@ def test_train_end_to_end_runs(tmp_path):
     assert out.shape[0] == 4
 
 
-def test_train_multiclass_softbinner(tmp_path):
-    """Drive the multi-class soft-binner branches end-to-end."""
+def _mc_cfg(tmp_path, **train_overrides) -> OmegaConf:
     base = OmegaConf.structured(SONNConfig)
-    cfg = OmegaConf.merge(
-        base,
-        OmegaConf.create(
-            {
-                "model": {
-                    "type": "multi-class",
-                    "num_classes": 3,
-                    "nbest_neurons": 2,
-                    "soft_binner": True,
-                    "max_neuron_models": 3,
-                    "ref_functions": ["linear_cov"],
-                    "shortcut": False,
-                    "use_layer_norm": False,
-                },
-                "train": {
-                    "checkpoint_dir": str(tmp_path),
-                    "device": "cpu",
-                    "dtype": "float32",
-                    "batch_size": 16,
-                    "steps": 20,
-                    "eval_step_interval": 5,
-                    "criterion_type": "validate",
-                    "max_layer_count": 1,
-                    "criterion_minimum_width": 1,
-                    "stop_train_epsilon_condition": 1e-9,
-                    "early_stop_tolerance_steps": 4,
-                    "keep_last_n": 2,
+    overrides = OmegaConf.create(
+        {
+            "model": {
+                "type": "multi-class",
+                "num_classes": 3,
+                "nbest_neurons": 2,
+                "soft_binner": True,
+                "max_neuron_models": 3,
+                "ref_functions": ["linear_cov"],
+                "shortcut": False,
+                "use_layer_norm": False,
+            },
+            "train": {
+                "checkpoint_dir": str(tmp_path),
+                "device": "cpu",
+                "dtype": "float32",
+                "batch_size": 16,
+                "steps": 20,
+                "eval_step_interval": 5,
+                "criterion_type": "validate",
+                "max_layer_count": 1,
+                "criterion_minimum_width": 1,
+                "stop_train_epsilon_condition": 1e-9,
+                "early_stop_tolerance_steps": 4,
+                "keep_last_n": 2,
+                "verbose": False,
+                "optimizer": {
+                    "name": "adam",
                     "verbose": False,
-                    "optimizer": {
-                        "name": "adam",
-                        "verbose": False,
-                        "optimizer_params": {
-                            "lr": 1.0e-2,
-                            "min_lr": 1.0e-4,
-                            "gamma": 0.5,
-                            "clip_value": 1.0,
-                            "clip_norm": 5.0,
-                        },
+                    "optimizer_params": {
+                        "lr": 1.0e-2,
+                        "min_lr": 1.0e-4,
+                        "gamma": 0.5,
+                        "clip_value": 1.0,
+                        "clip_norm": 5.0,
                     },
-                    "scheduler": {"name": None, "scheduler_params": None},
-                    "save_interval": 1000,
                 },
-            }
-        ),
+                "scheduler": {"name": None, "scheduler_params": None},
+                "save_interval": 1000,
+            },
+        }
     )
-    model = SONN(cfg, d_model=4)
+    overrides = OmegaConf.merge(overrides, OmegaConf.create({"train": train_overrides}))
+    return OmegaConf.merge(base, overrides)
 
+
+def _make_mc_dl(n: int = 48, d: int = 4):
     rng = np.random.default_rng(0)
-    n = 48
-    x = rng.standard_normal((n, 4)).astype("float32")
+    x = rng.standard_normal((n, d)).astype("float32")
     y = (x[:, 0] > 0).astype("int64") + (x[:, 1] > 0).astype("int64")  # values in {0,1,2}
     ds = SONNDataset(torch.from_numpy(x), torch.from_numpy(y))
-    dl = DataLoader(ds, batch_size=16)
+    return x, DataLoader(ds, batch_size=16)
+
+
+def test_train_multiclass_softbinner(tmp_path):
+    """Drive the multi-class soft-binner branches end-to-end."""
+    cfg = _mc_cfg(tmp_path)
+    model = SONN(cfg, d_model=4)
+    x, dl = _make_mc_dl()
+
+    trainer = Trainer(config=cfg)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    assert len(trained.layers) >= 1
+    pred = trained.infer(torch.from_numpy(x[:4]))
+    assert pred.shape == (4, 3)
+
+
+@pytest.mark.parametrize("criterion_type", ["bias", "validate_bias"])
+@pytest.mark.parametrize("bias_ce_type", ["js", "l2"])
+def test_train_multiclass_bias_criteria(tmp_path, criterion_type, bias_ce_type):
+    """Both multi-class bias criteria must reduce to one error per candidate.
+
+    The 'l2' variant used to return a per-sample (ensemble, N) tensor. That
+    broke both bias-using criteria: 'validate_bias' broadcast it against the
+    (ensemble,) regularity error in SONN.get_error, and 'bias' carried it into
+    neuron selection and failed there on a mask shape.
+    """
+    cfg = _mc_cfg(tmp_path, criterion_type=criterion_type, bias_ce_type=bias_ce_type)
+    model = SONN(cfg, d_model=4)
+    x, dl = _make_mc_dl()
 
     trainer = Trainer(config=cfg)
     trained = trainer.train(model, dl, dl, dl, verbose=False)

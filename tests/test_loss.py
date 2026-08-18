@@ -200,6 +200,48 @@ class TestBiasErrorL2:
         # diff = 1, denom = N = 4
         assert torch.allclose(out, torch.tensor([0.25]))
 
+    # --- logits form: what Trainer.bias_err passes for multi-class ---
+
+    def test_logits_identical_is_zero(self):
+        z = torch.randn(3, 5, 4)  # 3 candidates, 5 samples, 4 classes
+        out = bias_error_l2(z, z, logits=True)
+        assert torch.allclose(out, torch.zeros(3))
+
+    def test_logits_reduces_to_candidate_dim(self):
+        # Must collapse to (ensemble,), not (ensemble, N): summing over the
+        # class axis alone leaves a per-sample tensor that cannot be mixed
+        # with the regularity criterion.
+        out = bias_error_l2(torch.randn(2, 6, 4), torch.randn(2, 6, 4), logits=True)
+        assert out.shape == (2,)
+
+    def test_logits_denominator_is_N_not_K(self):
+        z_a = torch.tensor([[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]])
+        z_b = torch.tensor([[[1.0, 2.0, 4.0], [4.0, 7.0, 6.0]]])
+        out = bias_error_l2(z_a, z_b, logits=True)
+        # ||.||^2 per sample = 1 and 4 -> 5, denom = N = 2 (not K = 3)
+        assert torch.allclose(out, torch.tensor([2.5]))
+
+    def test_logits_one_hot_y_matches_default(self):
+        # Sum_i ||y_i||^2 = N for one-hot, so explicit y must agree with y=None
+        z_a = torch.randn(2, 5, 3)
+        z_b = torch.randn(2, 5, 3)
+        y = torch.eye(3)[torch.tensor([0, 1, 2, 1, 0])]
+        assert torch.allclose(
+            bias_error_l2(z_a, z_b, logits=True),
+            bias_error_l2(z_a, z_b, y=y, logits=True),
+        )
+
+    def test_logits_combines_with_regularity_ce(self):
+        # The failure this fix addresses: SONN.get_error under
+        # cmpComb_validate_bias broadcast a (E, N) bias against an (E,)
+        # regularity and raised.
+        logits_a = torch.randn(4, 7, 3)
+        logits_b = torch.randn(4, 7, 3)
+        y = torch.tensor([0, 1, 2, 1, 0, 2, 1])
+        bias = bias_error_l2(logits_a, logits_b, logits=True)
+        reg = regularity_error_ce(logits_a, y)
+        assert (0.5 * bias + 0.5 * reg).shape == (4,)
+
 
 class TestBiasErrorJS:
     def test_identical_logits_zero(self):

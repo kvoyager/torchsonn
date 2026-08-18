@@ -213,40 +213,61 @@ def regularity_error_ce(logits_B: torch.Tensor,
 
 def bias_error_l2(z_A: torch.Tensor,
                   z_B: torch.Tensor,
-                  y:   torch.Tensor = None) -> torch.Tensor:
+                  y:   torch.Tensor = None,
+                  logits: bool = False) -> torch.Tensor:
     """
-    CE-GMDH bias criterion — L2 disagreement on scalar neuron outputs,
+    CE-GMDH bias criterion — L2 disagreement on neuron outputs,
     normalized by label energy. Direct port of Ivakhnenko's formula:
 
-        n_B = Σ_i (z_A(x_i) - z_B(x_i))^2  /  Σ_i ||y_i||^2
+        n_B = Σ_i ||z_A(x_i) - z_B(x_i)||^2  /  Σ_i ||y_i||^2
 
-    For one-hot labels, Σ_i ||y_i||^2 = N regardless of N, so the
+    For one-hot labels, Σ_i ||y_i||^2 = N regardless of N *and* K, so the
     default (y = None) uses N as the denominator — the structurally
     correct value for standard classification encoding. Pass y
     explicitly for ordinal encodings or soft/weighted labels.
 
-    Sample alignment: z_A[..., i] and z_B[..., i] MUST refer to the
+    `logits=True` selects the multi-class form, where each sample carries
+    a length-K vector and ||·||² sums over the class axis. The default
+    scalar form treats the last axis as the sample axis. The flag is
+    explicit rather than inferred from `z_A.dim()` because (ensemble, N)
+    and (N, K) are both 2-D and mean different things — inferring would
+    silently reduce over the wrong axis for one of them.
+
+    Sample alignment: z_A[..., i] and z_B[..., i] (scalar form), or
+    z_A[..., i, :] and z_B[..., i, :] (logits form), MUST refer to the
     same input x_i.
 
     Parameters
     ----------
-    z_A, z_B : (..., N) tensors
-        Scalar neuron outputs on the common evaluation set, from the
-        same neuron structure with parameters fit on subset A vs B.
-        Leading dims carry the candidate batch.
+    z_A, z_B : (..., N) tensors, or (..., N, K) when `logits`
+        Neuron outputs on the common evaluation set, from the same
+        neuron structure with parameters fit on subset A vs B. Leading
+        dims carry the candidate batch.
     y : tensor, optional
         Labels for explicit denominator. (N,) integers for ordinal
         encoding, or (N, K) one-hot / soft labels. If None, denominator
         defaults to N — the one-hot case.
+    logits : bool
+        Treat the last axis as classes rather than samples. Default False.
 
     Returns
     -------
     bias : (...) tensor
         Lower is better; identical fits give 0.
     """
-    sq_diff = ((z_A - z_B) ** 2).sum(dim=-1)
+    if logits:
+        # Reduce over classes *and* samples, so only the leading candidate
+        # dims survive: (ensemble, N, K) → (ensemble,). That is the rank
+        # `regularity_error_ce` returns, and it is what lets `SONN.get_error`
+        # combine the two under `error_alpha` — summing over `-1` alone would
+        # leave a per-sample (ensemble, N) tensor and break the mix.
+        sq_diff = ((z_A - z_B) ** 2).sum(dim=(-2, -1))
+        n_samples = z_A.shape[-2]
+    else:
+        sq_diff = ((z_A - z_B) ** 2).sum(dim=-1)
+        n_samples = z_A.shape[-1]
     if y is None:
-        denom = float(z_A.shape[-1])                    # one-hot: ||y_i||² = 1
+        denom = float(n_samples)                        # one-hot: ||y_i||² = 1
     else:
         # Deliberately NOT centered, unlike the regression criteria: `y` here is
         # a label encoding (one-hot / soft / ordinal), where Σ||y||² is the
