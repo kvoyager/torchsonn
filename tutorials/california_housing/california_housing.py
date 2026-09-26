@@ -7,8 +7,9 @@ on the held-out rows and plot the network.
 Input / target handling (module constants below, not config keys — the Hydra
 config is composed against the strict SONNConfig schema, which has no room for
 tutorial-only knobs):
-  * LOG_FEATURES: the heavy-tailed per-household features are log-transformed
-    before standardization, and two ratio features are appended.
+  * LOG_FEATURES: the skewed features (MedInc and the per-household counts)
+    are log-transformed before standardization, AveBedrms is replaced by the
+    log bedrooms-per-room ratio, and log rooms-per-person is appended.
   * Z_CLIP: standardized features are clipped to +-Z_CLIP sigma.
   * LOG_TARGET: fit log(price) instead of price; predictions are exp'd back.
   * CLIP_PREDICTIONS: predictions are clipped to the training target range
@@ -170,8 +171,9 @@ def knn_price_feature(
 def engineer_features(x: np.ndarray, names: list[str]) -> tuple[np.ndarray, list[str]]:
     """Row-wise feature transform (no fitted state, so no train/test leakage).
 
-    Log-transforms the heavy-tailed per-household columns in place and appends
-    bedrooms-per-room and log rooms-per-person. Returns (features, names).
+    Log-transforms the skewed columns in place (MedInc, AveRooms, Population,
+    AveOccup), replaces AveBedrms by the log bedrooms-per-room ratio, and
+    appends log rooms-per-person. Returns (features, names).
     """
     if not LOG_FEATURES:
         return x, list(names)
@@ -180,11 +182,20 @@ def engineer_features(x: np.ndarray, names: list[str]) -> tuple[np.ndarray, list
     bedrooms_per_room = x[:, col["AveBedrms"]] / x[:, col["AveRooms"]]
     rooms_per_person = x[:, col["AveRooms"]] / x[:, col["AveOccup"]]
     new_names = list(names)
-    for n in ("AveRooms", "AveBedrms", "Population", "AveOccup"):
+    # MedInc: skew 1.6 raw, -0.2 after log (capped at 15, so the top end
+    # otherwise sits past the +-5 sigma clip).
+    for n in ("MedInc", "AveRooms", "Population", "AveOccup"):
         x[:, col[n]] = np.log(x[:, col[n]])
         new_names[col[n]] = f"log{n}"
-    x = np.column_stack([x, bedrooms_per_room, np.log(rooms_per_person)]).astype(np.float32)
-    new_names += ["BedrmsPerRoom", "logRoomsPerPerson"]
+    # AveBedrms stays at skew ~6 / kurtosis ~60 even after a log (a few
+    # institutional blocks define its scale, squeezing the bulk into +-0.3
+    # sigma), and log(AveBedrms) == log(AveRooms) + log(bedrooms_per_room)
+    # exactly. Replace the column by the log ratio (skew 0.5, kurtosis 1): same
+    # information, well-behaved distribution.
+    x[:, col["AveBedrms"]] = np.log(bedrooms_per_room)
+    new_names[col["AveBedrms"]] = "logBedrmsPerRoom"
+    x = np.column_stack([x, np.log(rooms_per_person)]).astype(np.float32)
+    new_names += ["logRoomsPerPerson"]
     if LOCATION_FEATURES:
         lat, lon = x[:, col["Latitude"]], x[:, col["Longitude"]]
         cols = [lat + lon, lat - lon]

@@ -68,6 +68,10 @@
 #   omp_mixed + 'readout' criterion       MSE 0.2015   MAE 0.2826   (7 layers: the
 #     readout curve is flatter, so that criterion stops too early; the head-vs-
 #     best-neuron gap did widen as predicted, 0.007 vs 0.002 under plain)
+# Feature audit fixes in the script (log MedInc; AveBedrms column replaced by
+# log bedrooms-per-room, which is the same information at skew 0.5 instead of 6;
+# rows clipped at +-5 sigma on that column 95 -> 5), omp_mixed, single model:
+#   fixed features                        MSE 0.1920   MAE 0.2740   (7 layers) <- current
 # With 'readout' the criterion is fair to the fine-tune - it scores the per-layer
 # head's dev loss (0.145 at layer 0 vs 0.171 for the best neuron) - and still
 # stops at 3 layers: the head's dev error plateaus at 0.144 from layer 0 on,
