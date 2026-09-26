@@ -74,6 +74,28 @@ class TestNormMSE:
         out = loss(y + 0.1, y)
         assert torch.isfinite(out)
 
+    def test_censor_at_frees_predictions_above_the_cap(self):
+        """Capped rows: no error above the cap, squared error below; others unchanged."""
+        cap = 5.0
+        y = torch.tensor([1.0, 2.0, cap, cap, cap])
+        y_hat = torch.tensor([1.5, 1.5, 7.0, 5.0, 4.0], requires_grad=True)
+        plain = NormMSE(eps=0.0, scale=1.0)
+        cens = NormMSE(eps=0.0, scale=1.0, censor_at=cap)
+        # Uncensored rows contribute 0.25 each; capped rows contribute 0, 0, 1.
+        assert torch.isclose(cens(y_hat, y), torch.tensor((0.25 + 0.25 + 0.0 + 0.0 + 1.0) / 5))
+        assert torch.isclose(plain(y_hat, y), torch.tensor((0.25 + 0.25 + 4.0 + 0.0 + 1.0) / 5))
+        cens(y_hat, y).backward()
+        g = y_hat.grad
+        # No pull on the capped row predicted above the cap; a pull on the one below.
+        assert g[2].item() == 0.0
+        assert g[4].item() < 0.0
+        assert g[0].item() > 0.0 and g[1].item() < 0.0
+
+    def test_censor_at_none_is_identity(self):
+        y = SHIFTED_Y
+        y_hat = y + 0.5
+        assert torch.isclose(NormMSE(censor_at=None)(y_hat, y), NormMSE()(y_hat, y))
+
 
 class TestRegularityError:
     def test_perfect_prediction_is_zero(self):

@@ -2,6 +2,23 @@
 
 ## 0.1.4
 
+### Added — `train.censor_target_at`: censored least squares for capped targets
+
+`NormMSE` takes an optional `censor_at`, wired from `train.censor_target_at`.
+Rows whose target is at or above the cap have their prediction clipped to the
+cap before the squared error, so predicting above the cap is free and pushes
+no gradient, while predicting below it is penalized as before; uncensored rows
+are untouched. This is the Tobit likelihood with the noise scale taken to
+zero, and it keeps the objective a convex piecewise quadratic, so every fit
+path (vmapped neuron fits, LBFGS head, end-to-end pass) works unchanged. The
+neuron-selection criterion is not affected. Clip predictions to the cap at
+inference. Off by default.
+
+Motivation, California housing: prices are recorded as 5.0 for every house
+worth 5.0 or more (4.8% of rows). Under plain squared error those rows carried
+24% of the test MSE and dragged the fitted surface down around them: uncapped
+houses priced 4-5 were under-predicted by 0.74 on average.
+
 ### Added — `train.layer_err_source: readout`
 
 The layer-growth criterion in `Trainer.train` compares `layer.err` across

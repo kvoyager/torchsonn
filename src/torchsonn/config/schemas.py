@@ -306,6 +306,15 @@ class TrainConfig:
     # penalized training objective. Default 0.0 = ridge disabled.
     ridge_alpha: float = 0.0
 
+    # Right-censored regression target: rows whose target is at or above this
+    # value are treated as "at least this much" by the training loss (NormMSE
+    # clips the prediction to the cap for those rows, so predicting above it is
+    # free). In the units the loss sees - log price if the target is
+    # log-transformed. Only the fits use it (neuron fits, head, end-to-end
+    # pass, and their dev early stopping); the neuron-selection criterion is
+    # unchanged. Clip predictions to the cap at inference. None = off.
+    censor_target_at: Optional[float] = None
+
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     out_proj_train: OutProjTrainConfig = field(default_factory=OutProjTrainConfig)

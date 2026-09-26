@@ -162,7 +162,8 @@ class SONN(SONNModule):
             # sum(y^2) form used by classical GMDH implementations (gmdhpy etc).
             # Returns a scalar; compute_loss's downstream .mean() is a no-op on
             # a scalar, so the rest of the pipeline is unchanged.
-            self.loss_fn = NormMSE(centered=self.error_centered)
+            self.loss_fn = NormMSE(centered=self.error_centered,
+                                   censor_at=self.param.train.censor_target_at)
 
             # Regression out_proj is a Linear(num_out, 1) head — a global
             # linear combiner over the top-k survivor outputs of the last

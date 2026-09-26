@@ -14,6 +14,8 @@ tutorial-only knobs):
   * LOG_TARGET: fit log(price) instead of price; predictions are exp'd back.
   * CLIP_PREDICTIONS: predictions are clipped to the training target range
     (the target is censored at $500k, so nothing above 5.0 can be right).
+  * CENSOR_CAP: the training loss treats rows at the cap as "at least 5.0"
+    (train.censor_target_at), so they stop dragging expensive areas down.
   * LOCATION_FEATURES: rotated coordinates, log distances to the four big
     cities, and a k-nearest-neighbour price encoding of location fitted on
     the training rows only (KNN_PRICE_K neighbours).
@@ -112,6 +114,16 @@ LOG_TARGET = True
 # below the observed minimum either. Free, and it removes the worst residuals
 # on high-income rows the model extrapolates past the cap.
 CLIP_PREDICTIONS = True
+
+# Treat the target's cap as censoring in the training loss. 4.8% of rows are
+# recorded at the 5.0 ceiling; with plain squared error each of them says
+# "worth exactly 5.0" and drags the fitted surface down in expensive areas
+# (measured before this: the capped rows carried 24% of the test MSE and the
+# uncapped rows priced 4-5 were under-predicted by 0.74 on average). With
+# `train.censor_target_at` set to the cap, NormMSE clips the prediction to the
+# cap for those rows, so predicting above it costs nothing. The cap is taken
+# from the training targets (5.00001 in this dataset) in the loss's units.
+CENSOR_CAP = True
 
 # Location features. Price is a rough, non-smooth function of (Latitude,
 # Longitude) that a degree-3 pair polynomial cannot draw, and location is where
@@ -281,6 +293,9 @@ def main(config: DictConfig) -> None:
             # the trainer never reads it, only predict() does, after exp'ing.
             train_y = np.log(train_y).astype(np.float32)
             dev_y = np.log(dev_y).astype(np.float32)
+        # Censoring cap in the units the loss sees (see CENSOR_CAP). Set before
+        # the model is built, since SONN passes it to its NormMSE.
+        config.train.censor_target_at = float(train_y.max()) if CENSOR_CAP else None
 
         # ---- Standardize features (StandardScaler, same as gmdhpy) -----------
         feature_scaler = StandardScaler()
