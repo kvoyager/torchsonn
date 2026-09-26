@@ -98,16 +98,16 @@ Z_CLIP = 5.0
 # skewed quantities).
 LOG_FEATURES = True
 
-# Fit log(price) instead of price. The target is right-skewed and censored at
-# 5.0 ($500k); the log compresses the skew so the squared error is not
-# dominated by the expensive tail. Predictions are exp'd back before scoring.
-# The loss then optimizes log-space error, which is not the same as raw MSE,
-# so this is a measured trade rather than a free win. Measured on the finetune
-# config (all with CLIP_PREDICTIONS): neither LOG_FEATURES nor LOG_TARGET
-# helps MSE on its own (each alone is ~0.016 worse than raw/raw), together
-# they match raw/raw on MSE (0.3013 vs 0.3002) and are clearly better on MAE
-# (0.3626 vs 0.3758). Full table in california_housing_legendre_finetune.yaml.
-LOG_TARGET = True
+# Fit log(price) instead of price. The log compresses the target's right skew
+# and a log model estimates a conditional *median*, which favours MAE; the raw
+# target estimates the conditional *mean*, which is what MSE rewards. The
+# trade is real and was measured twice: under the early pipeline (no location
+# features, no fine-tune) log won on MSE (0.3013 vs 0.3191); under the current
+# one raw wins on MSE (0.1877 vs 0.1912) and log wins on MAE (0.2719 vs
+# 0.2791), the same direction as gradient boosting on these features. Off,
+# since the tutorial's headline metric is MSE; set True to trade ~0.0035 MSE
+# for ~0.007 MAE. The censoring cap (CENSOR_CAP) follows the target's units.
+LOG_TARGET = False
 
 # Clip predictions to the training target range. The dataset caps prices at
 # 5.0, so any prediction above it is wrong by construction, and nothing sells

@@ -79,6 +79,21 @@
 #   capped rows still carry 24% of the test MSE and the uncapped 4-5 rows are still
 #   under-predicted by 0.72: the top of the market is shrunk toward the mean, not
 #   dragged down by the cap. Kept on as the correct loss for the data.
+# Yardstick: sklearn HistGradientBoosting on the same 16 features, split and
+# prediction clip (tmp/gbm_baseline.py recipe: lr 0.05, 31 leaves, l2 1, early
+# stop on 15% of train):
+#   single, log target                    MSE 0.1831   MAE 0.2673
+#   single, raw target                    MSE 0.1700   MAE 0.2644
+#   single, log target, no kNN feature    MSE 0.1980   MAE 0.2775
+#   mean of 5 seeds, log target           MSE 0.1727   MAE 0.2589
+# vs SONN single 0.1912 / ensemble 0.1901: ~0.02 MSE (10%) of headroom remains
+# with this feature set, and the trees prefer the raw target for MSE.
+# Raw target (script LOG_TARGET False, cap in price units), single model:
+#   raw target                            MSE 0.1877   MAE 0.2791   (9 layers) <- current
+#   (log target, same pipeline           MSE 0.1912   MAE 0.2719   (15 layers))
+# MSE-optimal is the conditional mean, which the raw target estimates; the log
+# target estimates the median and wins MAE. The end-to-end pass needed 10875
+# steps here vs ~2000-4000 on the log target.
 # With 'readout' the criterion is fair to the fine-tune - it scores the per-layer
 # head's dev loss (0.145 at layer 0 vs 0.171 for the best neuron) - and still
 # stops at 3 layers: the head's dev error plateaus at 0.144 from layer 0 on,
@@ -158,10 +173,11 @@ model:
   nbest_neurons: 16
   # Per-family cap on the candidate neurons built per layer. A family with more
   # input combinations than the cap gets a seeded random subset of them, so the
-  # cap decides how exhaustive each layer is. The script feeds the model 17
-  # features (8 raw, 2 ratios, 7 location) -> C(17, 2) = 136 pairs at layer 0,
-  # enumerated in full at 140. Deeper layers are wider under `shortcut`
-  # (8 survivors + 17 inputs -> 300 pairs) and are sampled; layer time scales
+  # cap decides how exhaustive each layer is. The script feeds the model 16
+  # features (8 raw/logged incl. the bedrooms ratio, 1 ratio, 7 location) ->
+  # C(16, 2) = 120 pairs at layer 0, enumerated in full at 140. Deeper layers
+  # are wider under `shortcut` (16 survivors + 16 inputs -> 496 pairs) and are
+  # sampled; layer time scales
   # roughly with the candidate count. Measured on the finetune config: 140 vs
   # 70 gave MSE 0.2605 vs 0.2630, within noise, at ~1.6x the layer time.
   # (A second, 4-input Legendre family was tried on the 8 raw features: dev
