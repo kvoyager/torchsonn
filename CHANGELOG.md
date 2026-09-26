@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.4
+
+### Fixed — headless regressor `SONN.infer` returned the whole last layer
+
+`SONN.infer` collapses the last layer to one prediction per sample whenever a
+head is present (`out_proj`, or the multi-class projection paths), but a
+`type: regressor` or `type: binary` model *without* `use_output_projection`
+fell through to `return out` and handed back the raw last layer, shape
+`(N, nbest_neurons)`. Everything downstream that compares predictions against
+the `(N,)` target either broke or compensated by hand: the California-housing
+tutorial crashed in `mean_squared_error` with
+`y_true and y_pred have different number of output (1!=8)`, the CCPP tutorial
+re-selected the best column itself, the README told you to `prune()` first so
+inference returns one column, and `Trainer._finetune_prediction` carried its
+own copy of the same selection.
+
+`infer` now returns the best-error neuron's column, shape `(N,)`, on the
+headless regressor / binary path — the neuron the layer error was scored on
+and the one `prune()` keeps, so pruned and unpruned models predict the same
+values. The workarounds are removed.
+
+**What changes for you.** Only headless `regressor` / `binary` models. If your
+code indexed `infer`'s output with `[:, col]` or reshaped a `(N, 1)` pruned
+output, drop that step: the result is already `(N,)`. Models with
+`use_output_projection: true` and multi-class models are unchanged.
+
 ## 0.1.3
 
 ### Fixed — `bias_error_l2` reduced over the wrong axis on multi-class logits

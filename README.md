@@ -103,12 +103,11 @@ trainer.train(model, train_dl, dev_dl, test_dl)
 
 trainer.load_model_checkpoint(model, "cpu")
 
-# Collapse the ensemble to its single best-error path so inference returns
-# one prediction per sample.
+# Optional: strip the neurons that don't feed the best-error output.
+# Inference returns one prediction per sample either way.
 trainer.prune(model)
 
 preds, targets = trainer.infer(model, test_dl)
-preds = preds.reshape(-1)
 mse = ((preds - targets) ** 2).mean().item()
 mae = (preds - targets).abs().mean().item()
 print(f"test MSE: {mse:.4f}  MAE: {mae:.4f}")

@@ -205,16 +205,9 @@ def _predict_mw(trainer: Trainer, model: SONN, test_dl: DataLoader,
                 y_scaler: StandardScaler) -> np.ndarray:
     """Infer on the test loader and return predictions in physical MW units."""
     model_out, _ = trainer.infer(model, test_dl, verbose=False)
+    # SONN.infer for a headless `type: regressor` model returns the best-error
+    # neuron's output, shape (N,), so it lines up with the 1-D target directly.
     y_pred = model_out.cpu().numpy()
-    # SONN.infer for a `type: regressor` model without `out_proj` returns the
-    # full last-layer output, shape (N, nbest_neurons). Collapse to the
-    # best-error neuron's column so sklearn metrics see a 1-D vector matching
-    # the target. (After `trainer.prune(...)` the last layer holds a single
-    # neuron, shape (N, 1) — the same path via `_best_neuron_column` → col 0.)
-    if y_pred.ndim == 2 and y_pred.shape[1] > 1:
-        y_pred = y_pred[:, model._best_neuron_column(model.layers[-1])]
-    elif y_pred.ndim == 2:
-        y_pred = y_pred[:, 0]
     # Predictions live in z-scored target space (the trainer never saw raw MW);
     # inverse-transform so the numbers are in MW and comparable to y_test.
     return y_scaler.inverse_transform(y_pred.reshape(-1, 1)).ravel()

@@ -460,14 +460,42 @@ def test_get_best_neuron_model_and_columns():
     assert len(cols) == 2
 
 
-def test_infer_regression():
+def _single_layer_with_best_neuron(m, best: int):
+    """Append one untrained layer and mark neuron `best` as the lowest-error one."""
+    layer = m.create_layer(0)
+    m.layers.append(layer)
+    n = layer.neuron_models[0].num_neurons
+    errs = torch.full((n,), 2.0)
+    errs[best] = 1.0
+    layer.err_values = errs
+    layer.module_idxs = torch.stack(
+        [torch.zeros(n, dtype=torch.long), torch.arange(n, dtype=torch.long)], dim=1
+    )
+    return layer
+
+
+def test_infer_regression_returns_best_neuron_column():
     cfg = _make_cfg(model={"type": "regressor", "num_classes": 1, "nbest_neurons": 3,
                             "soft_binner": False, "ref_functions": ["linear_cov"]})
     m = SONN(cfg, d_model=4)
-    m.layers.append(m.create_layer(0))
+    _single_layer_with_best_neuron(m, best=2)
     x = torch.randn(5, 4)
     out = m.infer(x)
-    assert out.shape == (5, 6)
+    # Headless regressor: one prediction per sample, taken from the
+    # best-error neuron — not the raw (5, 6) last layer.
+    assert out.shape == (5,)
+    assert torch.equal(out, m(x)[:, 2])
+
+
+def test_infer_binary_returns_best_neuron_column():
+    cfg = _make_cfg(model={"type": "binary", "num_classes": 2, "nbest_neurons": 3,
+                            "soft_binner": False, "ref_functions": ["linear_cov"]})
+    m = SONN(cfg, d_model=4)
+    _single_layer_with_best_neuron(m, best=4)
+    x = torch.randn(5, 4)
+    out = m.infer(x)
+    assert out.shape == (5,)
+    assert torch.equal(out, m(x)[:, 4])
 
 
 def test_get_selected_features_without_feature_names():

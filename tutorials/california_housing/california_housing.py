@@ -1,16 +1,34 @@
 """California-housing regression tutorial — Hydra entry point.
 
-Mirrors the gmdhpy example layout: load fetch_california_housing, split 50/50
-(test = first half, train = second half — same default as gmdhpy), fit a SONN
-regressor with linear_cov reference functions, then report MSE / MAE on the
-held-out half and plot the network.
+Load fetch_california_housing, hold out a random TEST_SIZE fraction, split the
+rest into train / dev (DEV_SPLIT), fit a SONN regressor, then report MSE / MAE
+on the held-out rows and plot the network.
+
+Input / target handling (module constants below, not config keys — the Hydra
+config is composed against the strict SONNConfig schema, which has no room for
+tutorial-only knobs):
+  * LOG_FEATURES: the heavy-tailed per-household features are log-transformed
+    before standardization, and two ratio features are appended.
+  * Z_CLIP: standardized features are clipped to +-Z_CLIP sigma.
+  * LOG_TARGET: fit log(price) instead of price; predictions are exp'd back.
+  * CLIP_PREDICTIONS: predictions are clipped to the training target range
+    (the target is censored at $500k, so nothing above 5.0 can be right).
+  * LOCATION_FEATURES: rotated coordinates, log distances to the four big
+    cities, and a k-nearest-neighbour price encoding of location fitted on
+    the training rows only (KNN_PRICE_K neighbours).
+  * TEST_SIZE / DEV_SPLIT: how much data is held out, and how the rest is
+    divided between the neuron fits (train) and neuron selection (dev).
+  * N_ENSEMBLE: train this many models on different seeds and train/dev
+    shuffles of the non-test rows, report each one (the seed-noise floor)
+    and the metrics of their averaged prediction.
 
 Run from the repo root:
     python -m tutorials.california_housing.california_housing
 
 Hydra overrides work on every config key. Examples:
     python -m tutorials.california_housing.california_housing resume=true
-    python -m tutorials.california_housing.california_housing train_on_first_half=true
+    python -m tutorials.california_housing.california_housing --config-name california_housing_legendre
+    python -m tutorials.california_housing.california_housing --config-name california_housing_legendre_finetune
     python -m tutorials.california_housing.california_housing train.optimizer.optimizer_params.lr=1e-2
     python -m tutorials.california_housing.california_housing hydra.run.dir=/tmp/ca_run
 """
@@ -23,6 +41,8 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import metrics
 from sklearn.datasets import fetch_california_housing
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import BallTree
 from torch.utils.data import DataLoader
 
 from torchsonn.data.dataset import SONNDataset
@@ -35,6 +55,145 @@ from torchsonn.logger import setup_logger
 from torchsonn.model import SONN
 from torchsonn.plot_model import PlotModel
 from torchsonn.trainer import Trainer
+
+
+# Data split. The gmdhpy-style layout held out half the data and then split
+# the other half 50/50 (sqMode1), so the neuron fits saw a quarter of the rows
+# (5160). Comparability with gmdhpy was already gone once the split became
+# random, so use the data: hold out 20%, and give the fits 3 of every 4
+# remaining rows (sqMode4_1) -> train 12384 / dev 4128 / test 4128. Both the
+# polynomial fits and the kNN price encoding get denser data; the price is a
+# smaller, noisier test set (standard error of its MSE is roughly 0.01), so
+# do not compare its numbers with the 50/50-era table at the third decimal.
+# Keep train.batch_size above the train-row count so LBFGS stays full-batch.
+TEST_SIZE = 0.2
+DEV_SPLIT = SequenceTypeSet.sqMode4_1
+
+# Ensemble size. Member m uses seed train.seed + m and, for m > 0, a reshuffle
+# of the non-test rows before the train/dev split, so the members differ in
+# both their random state and the data each neuron fit and selection saw
+# (the kNN price encoding is refitted per member too). The test rows are the
+# same for all members, so the per-member metrics are directly comparable:
+# their spread is the noise floor a single-run comparison has to beat, and
+# the mean of the members' predictions is the ensemble. 1 = plain single run.
+# Cost is N_ENSEMBLE full trainings; the checkpoint folder ends up holding the
+# last member.
+N_ENSEMBLE = 5
+
+# Standardized features are clipped to +-Z_CLIP sigma; see the comment at the
+# clipping site for why.
+Z_CLIP = 5.0
+
+# Log-transform the heavy-tailed features and append ratio features before the
+# scaler. AveRooms / AveBedrms / Population / AveOccup span 2-3 decades with a
+# long right tail; standardizing them as-is puts the bulk of the rows into a
+# narrow band around zero and the tail out past +-5, where the clip truncates
+# it. log() makes them near-Gaussian, so the Legendre squash spends its
+# resolution on the data instead of on the tail. The two ratios are the usual
+# California-housing engineered features: bedrooms per room (a density /
+# quality proxy) and rooms per person (log-transformed: it is a ratio of two
+# skewed quantities).
+LOG_FEATURES = True
+
+# Fit log(price) instead of price. The target is right-skewed and censored at
+# 5.0 ($500k); the log compresses the skew so the squared error is not
+# dominated by the expensive tail. Predictions are exp'd back before scoring.
+# The loss then optimizes log-space error, which is not the same as raw MSE,
+# so this is a measured trade rather than a free win. Measured on the finetune
+# config (all with CLIP_PREDICTIONS): neither LOG_FEATURES nor LOG_TARGET
+# helps MSE on its own (each alone is ~0.016 worse than raw/raw), together
+# they match raw/raw on MSE (0.3013 vs 0.3002) and are clearly better on MAE
+# (0.3626 vs 0.3758). Full table in california_housing_legendre_finetune.yaml.
+LOG_TARGET = True
+
+# Clip predictions to the training target range. The dataset caps prices at
+# 5.0, so any prediction above it is wrong by construction, and nothing sells
+# below the observed minimum either. Free, and it removes the worst residuals
+# on high-income rows the model extrapolates past the cap.
+CLIP_PREDICTIONS = True
+
+# Location features. Price is a rough, non-smooth function of (Latitude,
+# Longitude) that a degree-3 pair polynomial cannot draw, and location is where
+# tree ensembles get most of their edge on this dataset. Three cheap proxies:
+#   * rotated coordinates lat+lon / lat-lon - California's coast and its
+#     price gradient run diagonally (NW-SE), so the rotated axes let a pair
+#     neuron model "distance inland" as a near-1-D function;
+#   * log haversine distance to the four largest metros - the price surface
+#     is a set of peaks centred on them;
+#   * a k-nearest-neighbour encoding: mean log price of the KNN_PRICE_K
+#     nearest *training* blocks, leave-one-out for the training rows so a row
+#     never sees its own target. Dev / test rows look up training neighbours
+#     only, so neuron selection on dev stays leak-free.
+LOCATION_FEATURES = True
+KNN_PRICE_K = 20
+# (lat, lon) of Los Angeles, San Francisco, San Diego, San Jose.
+CITIES = {
+    "LA": (34.05, -118.24),
+    "SF": (37.77, -122.42),
+    "SD": (32.72, -117.16),
+    "SJ": (37.34, -121.89),
+}
+EARTH_RADIUS_KM = 6371.0
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
+    a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
+    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(a))
+
+
+def knn_price_feature(
+    train_xy: np.ndarray, train_log_price: np.ndarray, others: list[np.ndarray], k: int
+) -> list[np.ndarray]:
+    """Mean log price of the k nearest training blocks, for the training rows
+    (leave-one-out) and for each array in `others` (training neighbours only).
+
+    `train_xy` / `others` hold (Latitude, Longitude) in degrees.
+    """
+    tree = BallTree(np.radians(train_xy), metric="haversine")
+    # Training rows: query k+1 and drop the row itself from its own neighbour
+    # list (it is at distance 0; if duplicates share the coordinates, drop the
+    # one whose index matches, else the farthest).
+    idx = tree.query(np.radians(train_xy), k=k + 1, return_distance=False)
+    self_pos = idx == np.arange(len(train_xy))[:, None]
+    has_self = self_pos.any(axis=1)
+    keep = ~self_pos
+    keep[~has_self, -1] = False
+    nbr = idx[keep].reshape(len(train_xy), k)
+    out = [train_log_price[nbr].mean(axis=1).astype(np.float32)]
+    for xy in others:
+        idx = tree.query(np.radians(xy), k=k, return_distance=False)
+        out.append(train_log_price[idx].mean(axis=1).astype(np.float32))
+    return out
+
+
+def engineer_features(x: np.ndarray, names: list[str]) -> tuple[np.ndarray, list[str]]:
+    """Row-wise feature transform (no fitted state, so no train/test leakage).
+
+    Log-transforms the heavy-tailed per-household columns in place and appends
+    bedrooms-per-room and log rooms-per-person. Returns (features, names).
+    """
+    if not LOG_FEATURES:
+        return x, list(names)
+    col = {n: i for i, n in enumerate(names)}
+    x = x.copy()
+    bedrooms_per_room = x[:, col["AveBedrms"]] / x[:, col["AveRooms"]]
+    rooms_per_person = x[:, col["AveRooms"]] / x[:, col["AveOccup"]]
+    new_names = list(names)
+    for n in ("AveRooms", "AveBedrms", "Population", "AveOccup"):
+        x[:, col[n]] = np.log(x[:, col[n]])
+        new_names[col[n]] = f"log{n}"
+    x = np.column_stack([x, bedrooms_per_room, np.log(rooms_per_person)]).astype(np.float32)
+    new_names += ["BedrmsPerRoom", "logRoomsPerPerson"]
+    if LOCATION_FEATURES:
+        lat, lon = x[:, col["Latitude"]], x[:, col["Longitude"]]
+        cols = [lat + lon, lat - lon]
+        new_names += ["LatPlusLon", "LatMinusLon"]
+        for city, (clat, clon) in CITIES.items():
+            cols.append(np.log1p(_haversine_km(lat, lon, clat, clon)))
+            new_names.append(f"logDist{city}")
+        x = np.column_stack([x] + cols).astype(np.float32)
+    return x, new_names
 
 
 # `config_path` resolves relative to this file. `version_base="1.3"` keeps
@@ -50,74 +209,172 @@ def main(config: DictConfig) -> None:
 
     # --- Load California housing ----------------------------------------------
     housing = fetch_california_housing()
-    housing_data = housing.data.astype(np.float32)
+    housing_data, feature_names = engineer_features(
+        housing.data.astype(np.float32), list(housing.feature_names)
+    )
     housing_target = housing.target.astype(np.float32)
 
-    n = housing_data.shape[0] // 2
-    if bool(config.get("train_on_first_half", False)):
-        user_train_x, user_train_y = housing_data[:n], housing_target[:n]
-        test_x, test_y = housing_data[n:], housing_target[n:]
-    else:
-        user_train_x, user_train_y = housing_data[n:], housing_target[n:]
-        test_x, test_y = housing_data[:n], housing_target[:n]
-
-    # gmdhpy splits the user's train_x 50/50 internally — same split here so
-    # the dev MSE is on the same statistical footing as gmdhpy's layer error.
-    train_x, train_y, dev_x, dev_y = split_dataset(
-        user_train_x, user_train_y, SequenceTypeSet.sqMode1
+    # Shuffle and hold out the test rows; same random_state as before, so the
+    # 20% test set is a subset of the earlier 50% one. Fixed for every
+    # ensemble member.
+    user_train_x, test_x, user_train_y, test_y = train_test_split(
+        housing_data, housing_target, test_size=TEST_SIZE, random_state=42
     )
 
-    # train_preprocessing normalizes orientation + sanity-checks shapes
-    train_x, train_y = train_preprocessing(train_x, train_y, list(housing.feature_names))
-    dev_x, dev_y = train_preprocessing(dev_x, dev_y, list(housing.feature_names))
-    test_x, test_y = train_preprocessing(test_x, test_y, list(housing.feature_names))
+    def predict(trainer: Trainer, model: SONN, test_dl: DataLoader, y_lo: float, y_hi: float) -> np.ndarray:
+        """Test-set predictions in raw $100k units."""
+        model_out, _ = trainer.infer(model, test_dl, verbose=False)
+        y_pred = model_out.cpu().numpy()
+        if LOG_TARGET:
+            y_pred = np.exp(y_pred)  # back to raw $100k
+        if CLIP_PREDICTIONS:
+            y_pred = np.clip(y_pred, y_lo, y_hi)
+        return y_pred
 
-    # ---- Standardize features (StandardScaler, same as gmdhpy) ---------------
-    feature_scaler = StandardScaler()
-    feature_scaler.fit(train_x)
-    train_x = feature_scaler.transform(train_x)
-    dev_x = feature_scaler.transform(dev_x)
-    test_x = feature_scaler.transform(test_x)
+    def fit_member(member: int) -> dict:
+        """Train one model end to end; return it with its test predictions."""
+        seed = int(config.train.seed) + member
+        names = list(feature_names)
+        ux, uy = user_train_x, user_train_y
+        if member > 0:
+            # Reshuffle the non-test rows so this member's train/dev split (and
+            # its kNN encoding) differ from the other members'.
+            perm = np.random.default_rng(seed).permutation(len(ux))
+            ux, uy = ux[perm], uy[perm]
 
-    train_ds = SONNDataset(train_x, train_y)
-    dev_ds = SONNDataset(dev_x, dev_y)
-    test_ds = SONNDataset(test_x, test_y)
+        # Train rows fit the neurons, dev rows select them (and early-stop the
+        # fine-tune passes); see DEV_SPLIT above for the ratio.
+        train_x, train_y, dev_x, dev_y = split_dataset(ux, uy, DEV_SPLIT)
+        tx, ty = test_x, test_y
 
-    train_dl = DataLoader(train_ds, batch_size=config.train.batch_size, shuffle=bool(config.train.shuffle))
-    dev_dl = DataLoader(dev_ds, batch_size=config.train.batch_size)
-    test_dl = DataLoader(test_ds, batch_size=config.train.batch_size)
+        if LOCATION_FEATURES:
+            # Fitted on the training rows only, so it has to come after the split.
+            ll = [names.index("Latitude"), names.index("Longitude")]
+            knn_tr, knn_dev, knn_te = knn_price_feature(
+                train_x[:, ll], np.log(train_y), [dev_x[:, ll], tx[:, ll]], KNN_PRICE_K
+            )
+            train_x = np.column_stack([train_x, knn_tr]).astype(np.float32)
+            dev_x = np.column_stack([dev_x, knn_dev]).astype(np.float32)
+            tx = np.column_stack([tx, knn_te]).astype(np.float32)
+            names = names + [f"knnLogPrice{KNN_PRICE_K}"]
 
-    model = SONN(
-        config,
-        d_model=train_x.shape[1],
-        feature_names=list(housing.feature_names),
-    )
-    model = model.to(config.train.device)
+        # train_preprocessing normalizes orientation + sanity-checks shapes
+        train_x, train_y = train_preprocessing(train_x, train_y, names)
+        dev_x, dev_y = train_preprocessing(dev_x, dev_y, names)
+        tx, ty = train_preprocessing(tx, ty, names)
 
-    trainer = Trainer(config, feature_names=list(housing.feature_names))
-    trainer.set_seed(model.param.train.seed)
+        # Prediction bounds in raw $100k units, from the training rows only.
+        y_lo, y_hi = float(train_y.min()), float(train_y.max())
+        if LOG_TARGET:
+            # Train / dev see log(price). The test loader keeps the raw target:
+            # the trainer never reads it, only predict() does, after exp'ing.
+            train_y = np.log(train_y).astype(np.float32)
+            dev_y = np.log(dev_y).astype(np.float32)
 
-    # --- Train ----------------------------------------------------------------
-    trainer.train(model, train_dl, dev_dl, test_dl, resume=bool(config.get("resume", False)))
+        # ---- Standardize features (StandardScaler, same as gmdhpy) -----------
+        feature_scaler = StandardScaler()
+        feature_scaler.fit(train_x)
+        # Clip the z-scores to +-Z_CLIP sigma. The quadratic / polyquad neurons
+        # take the raw z-scores (only the orthogonal-polynomial families squash
+        # their inputs), and California housing has a handful of rows far
+        # outside the bulk of the data: AveRooms up to 142 and AveBedrms up to
+        # 34 against 99.9th percentiles of ~29 and ~6, i.e. z-scores of 60-80
+        # when such a row lands in the test half. Fed through several
+        # polynomial layers, with the shortcut re-injecting them at every
+        # layer, those rows produce predictions in the tens of thousands and
+        # dominate the test MSE on their own. Clipping caps the extrapolation
+        # without touching typical rows (every feature's 99.9th percentile is
+        # well inside +-5).
+        train_x = np.clip(feature_scaler.transform(train_x), -Z_CLIP, Z_CLIP)
+        dev_x = np.clip(feature_scaler.transform(dev_x), -Z_CLIP, Z_CLIP)
+        tx = np.clip(feature_scaler.transform(tx), -Z_CLIP, Z_CLIP)
 
-    # --- Predict on the held-out half -----------------------------------------
-    trainer.load_model_checkpoint(model, config.train.device)
+        bs = config.train.batch_size
+        train_dl = DataLoader(SONNDataset(train_x, train_y), batch_size=bs, shuffle=bool(config.train.shuffle))
+        dev_dl = DataLoader(SONNDataset(dev_x, dev_y), batch_size=bs)
+        test_dl = DataLoader(SONNDataset(tx, ty), batch_size=bs)
+
+        model = SONN(config, d_model=train_x.shape[1], feature_names=names)
+        model = model.to(config.train.device)
+        trainer = Trainer(config, feature_names=names)
+        trainer.set_seed(seed)
+
+        # --- Train ------------------------------------------------------------
+        resume = bool(config.get("resume", False)) and member == 0
+        trainer.train(model, train_dl, dev_dl, test_dl, resume=resume)
+
+        # Regression head (Linear(num_out, 1)); built and trained only when
+        # model.use_output_projection is True (the *_finetune configs). Saves
+        # the checkpoint itself, so the load below picks the fitted head up.
+        if model.out_proj is not None:
+            trainer.train_out_proj(model, train_dl, dev_dl)
+
+        trainer.load_model_checkpoint(model, config.train.device)
+
+        # Optional final pass: fine-tune every parameter at once against the
+        # readout the model is scored on (config `finetune_end_to_end`; see
+        # california_housing_legendre_finetune.yaml). Runs after
+        # load_model_checkpoint so it starts from the best checkpointed
+        # weights. The refined weights are not checkpointed - the metrics are
+        # computed from the in-memory model. Same wiring as tutorials/ccpp.
+        if bool(config.get("finetune_end_to_end", False)):
+            if bool(config.get("finetune_drop_head", False)) and model.out_proj is not None:
+                logger.info("Dropping the out_proj head before end-to-end fine-tuning")
+                model.out_proj = None
+            if bool(config.get("finetune_prune_first", False)):
+                trainer.prune(model)
+                logger.info("Pruned to the read path before fine-tuning: %d layers", len(model.layers))
+            logger.info("End-to-end fine-tune of all parameters (head %s)",
+                        "removed" if model.out_proj is None else "kept and trained")
+            trainer.train_finetune(model, train_dl, dev_dl)
+
+        return {
+            "seed": seed, "model": model, "trainer": trainer, "test_dl": test_dl,
+            "y_lo": y_lo, "y_hi": y_hi, "test_y": ty,
+            "y_pred": predict(trainer, model, test_dl, y_lo, y_hi),
+        }
+
+    # --- Train the ensemble -----------------------------------------------------
+    members = []
+    for m in range(N_ENSEMBLE):
+        logger.info("=== ensemble member %d/%d (seed %d) ===", m + 1, N_ENSEMBLE, int(config.train.seed) + m)
+        members.append(fit_member(m))
+        mem = members[-1]
+        logger.info("    member %d: test mse %.4f  mae %.4f", m + 1,
+                    metrics.mean_squared_error(mem["test_y"], mem["y_pred"]),
+                    metrics.mean_absolute_error(mem["test_y"], mem["y_pred"]))
+
+    y_true = members[0]["test_y"]
+    preds = np.stack([mem["y_pred"] for mem in members])
+    mses = np.array([metrics.mean_squared_error(y_true, p) for p in preds])
+    maes = np.array([metrics.mean_absolute_error(y_true, p) for p in preds])
+    print(f"--- {N_ENSEMBLE} member(s), same test rows ---")
+    for mem, mse, mae in zip(members, mses, maes):
+        print(f"  seed {mem['seed']:>3d}:  mse {mse:0.4f}   mae {mae:0.4f}   layers {len(mem['model'].layers)}")
+    if N_ENSEMBLE > 1:
+        print(f"  mean +- std:  mse {mses.mean():0.4f} +- {mses.std(ddof=1):0.4f}"
+              f"   mae {maes.mean():0.4f} +- {maes.std(ddof=1):0.4f}   (single-run noise floor)")
+        ens = preds.mean(axis=0)
+        print(f"--- Ensemble (mean of {N_ENSEMBLE} predictions) ---")
+        print(f"  mse on test set:           {metrics.mean_squared_error(y_true, ens):0.4f}")
+        print(f"  mae on test set:           {metrics.mean_absolute_error(y_true, ens):0.4f}")
+
+    # --- Feature report + plots for the last member ------------------------------
+    last = members[-1]
+    model, trainer, test_dl = last["model"], last["trainer"], last["test_dl"]
 
     def report(tag: str) -> None:
-        """Run inference on the test loader, print MSE / MAE + selected / unselected features."""
-        model_out, _ = trainer.infer(model, test_dl)
-        y_pred = model_out.cpu().numpy()  # target is raw $100k — no denorm needed
-        mse = metrics.mean_squared_error(test_y, y_pred)
-        mae = metrics.mean_absolute_error(test_y, y_pred)
+        """Print the last member's MSE / MAE and selected / unselected features."""
+        y_pred = predict(trainer, model, test_dl, last["y_lo"], last["y_hi"])
         print(f"--- {tag} ---")
-        print(f"  mse on test set:           {mse:0.4f}")
-        print(f"  mae on test set:           {mae:0.4f}")
+        print(f"  mse on test set:           {metrics.mean_squared_error(y_true, y_pred):0.4f}")
+        print(f"  mae on test set:           {metrics.mean_absolute_error(y_true, y_pred):0.4f}")
         print(f"  selected feature indices:  {model.get_selected_features_indices()}")
         print(f"  unselected feature indices:{model.get_unselected_features_indices()}")
         print(f"  selected features:         {model.get_selected_features()}")
         print(f"  unselected features:       {model.get_unselected_features()}")
 
-    report("Full trained model")
+    report("Full trained model" + (" (last member)" if N_ENSEMBLE > 1 else ""))
 
     # --- Plot -----------------------------------------------------------------
     out_dir = Path(__file__).parent
@@ -129,7 +386,7 @@ def main(config: DictConfig) -> None:
     ).plot()
 
     trainer.prune(model)
-    report("Pruned model")
+    report("Pruned model" + (" (last member)" if N_ENSEMBLE > 1 else ""))
 
     PlotModel(
         model,

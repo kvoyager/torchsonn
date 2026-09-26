@@ -1,3 +1,8 @@
+# Legendre-only California-housing config. Run from the tutorial folder:
+#     python california_housing.py --config-name california_housing_legendre
+# or from the repo root:
+#     python -m tutorials.california_housing.california_housing --config-name california_housing_legendre
+#
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
 # `src/config/schemas.py` and exposed under the name `default`.
@@ -16,29 +21,40 @@ hydra:
 
 model:
   type: regressor
-  # Mirror the gmdhpy California-housing example: just the linear-with-covariance
-  # reference function (y = w0 + w1*xi + w2*xj + w3*xi*xj).
-  # Per-neuron-type activation: each entry sets its own `activation:`.
-  # Entries that omit it default to None → `nn.Identity()`.
+  # Legendre-only variant of california_housing.yaml. Instead of the monomial
+  # families (linear_cov / quadratic / polyquad) a single orthogonal-polynomial
+  # basis over each input pair covers the linear, quadratic and cubic-curvature
+  # terms in one well-conditioned family. Legendre neurons squash their inputs
+  # into [-1, 1] first (model.squash_method: sigma, calibrated on the training
+  # set), so the heavy-tailed housing features (AveRooms, AveBedrms, AveOccup,
+  # Population) cannot drive the polynomial off the scale the way raw z-scores
+  # do for the monomial neurons - the +-5 sigma clip in the script is a second
+  # line of defence here rather than the only one.
+  #
+  # degree 3 -> 1 + 2*3 + 1 (cross term) = 8 coefficients per pair neuron.
+  # Per-neuron-type activation: the entry sets its own `activation:`; an empty
+  # string means None -> `nn.Identity()`.
   ref_functions:
-    - linear_cov:
+    - legendre:
+        degree: 3
+        squash: True
         activation: ""
-    - quadratic:
-        activation: ""
-    - polyquad:
-        - squares: True
-        - dim: 5
-        - activation: ""
   # No shortcut keeps the architecture comparable to the gmdhpy example.
   shortcut: True
   # nbest_neurons survive layer pruning; max_neuron_models caps the candidate
   # ensemble built per layer (8 features × 50 candidates is plenty for housing).
   nbest_neurons: 8
-  # n=8 features → C(8, 2) = 28 unique unordered pairs. Setting this above 28
-  # used to silently double the ensemble (P(8, 2) = 56 ordered pairs producing
-  # duplicates that fit the same closed-form OLS minimum); the deduplicated
-  # unordered enumeration matches gmdhpy.
-  max_neuron_models: 28
+  # Per-family cap on the candidate neurons built per layer. A family with more
+  # input combinations than the cap gets a seeded random subset of them, so the
+  # cap decides how exhaustive each layer is. The script feeds the model 17
+  # features (8 raw, 2 ratios, 7 location) -> C(17, 2) = 136 pairs at layer 0,
+  # enumerated in full at 140. Deeper layers are wider under `shortcut`
+  # (8 survivors + 17 inputs -> 300 pairs) and are sampled; layer time scales
+  # roughly with the candidate count. Measured on the finetune config: 140 vs
+  # 70 gave MSE 0.2605 vs 0.2630, within noise, at ~1.6x the layer time.
+  # (A second, 4-input Legendre family was tried on the 8 raw features: dev
+  # error 0.269 vs 0.264 for pairs alone, at 7x the layer time, so dropped.)
+  max_neuron_models: 140
   # StandardScaler keeps features z-scored but doesn't clip heavy tails, so
   # at xavier init the worst-case |xi*xj| on the Population/AveOccup outliers
   # reaches ~7300. Cap well above that so torch.clamp doesn't zero the
@@ -51,7 +67,9 @@ train:
   # stable — small mini-batches make them noisy. Bump the batch up to a near-
   # full-batch on the California train split (~10k samples) so each step
   # actually moves along a good Newton-like direction.
-  batch_size: 8192
+  # Above the 12384 train rows of the script's 60/20/20 split, so every LBFGS
+  # step is a true full-batch step.
+  batch_size: 16384
   device: cpu
   dtype: float32
 
@@ -98,4 +116,5 @@ train:
   save_last_layer: True
   keep_last_n: 5
   skip_saving_at_epoch_end: True
-  checkpoint_dir: "../california_housing/checkpoints"
+  # Own folder so `resume=true` never picks up the monomial config's checkpoint.
+  checkpoint_dir: "../california_housing/checkpoints_legendre"

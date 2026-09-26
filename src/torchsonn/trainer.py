@@ -1930,25 +1930,15 @@ class Trainer:
     def _finetune_prediction(model: SONN, x: torch.Tensor) -> torch.Tensor:
         """Model output shaped to match the target, for the end-to-end pass.
 
-        `SONN.infer` returns a scalar per sample only when a head collapses the
-        last layer (out_proj, or the multi-class log-softmax path). A *headless
-        regressor* instead gets the raw last layer back, shape (N, num_neurons),
-        which the scalar losses cannot be compared against: NormMSE broadcasts
-        (N,) against (N, k) and either raises (k != N) or — after `prune()` has
-        cut the layer to a single neuron, k == 1 — silently expands to (N, N)
-        and optimizes a meaningless quantity.
-
-        So reduce it here exactly the way inference does: take the best-error
-        neuron's column (the value a headless regressor is scored on) and
-        squeeze to (N,). Indexing keeps the gradient path to that neuron and,
-        through it, to every layer feeding it.
+        `SONN.infer` collapses every path to one prediction per sample: the
+        head's output where there is one, otherwise the best-error neuron's
+        column of the last layer (the value a headless regressor / binary
+        model is scored on). The scalar losses therefore compare (N,) against
+        (N,) directly, and the column indexing inside `infer` keeps the
+        gradient path to that neuron and, through it, to every layer feeding
+        it.
         """
-        out = model.infer(x)
-        if out.ndim <= 1 or model.param.model.type != "regressor":
-            return out
-        if out.shape[-1] == 1:
-            return out.squeeze(-1)
-        return out[:, model._best_neuron_column(model.layers[-1])]
+        return model.infer(x)
 
     def train_finetune(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader,
                        cfg: Any = None) -> None:

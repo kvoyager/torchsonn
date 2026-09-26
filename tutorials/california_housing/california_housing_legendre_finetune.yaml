@@ -1,0 +1,247 @@
+# california_housing_legendre.yaml + a linear output head over the last
+# layer's survivors (`model.use_output_projection`) and a final end-to-end
+# fine-tune of the whole network (`finetune_end_to_end`). Same family, same
+# candidate cap and seed as that config; the head, the end-to-end pass and a
+# wider survivor pool (16 vs 8) are the differences. Recipe adapted from
+# tutorials/ccpp/ccpp_legendre_poly_finetune.yaml, where the notes on every
+# knob live - with one deliberate departure: the per-layer joint fine-tune
+# (`train.layer_finetune`) is OFF here, see the note at that key.
+#
+# Run from the tutorial folder:
+#     python california_housing.py --config-name california_housing_legendre_finetune
+# or from the repo root:
+#     python -m tutorials.california_housing.california_housing --config-name california_housing_legendre_finetune
+# On a CUDA machine (the candidate fits are the part that speeds up):
+#     python california_housing.py --config-name california_housing_legendre_finetune train.device=cuda
+#
+# Baseline for this file is california_housing_legendre.yaml:
+#   test MSE 0.3484   MAE 0.4184   (random 50/50 split, seed 42, 9 layers)
+#
+# Results of this file, end-to-end lr 1e-4, by the script's input / target
+# switches (LOG_FEATURES / LOG_TARGET / CLIP_PREDICTIONS; single split, so
+# differences under ~0.01 are within seed noise):
+#   raw feats, raw target, no clip     MSE 0.3027   MAE 0.3789
+#   raw feats, raw target, clip        MSE 0.3002   MAE 0.3758
+#   raw feats, log target, clip        MSE 0.3164   MAE 0.3789
+#   log feats, raw target, clip        MSE 0.3191   MAE 0.3872
+#   log feats, log target, clip        MSE 0.3013   MAE 0.3626
+# + LOCATION_FEATURES (rotated coords, city distances, kNN price), cuda:
+#   cap 70                             MSE 0.2630   MAE 0.3344
+#   cap 140                            MSE 0.2605   MAE 0.3307
+# The kNN price feature carries most of it: layer-0 error 0.185 vs 0.42
+# without it, and the search now keeps 1-3 layers.
+# Split 60/20/20 (TEST_SIZE 0.2, sqMode4_1; 12384 train rows), batch 16384:
+#   cap 140, cuda                      MSE 0.2160   MAE 0.2975   (5 layers trained)
+# Fair comparison on the same 4128 test rows: the 25/25/50 model above scores
+# MSE 0.2650 / MAE 0.3334 there, so ~0.05 MSE of the gain is the extra data.
+# Depth experiments on top of that row (see the layer_finetune note below):
+#   criterion_minimum_width 4, eps 1e-4  MSE 0.2109   MAE 0.2925   (13 layers)
+#   layer_finetune off                   MSE 0.2048   MAE 0.2857   (14 layers)
+#   nbest / num_out 16                   MSE 0.2102   MAE 0.2893   (4 layers)
+#   layer_finetune off + 16 survivors    MSE 0.1986   MAE 0.2803   (15 layers) <- this file
+#   (rerun of this file as written: MSE 0.1972 / MAE 0.2786 - cuda runs are not
+#   bit-reproducible, so that is the seed-noise scale for a single split)
+# Legendre degree, on this file:
+#   degree 4                             MSE 0.1969   MAE 0.2796   (16 layers)
+#   degree 5                             MSE 0.2027   MAE 0.2810   (14 layers)
+# Second family, 3-input Legendre (degree 3, squash) next to the pairs, cap 140
+# so ~20% of the 680 layer-0 triplets are sampled (CLI override, not baked in):
+#   pairs + dim-3 family                 MSE 0.1945   MAE 0.2798   (16 layers, 1.7x layer time)
+#   same, cap 700 (all 680 triplets)     MSE 0.1944   MAE 0.2795   (12 layers, 7x layer time,
+#                                        best layer error 0.148 vs 0.151 pairs-only)
+# Ensemble of this file (script N_ENSEMBLE 5: seeds 10-14, members 2-5 on
+# reshuffled train/dev rows, same 4128 test rows):
+#   single members                       MSE 0.2010 +- 0.0021   MAE 0.2825 +- 0.0019
+#   mean of the 5 predictions            MSE 0.1901             MAE 0.2740
+# So +-0.002 is the seed/split noise of one run here; differences under ~0.005
+# in the tables above are not resolvable from single runs.
+#
+# Compose against the SONNConfig schema first (filled-in defaults), then layer
+# this tutorial's overrides on top via `_self_`. The schema is registered by
+# `src/config/schemas.py` and exposed under the name `default`.
+defaults:
+  - default
+  - _self_
+
+# Top-level script knobs (overridable via Hydra CLI).
+resume: false
+
+# Final stage: after the structural search and the head fit, fine-tune every
+# parameter in the network at once with Trainer.train_finetune, tuned by
+# `train.finetune_train` at the bottom of this file. The head is kept and
+# trained along with everything else, against exactly the readout report()
+# scores.
+finetune_end_to_end: true
+finetune_drop_head: false
+# Pruning to the read path first is a measured no-op for accuracy (off-path
+# neurons have zero gradient); turn on to make the trained model and the
+# rendered pruned plot the same object.
+finetune_prune_first: false
+
+# Disable Hydra's auto-chdir so the YAML's relative paths still resolve from
+# the launch cwd rather than the per-run outputs/<date>/<time>/ dir.
+hydra:
+  job:
+    chdir: false
+
+model:
+  type: regressor
+  # Legendre-only variant of california_housing.yaml. Instead of the monomial
+  # families (linear_cov / quadratic / polyquad) a single orthogonal-polynomial
+  # basis over each input pair covers the linear, quadratic and cubic-curvature
+  # terms in one well-conditioned family. Legendre neurons squash their inputs
+  # into [-1, 1] first (model.squash_method: sigma, calibrated on the training
+  # set), so the heavy-tailed housing features (AveRooms, AveBedrms, AveOccup,
+  # Population) cannot drive the polynomial off the scale the way raw z-scores
+  # do for the monomial neurons - the +-5 sigma clip in the script is a second
+  # line of defence here rather than the only one.
+  #
+  # degree 3 -> 1 + 2*3 + 1 (cross term) = 8 coefficients per pair neuron.
+  # Higher degrees measured on this file (see the results table): degree 4 is
+  # a tie (MSE 0.1969 vs 0.1972), degree 5 is worse (0.2027), so 3 stays.
+  # Per-neuron-type activation: the entry sets its own `activation:`; an empty
+  # string means None -> `nn.Identity()`.
+  ref_functions:
+    - legendre:
+        degree: 3
+        squash: True
+        activation: ""
+  # No shortcut keeps the architecture comparable to the gmdhpy example.
+  shortcut: True
+  # Linear(num_out_neurons, 1) head over the last layer's survivors. The plain
+  # config reads the single best-error neuron instead; the head lets the
+  # end-to-end pass optimize a combination of all survivors, which is what
+  # makes that pass worth running. report() reads the head.
+  use_output_projection: True
+  # Keep equal to nbest_neurons so the head spans every survivor.
+  num_out_neurons: 16
+  # Survivors kept per layer = the basis the head combines, and (under
+  # `shortcut`) part of the next layer's input. 16 vs 8 measured on this file:
+  # MSE 0.2102 vs 0.2160 alone, 0.1986 vs 0.2048 with layer_finetune off.
+  nbest_neurons: 16
+  # Per-family cap on the candidate neurons built per layer. A family with more
+  # input combinations than the cap gets a seeded random subset of them, so the
+  # cap decides how exhaustive each layer is. The script feeds the model 17
+  # features (8 raw, 2 ratios, 7 location) -> C(17, 2) = 136 pairs at layer 0,
+  # enumerated in full at 140. Deeper layers are wider under `shortcut`
+  # (8 survivors + 17 inputs -> 300 pairs) and are sampled; layer time scales
+  # roughly with the candidate count. Measured on the finetune config: 140 vs
+  # 70 gave MSE 0.2605 vs 0.2630, within noise, at ~1.6x the layer time.
+  # (A second, 4-input Legendre family was tried on the 8 raw features: dev
+  # error 0.269 vs 0.264 for pairs alone, at 7x the layer time, so dropped.)
+  max_neuron_models: 140
+  # StandardScaler keeps features z-scored but doesn't clip heavy tails, so
+  # at xavier init the worst-case |xi*xj| on the Population/AveOccup outliers
+  # reaches ~7300. Cap well above that so torch.clamp doesn't zero the
+  # gradient through those samples in the first LBFGS steps.
+  output_clamp_value: 1.0e+6
+
+train:
+  seed: 10
+  # LBFGS curvature pairs (s, y) are only meaningful when the gradient is
+  # stable — small mini-batches make them noisy. Bump the batch up to a near-
+  # full-batch on the California train split (~10k samples) so each step
+  # actually moves along a good Newton-like direction.
+  # Above the 12384 train rows of the script's 60/20/20 split, so every LBFGS
+  # step is a true full-batch step.
+  batch_size: 16384
+  device: cpu
+  dtype: float32
+
+  # gmdhpy defaults: criterion="validate", layer_err_criterion="top",
+  # criterion_minimum_width=5, stop_train_epsilon_condition=0.001
+  criterion_type: validate
+  error_alpha: 0.5
+  layer_err_criterion: top
+  criterion_minimum_width: 2
+  stop_train_epsilon_condition: 0.001
+  max_layer_count: 50
+
+  # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
+  # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex
+  # 4-parameter MSE objective like a single linear_cov neuron it converges in
+  # tens of iterations (essentially iterative closed-form). lr=1.0 is the standard LBFGS
+  # step scale — the two-loop recursion already produces a Newton-ish step,
+  # we're not rescaling it.
+  optimizer:
+    name: lbfgs
+    verbose: True
+    optimizer_params:
+      lr: 1e-1
+      min_lr: 1e-2
+      gamma: 0.5
+      history_size: 10
+      clip_norm: 5.0
+  steps: 500
+  shuffle: True
+
+  # Eval / early stop — eval every few LBFGS steps; with full-batch gradients
+  # each step is a real Newton update so we want to react quickly.
+  eval_step_interval: 5
+  eval_smoothing_factor: 0.2
+  early_stop_tolerance_steps: 3
+  early_stop_patience: 1e-3
+  early_stop_completion_percentage: 100
+  train_loss_tol: 0.001
+  train_loss_window: 20
+
+  # Checkpointing — keep the housing artefacts inside the tutorial folder so
+  # they don't collide with the iris checkpoints in the repo's top-level dir.
+  save_interval: 500
+  save_last_layer: True
+  keep_last_n: 5
+  skip_saving_at_epoch_end: True
+  # Own folder so `resume=true` never picks up the monomial config's checkpoint.
+  checkpoint_dir: "../california_housing/checkpoints_legendre_finetune"
+
+  # Per-layer joint fine-tune: OFF, unlike the CCPP recipe. When on, each
+  # layer's survivors are re-trained jointly through a temporary head right
+  # after selection, which turns them from calibrated predictors into a basis
+  # for that head. The layer-growth criterion, however, scores every neuron on
+  # its own dev error, so from the next layer on it sees decalibrated inputs,
+  # the per-neuron errors get worse and the search stops after a few layers
+  # (5 trained / 3 kept here, vs 14-15 with it off). Measured: off is better,
+  # MSE 0.2048 vs 0.2160 at 8 survivors and 0.1986 vs 0.2102 at 16. The
+  # end-to-end pass below does the joint optimization instead, once, over the
+  # full calibrated network. Set True to get the CCPP recipe back.
+  layer_finetune: False
+
+  # Hyperparameters for the out_proj head fit (and for layer_finetune, if you
+  # turn it on - the two passes share this block). LBFGS, full batch: the train
+  # rows fit in one batch (see train.batch_size).
+  out_proj_train:
+    optimizer: lbfgs
+    max_steps: 100
+    lr: 0.1
+    weight_decay: 1.0e-4
+    eval_interval: 5
+    early_stop_patience: 6
+    early_stop_min_delta: 1.0e-5
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-5
+    lbfgs_history_size: 20
+    lbfgs_max_iter: 20
+    lbfgs_line_search: strong_wolfe
+
+  # Final stage: the end-to-end pass. Every weight moves at once, so it wants a far
+  # gentler step than the per-layer refinements: AdamW at a tiny lr, decoupled
+  # weight decay, ReduceLROnPlateau annealing below it. Each step is one
+  # full-batch update. CHECK THE LOG for "finetune early stop": if it is
+  # missing, the budget was binding and the number is truncated, not converged.
+  finetune_train:
+    optimizer: adamw
+    # 1e-4, not the CCPP value of 1e-5: at 1e-5 the pass ran the whole 20000-step
+    # budget still improving (dev 0.239, test MSE 0.3086) with the plateau
+    # scheduler never firing, i.e. a truncated number rather than a converged one.
+    # At 1e-4 it early-stopped at step 4075 after three lr halvings (dev 0.2348,
+    # test MSE 0.3027 / MAE 0.3789) in 1.7 min.
+    lr: 1.0e-4
+    weight_decay: 1.0e-4
+    max_steps: 20000
+    eval_interval: 25
+    early_stop_patience: 20
+    early_stop_min_delta: 1.0e-6
+    lr_patience: 5
+    lr_factor: 0.5
+    lr_min: 1.0e-8

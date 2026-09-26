@@ -744,7 +744,12 @@ class SONN(SONNModule):
             return proj_out.squeeze(-1)
 
         if not isinstance(self.loss_fn, nn.NLLLoss):
-            return out
+            # Headless regressor / binary: `out` is still the full nbest
+            # ensemble, shape (N, num_neurons). The model's prediction is
+            # the best-error neuron's output — the column the layer error
+            # was scored on and the one `prune()` keeps — so return it as
+            # (N,), matching the raw-target shape like the out_proj path.
+            return out[:, self._best_neuron_column(self.layers[-1])]
 
         if self.param.model.use_neuron_proj:
             # Collect per-neuron proj_weight / proj_bias from the pruned final

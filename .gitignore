@@ -32,6 +32,8 @@ __pycache__
 # hydra.run.dir are relative to the launch cwd, so running from the repo root
 # vs. from inside tutorials/<name>/ (e.g. an IDE run) lands them at different
 # nesting levels — a bare rule catches them all.
+checkpoints_legendre
+checkpoints_legendre_finetune
 checkpoints
 outputs/
 
