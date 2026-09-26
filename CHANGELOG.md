@@ -2,6 +2,34 @@
 
 ## 0.1.4
 
+### Added — `train.layer_err_source: readout`
+
+The layer-growth criterion in `Trainer.train` compares `layer.err` across
+layers, and until now that was always the best surviving neuron's dev error
+(`layer_err_source: neuron`, the default and unchanged). For a model that is
+read out through an output head that is the wrong quantity, and it interacts
+badly with `layer_finetune`: the per-layer fine-tune turns the survivors into a
+basis for a head, so each one alone gets worse while the readout gets better,
+and the criterion reads that as a regression and stops the search early.
+
+`layer_err_source: readout` makes `layer.err` the best dev loss of a head over
+all survivors, i.e. the readout a headed model is scored on: the fine-tune's
+own head when `train.layer_finetune` is on, otherwise a temporary head fitted
+over the frozen survivors purely as a measurement (the neurons are untouched,
+so the search grows as before and only the stop decision changes). `Trainer`
+raises `ValueError` when it is set without `model.use_output_projection: true`
+(inference would read the best neuron, so the criterion has to score that
+neuron), and `NotImplementedError` for multi-class models.
+`_train_layer_finetune` gained a `freeze_neurons` flag and returns that dev
+loss.
+
+**What changes for you.** Nothing unless you set the key. Measured on the
+California-housing tutorial (`california_housing_legendre_finetune.yaml`),
+the fair criterion did not rescue the per-layer fine-tune there: its readout
+plateaus from layer 0, so the search still stops at 3 layers and the calibrated
+15-layer search with the fine-tune off remains better (test MSE 0.1972 vs
+0.2099). The numbers are recorded in that config's header.
+
 ### Fixed — headless regressor `SONN.infer` returned the whole last layer
 
 `SONN.infer` collapses the last layer to one prediction per sample whenever a

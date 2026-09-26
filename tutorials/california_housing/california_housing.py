@@ -78,7 +78,7 @@ DEV_SPLIT = SequenceTypeSet.sqMode4_1
 # the mean of the members' predictions is the ensemble. 1 = plain single run.
 # Cost is N_ENSEMBLE full trainings; the checkpoint folder ends up holding the
 # last member.
-N_ENSEMBLE = 5
+N_ENSEMBLE = 1
 
 # Standardized features are clipped to +-Z_CLIP sigma; see the comment at the
 # clipping site for why.

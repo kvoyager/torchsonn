@@ -104,6 +104,43 @@ class Trainer:
         self.batch_callback = batch_callback
         self.config = config
         self.class_weights = class_weights
+        self._validate_layer_err_source(config)
+
+    @staticmethod
+    def _validate_layer_err_source(config: Any) -> None:
+        """Reject `train.layer_err_source` settings the rest of the config cannot honour.
+
+        'readout' scores a layer by the dev loss of a head fitted over its
+        survivors (the `layer_finetune` head when that pass is on, otherwise a
+        temporary head over the frozen survivors), so it only makes sense when
+        inference goes through a head (`use_output_projection`); otherwise the
+        criterion would optimise depth for a readout the model never uses.
+        Multi-class is left out until measured.
+        """
+        # Some callers (checkpoint-housekeeping tests, tooling) build a Trainer
+        # with no config or a partial one; there is nothing to validate then.
+        train_cfg = getattr(config, "train", None) if config is not None else None
+        model_cfg = getattr(config, "model", None) if config is not None else None
+        if train_cfg is None or model_cfg is None:
+            return
+        source = str(getattr(train_cfg, "layer_err_source", "neuron"))
+        if source not in ("neuron", "readout"):
+            raise ValueError(
+                f"train.layer_err_source={source!r}; expected 'neuron' or 'readout'."
+            )
+        if source != "readout":
+            return
+        if not bool(model_cfg.use_output_projection):
+            raise ValueError(
+                "train.layer_err_source='readout' requires model.use_output_projection=true: "
+                "without an output head, inference reads the single best neuron, so the "
+                "growth criterion must score that neuron (layer_err_source='neuron')."
+            )
+        if str(model_cfg.type) == "multi-class":
+            raise NotImplementedError(
+                "train.layer_err_source='readout' is implemented for regressor / binary "
+                "models only."
+            )
 
     @staticmethod
     def _split_loader(dl: DataLoader, split: int) -> DataLoader:
@@ -671,26 +708,44 @@ class Trainer:
             # err_values is sorted by module_idx (not by error), and the retrain
             # path replaces it with an unsorted concat, so take the minimum
             # explicitly instead of trusting position 0.
-            layer.err = err_values.min().item()
+            neuron_err = err_values.min().item()
         elif model.param.train.layer_err_criterion == 'avg':
-            layer.err = err_values.mean().item()
+            neuron_err = err_values.mean().item()
         else:
             raise NotImplementedError
-        logger.info(f"Current layer error: {fmt_err(layer.err)}")
-        logger.info(f"Layer errors: {abbrev_floats([l.err for l in model.layers], fmt=fmt_err)}")
+        layer.err = neuron_err
 
         # Optional per-layer joint fine-tune (surviving neurons' polynomial
-        # weights + temporary (D, K) head trained end-to-end on CE). Runs
-        # BEFORE the layer-completed checkpoint save so the persisted state
-        # captures the fine-tuned weights. Skipped on the planned last layer
-        # (max_layer_count - 1) because train_out_proj — which runs right
-        # after train() returns — fits the real (D, K) head against this
-        # layer's outputs anyway, so the temporary head fit here would just
-        # be thrown away. Early-stopped runs that exit before the planned
-        # last layer still get the fine-tune on whatever ended up being
-        # final.
+        # weights + temporary (D, K) head trained end-to-end on the model's
+        # loss). Runs BEFORE the layer-completed checkpoint save so the
+        # persisted state captures the fine-tuned weights. Returns the head's
+        # best dev loss, which under `layer_err_source: readout` becomes the
+        # layer error the growth criterion in train() compares: it measures
+        # the readout a headed model is scored on, whereas the best-neuron
+        # error above describes survivors the fine-tune has just turned into a
+        # basis (individually worse, jointly better).
+        readout_err: float | None = None
         if model.param.train.layer_finetune:
-            self._train_layer_finetune(model, layer, train_dl, dev_dl)
+            readout_err = self._train_layer_finetune(model, layer, train_dl, dev_dl)
+        elif model.param.train.layer_err_source == "readout":
+            # No fine-tune: fit the temporary head over the frozen survivors,
+            # purely to measure what a head reads out of this layer. The
+            # neurons keep their calibrated per-neuron fits, so the search
+            # grows exactly as under 'neuron'; only the stop decision changes.
+            readout_err = self._train_layer_finetune(model, layer, train_dl, dev_dl, freeze_neurons=True)
+        if readout_err is not None:
+            if model.param.train.layer_err_source == "readout":
+                if not (readout_err < float("inf")):
+                    raise RuntimeError(
+                        f"layer {layer.layer_index}: the per-layer head was never evaluated on "
+                        "dev, so there is no readout error; lower out_proj_train.eval_interval "
+                        "or raise out_proj_train.max_steps."
+                    )
+                layer.err = readout_err
+                logger.info(f"Layer readout error (per-layer head on dev): {fmt_err(readout_err)}; "
+                            f"best-neuron error: {fmt_err(neuron_err)}")
+        logger.info(f"Current layer error: {fmt_err(layer.err)}")
+        logger.info(f"Layer errors: {abbrev_floats([l.err for l in model.layers], fmt=fmt_err)}")
 
         if last_ckpt is not None:
             layer_end_ckpt = replace(last_ckpt, layer_completed=True,
@@ -2072,8 +2127,16 @@ class Trainer:
             layer: SONNLayer,
             train_dl: DataLoader,
             dev_dl: DataLoader,
-    ) -> None:
+            freeze_neurons: bool = False,
+    ) -> float:
         """Per-layer joint fine-tune that runs after neuron_selection.
+
+        Returns the temporary head's best dev loss (inf if dev was never
+        evaluated) - the layer's readout error, see `train.layer_err_source`.
+        With `freeze_neurons=True` only the temporary head is trained and the
+        survivors' weights are left exactly as fitted: a pure measurement of
+        the layer's readout, used by `layer_err_source: readout` when
+        `layer_finetune` is off.
 
         Trains the surviving neurons' polynomial `weight`s together with a
         temporary `nn.Linear(layer.d_model, num_classes)` head against the
@@ -2109,9 +2172,10 @@ class Trainer:
             p.requires_grad_(False)
         head = torch.nn.Linear(layer.d_model, head_out_dim).to(device=device)
         trainable_params: list[torch.nn.Parameter] = list(head.parameters())
-        for nm in layer.neuron_models:
-            nm.weight.requires_grad_(True)
-            trainable_params.append(nm.weight)
+        if not freeze_neurons:
+            for nm in layer.neuron_models:
+                nm.weight.requires_grad_(True)
+                trainable_params.append(nm.weight)
 
         # Features through layers 0..N-1. Current `layer` is model.layers[-1],
         # so skip_last_layer=True is "everything but this one".
@@ -2123,13 +2187,13 @@ class Trainer:
         # trainable_params + head), so we hand them off rather than duplicate
         # the freeze/precompute boilerplate.
         if cfg.optimizer == "lbfgs":
-            self._train_layer_finetune_lbfgs(
+            best_val_loss = self._train_layer_finetune_lbfgs(
                 model, layer, head, trainable_params,
                 train_feat_dl, dev_feat_dl, cfg,
             )
             for p in model.parameters():
                 p.requires_grad_(True)
-            return
+            return best_val_loss
 
         if cfg.optimizer == "adam":
             opt = torch.optim.Adam(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -2262,6 +2326,7 @@ class Trainer:
         # goes out of scope here.
         for p in model.parameters():
             p.requires_grad_(True)
+        return best_val_loss
 
     def _train_layer_finetune_lbfgs(
             self,
@@ -2397,6 +2462,7 @@ class Trainer:
                 break
 
         tbar.close()
+        return best_val_loss
 
     def infer(
         self,

@@ -520,3 +520,55 @@ def test_train_checkpoint_roundtrip(tmp_path):
     model2 = SONN(cfg, d_model=4)
     trainer.load_model_checkpoint(model2)
     assert len(model2.layers) == len(trained.layers)
+
+
+def test_layer_err_source_readout_rejects_incompatible_config(tmp_path):
+    """'readout' needs a model head; a bogus value and multi-class are rejected."""
+    with pytest.raises(ValueError, match="use_output_projection"):
+        Trainer(config=_cfg(tmp_path, layer_err_source="readout"))
+    with pytest.raises(ValueError, match="use_output_projection"):
+        Trainer(config=_cfg(tmp_path, layer_err_source="readout", layer_finetune=True))
+    with pytest.raises(ValueError, match="layer_err_source"):
+        Trainer(config=_cfg(tmp_path, layer_err_source="bogus"))
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, layer_err_source="readout", layer_finetune=True),
+        OmegaConf.create({"model": {"type": "multi-class", "num_classes": 3,
+                                    "use_output_projection": True}}),
+    )
+    with pytest.raises(NotImplementedError):
+        Trainer(config=cfg)
+
+
+@pytest.mark.parametrize("layer_finetune", [True, False])
+def test_layer_err_source_readout_scores_layers_by_head_dev_loss(tmp_path, layer_finetune):
+    """Under 'readout' the layer error is a head's dev loss, not the best neuron's.
+
+    With layer_finetune on it is the fine-tune head; off, a temporary head over
+    the frozen survivors, whose weights must come out of the search unchanged
+    by that measurement.
+    """
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, layer_err_source="readout", layer_finetune=layer_finetune, max_layer_count=2),
+        OmegaConf.create({
+            "model": {"use_output_projection": True, "num_out_neurons": 2},
+            "train": {"out_proj_train": {"optimizer": "lbfgs", "max_steps": 6,
+                                         "eval_interval": 1, "early_stop_patience": 3}},
+        }),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    assert len(trained.layers) >= 1
+    for layer in trained.layers:
+        assert np.isfinite(layer.err)
+        # The head over all survivors is a different quantity from the single
+        # best neuron's regularity error.
+        assert not np.isclose(layer.err, layer.err_values.min().item())
+        # The measurement pass must hand the weights back trainable.
+        for nm in layer.neuron_models:
+            assert nm.weight.requires_grad
+    # The rest of the pipeline is unaffected by the criterion switch.
+    trainer.train_out_proj(trained, dl, dl)
+    out = trained.infer(torch.randn(5, 4))
+    assert out.shape == (5,)

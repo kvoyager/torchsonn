@@ -216,6 +216,26 @@ class TrainConfig:
     # 'top' (smallest err_value wins) | 'avg'.
     layer_err_criterion: str = "top"
 
+    # What `layer.err` - the number Trainer.train's layer-growth criterion
+    # compares across layers - measures:
+    #   'neuron'  - the survivors' individual dev errors, reduced per
+    #               `layer_err_criterion` (historical default). Right for a
+    #               model that is read out through its single best neuron.
+    #   'readout' - the dev loss of a head fitted over *all* survivors, i.e.
+    #               what a model with an output head is actually scored on.
+    #               With `layer_finetune: true` that is the fine-tune's own
+    #               head (with 'neuron' the fine-tune looks like a regression:
+    #               it turns survivors into a basis, so each one alone gets
+    #               worse); with `layer_finetune: false` a temporary head is
+    #               fitted over the frozen survivors just to measure the
+    #               readout, and the neurons themselves are untouched. Uses
+    #               the `out_proj_train` hyperparameters. Requires
+    #               `model.use_output_projection: true` (without a head,
+    #               inference reads the best neuron and the readout error would
+    #               describe a head that is never used); Trainer raises
+    #               otherwise. Regressor / binary only.
+    layer_err_source: str = "neuron"
+
     # Algorithm used by train_layer → neuron_selection to pick survivors from
     # the candidate pool:
     #   'plain'     — top-k by individual error (historical default).

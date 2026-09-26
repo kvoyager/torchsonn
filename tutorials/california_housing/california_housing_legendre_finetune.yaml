@@ -55,6 +55,32 @@
 #   mean of the 5 predictions            MSE 0.1901             MAE 0.2740
 # So +-0.002 is the seed/split noise of one run here; differences under ~0.005
 # in the tables above are not resolvable from single runs.
+# Growth criterion (train.layer_err_source), single model, cuda:
+#   layer_finetune on, 'neuron' (old)     MSE 0.2102   MAE 0.2893   (4 trained / 3 kept)
+#   layer_finetune on, 'readout'          MSE 0.2099   MAE 0.2876   (5 trained / 3 kept)
+#   layer_finetune off (this file)        MSE 0.1972   MAE 0.2786   (15 layers)
+#   layer_finetune off, 'readout' over the frozen survivors
+#                                         MSE 0.2017   MAE 0.2810   (18 trained)
+# Survivor selection (train.neuron_selection_method), single model, cuda:
+#   plain (was the default here)          MSE 0.1972   MAE 0.2786   (15 layers)
+#   omp_mixed                             MSE 0.1946   MAE 0.2731   (11 layers) <- this file
+#   omp                                   MSE 0.1952   MAE 0.2786   (10 layers)
+#   omp_mixed + 'readout' criterion       MSE 0.2015   MAE 0.2826   (7 layers: the
+#     readout curve is flatter, so that criterion stops too early; the head-vs-
+#     best-neuron gap did widen as predicted, 0.007 vs 0.002 under plain)
+# With 'readout' the criterion is fair to the fine-tune - it scores the per-layer
+# head's dev loss (0.145 at layer 0 vs 0.171 for the best neuron) - and still
+# stops at 3 layers: the head's dev error plateaus at 0.144 from layer 0 on,
+# so on this data the per-layer fine-tune genuinely does not gain from depth,
+# whereas calibrated growth compounds over 15 layers. The criterion was not the
+# reason it lost; it stays off here.
+# Over frozen (calibrated) survivors the readout criterion grows to 18 layers and
+# lands inside the single-run noise of the default (members 0.2010 +- 0.0021), so
+# the depth was already right. Diagnostic worth keeping: a linear head over the 16
+# calibrated survivors beats the best single neuron by only ~0.002 dev error
+# (0.149 vs 0.151), against 0.026 with the fine-tune (0.145 vs 0.171) - the
+# top-k survivors are near-duplicates, so the head has little to combine. That
+# points at the selection rule (train.neuron_selection_method), not the depth.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
@@ -156,6 +182,18 @@ train:
   criterion_minimum_width: 2
   stop_train_epsilon_condition: 0.001
   max_layer_count: 50
+
+  # Survivor selection. 'plain' keeps the top-16 candidates by individual dev
+  # error, which on this data are near-duplicates of the same best pair (a head
+  # over them beat the best single neuron by only 0.002 dev error). 'omp_mixed'
+  # walks candidates in error order and drops any whose output is mostly
+  # explained by the survivors already chosen (Gram-Schmidt on dev, keep if
+  # >= 30% of the norm survives), so the head gets a decorrelated basis.
+  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), omp_mixed
+  # 0.1946 / 0.2731 (11 layers), omp 0.1952 / 0.2786 (10 layers). The MSE gain
+  # is at the edge of single-run noise (+-0.002); the MAE gain is ~3x it. Also
+  # ~30% fewer layers. Not yet confirmed across seeds.
+  neuron_selection_method: omp_mixed
 
   # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
   # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex
