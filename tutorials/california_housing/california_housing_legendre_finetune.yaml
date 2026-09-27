@@ -94,6 +94,14 @@
 # MSE-optimal is the conditional mean, which the raw target estimates; the log
 # target estimates the median and wins MAE. The end-to-end pass needed 10875
 # steps here vs ~2000-4000 on the log target.
+# Config-only variants on top of that row (single model, cuda), none kept:
+#   32 survivors / 32-wide head, cap 300  MSE 0.1904   MAE 0.2832   (6 layers, 104 s/layer)
+#   tanh neuron activation                MSE 0.2191   MAE 0.3081   (layer error 1.87: a
+#     bounded output cannot reach a raw target that runs to 5; only meaningful with a
+#     standardized target, which the script does not do)
+#   use_layer_norm                        MSE 0.2096   MAE 0.2998   (layer errors rise
+#     after layer 0, 0.194 -> 0.241: the norm re-scales the shortcut inputs the
+#     later layers' neurons were calibrated on)
 # With 'readout' the criterion is fair to the fine-tune - it scores the per-layer
 # head's dev loss (0.145 at layer 0 vs 0.171 for the best neuron) - and still
 # stops at 3 layers: the head's dev error plateaus at 0.144 from layer 0 on,
