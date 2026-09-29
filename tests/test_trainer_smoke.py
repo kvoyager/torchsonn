@@ -575,7 +575,7 @@ def test_layer_err_source_readout_scores_layers_by_head_dev_loss(tmp_path, layer
     assert out.shape == (5,)
 
 
-# --- DRAFT-rbf-neurons Patch 1: the per-layer input pass ---------------------
+# --- The per-layer input pass ------------------------------------------------
 
 from torchsonn.neurons import LinearCovPolynomNeuron as _LinearCov
 
@@ -709,7 +709,7 @@ def test_input_pass_serves_stats_and_sample_in_one_pass(tmp_path):
     assert torch.equal(stub.samples[0], rows)
 
 
-# --- DRAFT-rbf-neurons Patch 2: the RBF family through the trainer -----------
+# --- The RBF family through the trainer --------------------------------------
 
 from torchsonn.neurons import RBFNeuron as _RBFNeuron
 
@@ -717,7 +717,7 @@ from torchsonn.neurons import RBFNeuron as _RBFNeuron
 @pytest.mark.parametrize("mode", ["sample", "stream"])
 def test_rbf_family_trains_end_to_end(tmp_path, mode):
     """Input pass (k-means start, sample or streamed), joint candidate fit of
-    weights + centres + widths, selection with the survivor report, prune,
+    weights + centers + widths, selection with the survivor report, prune,
     inference and the checkpoint round trip."""
     cfg = OmegaConf.merge(
         _cfg(tmp_path, max_layer_count=2, rbf_kmeans_mode=mode, rbf_kmeans_iters=5),
@@ -740,7 +740,7 @@ def test_rbf_family_trains_end_to_end(tmp_path, mode):
                 with torch.no_grad():
                     scale = nm.width_scales()
                 assert (scale <= 4.0).all() and (scale >= 0.25).all()
-                assert "centre movement" in nm.fit_report()
+                assert "center movement" in nm.fit_report()
     assert rbf_seen, "no RBF neuron survived selection in any layer"
     x = torch.randn(5, 4)
     with torch.inference_mode():
@@ -754,9 +754,9 @@ def test_rbf_family_trains_end_to_end(tmp_path, mode):
         assert torch.allclose(trained.infer(x), pred, atol=1e-6)
 
 
-def test_rbf_candidate_fit_moves_centres(tmp_path):
-    """The vmapped candidate fit trains the centres and widths, not just the
-    weights: after one layer the survivors' centres differ from their k-means
+def test_rbf_candidate_fit_moves_centers(tmp_path):
+    """The vmapped candidate fit trains the centers and widths, not just the
+    weights: after one layer the survivors' centers differ from their k-means
     start."""
     cfg = OmegaConf.merge(
         _cfg(tmp_path, max_layer_count=1, steps=40),
@@ -772,9 +772,9 @@ def test_rbf_candidate_fit_moves_centres(tmp_path):
     assert isinstance(nm.centers, torch.nn.Parameter)
 
 
-def test_rbf_layer_finetune_unfreezes_centres(tmp_path):
+def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
     """train.layer_finetune trains every neuron parameter, so an RBF
-    survivor's centres change during the per-layer pass."""
+    survivor's centers change during the per-layer pass."""
     cfg = OmegaConf.merge(
         _cfg(tmp_path, max_layer_count=1, layer_finetune=True),
         OmegaConf.create({"model": {"ref_functions": [{"rbf": {"centers": 4}}], "shortcut": False,

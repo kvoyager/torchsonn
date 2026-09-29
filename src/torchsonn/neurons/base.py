@@ -393,9 +393,9 @@ class BasePolynomNeuron(SONNModule, ABC):
     #     moments (the orthogonal families' sigma squash).
     #   * needs_input_sample / fit_input_sample(x, stream): a seeded reservoir
     #     sample of the layer input, at most train.input_sample_rows rows,
-    #     for placements that need rows rather than moments (RBF centres).
+    #     for placements that need rows rather than moments (RBF centers).
     #     `stream=True` says the split exceeded the cap and a streaming pass
-    #     follows, so the module should only initialise from the sample.
+    #     follows, so the module should only initialize from the sample.
     #   * needs_input_stream / stream_input_batch(x) / finish_input_stream():
     #     the streaming pass itself, train.rbf_kmeans_passes times over the
     #     split, one batch of layer input at a time.
@@ -435,7 +435,7 @@ class BasePolynomNeuron(SONNModule, ABC):
 
     def fit_input_sample(self, x_sample: torch.Tensor, stream: bool = False,
                          seed: int | None = None, iters: int = 20) -> None:
-        """Initialise from a `(N, num_feat)` sample of the layer input.
+        """Initialize from a `(N, num_feat)` sample of the layer input.
 
         With `stream=True` the split exceeded `train.input_sample_rows` and
         the trainer will follow with `stream_input_batch` over the whole
@@ -447,8 +447,8 @@ class BasePolynomNeuron(SONNModule, ABC):
 
     @property
     def needs_input_stream(self) -> bool:
-        """Whether this neuron can refine its initialisation from a streaming
-        pass over the split (mini-batch k-means for RBF centres)."""
+        """Whether this neuron can refine its initialization from a streaming
+        pass over the split (mini-batch k-means for RBF centers)."""
         return False
 
     def stream_input_batch(self, x_batch: torch.Tensor) -> None:
@@ -461,7 +461,7 @@ class BasePolynomNeuron(SONNModule, ABC):
 
     def fit_report(self) -> str | None:
         """One-line summary of this family's survivors after selection, for
-        the trainer's log (e.g. how far learnable centres moved). None when
+        the trainer's log (e.g. how far learnable centers moved). None when
         the family has nothing to report."""
         return None
 
@@ -490,12 +490,12 @@ class BaseTupleNeuron(BasePolynomNeuron):
     """A neuron over an unordered `dim`-tuple of inputs (`dim >= 2`).
 
     The pair ("binary") families hard-code `dim = 2` through the base
-    `create_src_idxs`; this class generalises the candidate enumeration to
+    `create_src_idxs`; this class generalizes the candidate enumeration to
     `dim`-tuples (pairs at dim=2, triplets at dim=3, ...) for families whose
     design row is symmetric over its input slots — permuted tuples reach the
     same least-squares fit, so unordered tuples suffice (cap C(n, dim), not
     P(n, dim)). It carries no state of its own: per-slot calibration (the
-    orthogonal families' squash, an RBF family's centres) lives in the
+    orthogonal families' squash, an RBF family's centers) lives in the
     subclass and is fed through the input-pass hooks of `BasePolynomNeuron`,
     with `_prune_extra` keeping every `(num_neurons, ...)` tensor aligned.
 

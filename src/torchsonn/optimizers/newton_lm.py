@@ -63,7 +63,7 @@ class BatchedNewtonLM:
 
             update_mask = active_mask.view(-1, *([1] * (p.dim() - 1)))
             # Per-member lr broadcast over every trailing dim of the parameter
-            # (2-D weights, 3-D RBF centres alike).
+            # (2-D weights, 3-D RBF centers alike).
             lr = self.lr.view(-1, *([1] * (p.dim() - 1)))
 
             if k in self.shared_param_names:

@@ -2,16 +2,16 @@
 
 ## 0.1.4
 
-### Added — `rbf`: Gaussian RBF neuron family with learnable, k-means-initialised centres
+### Added — `rbf`: Gaussian RBF neuron family with learnable, k-means-initialized centers
 
 A local basis next to the global polynomial families. `RBFNeuron`
 (`ref_functions: - rbf`, alias `gauss`) puts `centers` Gaussian bumps over
-its `dim`-tuple of inputs, standardised per slot, and fits the bump centres
+its `dim`-tuple of inputs, standardized per slot, and fits the bump centers
 and widths *together* with the output weights by the existing vmapped
 candidate fit (they are parameters with the `num_neurons` axis; nothing in
-the fit loop changed). The design row is the normalised bumps (a partition
+the fit loop changed). The design row is the normalized bumps (a partition
 of unity computed as a softmax, so the constant is in the span and dropped)
-plus the standardised inputs as linear columns: `num_w = M + dim`, 18 for a
+plus the standardized inputs as linear columns: `num_w = M + dim`, 18 for a
 pair neuron at the default `M = 16`. Widths are carried in log form and
 bounded to `(1/width_band, width_band)` times their start by a smooth tanh,
 so a bump can neither collapse onto one row nor blur into the linear part.
@@ -19,16 +19,15 @@ Options: `centers`, `placement` (`kmeans` | `grid`), `width`, `learn_centers`,
 `learn_widths`, `width_band`, `normalize`, `linear`, `standardize`, `dim`.
 `learn_*: false` turns the tensors into buffers (the fixed-basis RBF).
 
-Initialisation happens in the per-layer input pass: batched k-means++ over
+Initialization happens in the per-layer input pass: batched k-means++ over
 the candidates on a seeded reservoir sample of the layer input, then Lloyd
 iterations (`train.rbf_kmeans_iters`); above `train.input_sample_rows` (or
-with `train.rbf_kmeans_mode: stream`) the centres are refined instead by
+with `train.rbf_kmeans_mode: stream`) the centers are refined instead by
 mini-batch k-means over the whole split, `train.rbf_kmeans_passes` passes,
 never holding more than one batch. `placement: grid` uses the product of
-per-slot quantile grids. Widths start at the local centre spacing, floored
+per-slot quantile grids. Widths start at the local center spacing, floored
 for tied slots. After selection the log reports how far each family's
-survivors' centres moved and where their width scales sit. No CA run yet;
-see `docs/drafts/DRAFT-rbf-neurons.md`.
+survivors' centers moved and where their width scales sit. No CA run yet.
 
 ### Changed — per-layer input pass; `BaseTupleNeuron`
 

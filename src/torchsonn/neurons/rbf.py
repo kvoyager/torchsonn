@@ -1,5 +1,5 @@
 """RBF neuron: learnable Gaussian bumps over a neuron's input tuple, k-means
-initialised (docs/drafts/DRAFT-rbf-neurons.md).
+initialized.
 
 Every other family fits a *global* basis over its inputs (monomials, orthogonal
 polynomials): a weight multiplies a column that is nonzero everywhere. This
@@ -7,8 +7,8 @@ family fits a *local* one. Per neuron over `dim` inputs, `M` Gaussian bumps
 
     d_m(u) = |u - c_m|^2 / (2 s_m^2),   g_m(u) = exp(-d_m(u))
 
-with the inputs `u` standardised per slot (mean / std from the layer's input
-pass) unless `standardize=False`, the centres `c_m` and the widths `s_m`
+with the inputs `u` standardized per slot (mean / std from the layer's input
+pass) unless `standardize=False`, the centers `c_m` and the widths `s_m`
 parameters of the neuron (unless `learn_centers` / `learn_widths` are off, in
 which case they are buffers). The width is carried in log form relative to its
 initial value and bounded to a band by a smooth squash,
@@ -22,22 +22,22 @@ strands it there; tanh keeps a gradient everywhere.) The design row is
 
 where `phi_m = softmax_m(-d)` when `normalize=True` (a partition of unity, so
 the constant is in the span and dropped; the softmax form keeps a row far from
-every centre from underflowing to 0/0) and `phi_m = g_m` otherwise. With the
-defaults (M=16, normalised, linear) a pair neuron has num_w = 18 weights plus
-32 centre coordinates and 16 log-widths, all fitted jointly by the trainer's
+every center from underflowing to 0/0) and `phi_m = g_m` otherwise. With the
+defaults (M=16, normalized, linear) a pair neuron has num_w = 18 weights plus
+32 center coordinates and 16 log-widths, all fitted jointly by the trainer's
 vmapped candidate fit, which takes every named parameter with in_dims=0.
 
-Initialisation happens in the trainer's per-layer input pass
+Initialization happens in the trainer's per-layer input pass
 (`Trainer.fit_layer_inputs`): the module receives the layer's input moments
 (`fit_input_stats`), then a row sample of the layer input (`fit_input_sample`)
 on which it runs k-means++ and, in sample mode, Lloyd's iterations batched
 over the candidates; in stream mode (large data) only the k-means++ start is
-taken from the sample and the centres are then refined by mini-batch k-means
-over the whole split (`stream_input_batch`, Sculley's per-centre 1/n rate),
+taken from the sample and the centers are then refined by mini-batch k-means
+over the whole split (`stream_input_batch`, Sculley's per-center 1/n rate),
 finishing with `finish_input_stream`. `placement="grid"` replaces k-means by
 the product of per-slot quantile grids (deterministic, `M` must be K^dim).
 Widths start at `width` times the mean distance to the two nearest other
-centres, floored so duplicated centres (tied or binary slots) never give a
+centers, floored so duplicated centers (tied or binary slots) never give a
 zero width.
 
 Every per-neuron tensor carries the leading `num_neurons` axis, so it is
@@ -60,7 +60,7 @@ PLACEMENTS = ("kmeans", "grid")
 
 # Quantile grid of the `grid` placement: K points per slot, K = M^(1/dim).
 _GRID_Q_LO, _GRID_Q_HI = 0.1, 0.9
-# Width floor in units of the slot std (1 in standardised units).
+# Width floor in units of the slot std (1 in standardized units).
 _WIDTH_FLOOR = 0.05
 
 
@@ -129,7 +129,7 @@ class RBFNeuron(BaseTupleNeuron):
         )
         n, m, d = self.num_neurons, self.num_centers, self.dim
         # Placeholders until the input pass runs (or load_state_dict fills
-        # them): centres on the diagonal of [-1.5, 1.5]^dim, unit widths,
+        # them): centers on the diagonal of [-1.5, 1.5]^dim, unit widths,
         # identity stats. Correctly shaped so the module is usable as built.
         centers0 = torch.linspace(-1.5, 1.5, m).view(1, m, 1).expand(n, m, d).clone()
         if self.learn_centers:
@@ -144,7 +144,7 @@ class RBFNeuron(BaseTupleNeuron):
         self.register_buffer("width0", torch.ones(n, m))
         self.register_buffer("in_mean", torch.zeros(n, d))
         self.register_buffer("in_std", torch.ones(n, d))
-        # Where the centres started (after the input pass), for the survivor
+        # Where the centers started (after the input pass), for the survivor
         # report; plain CPU tensor, not state, pruned alongside the neurons.
         self._centers_start: torch.Tensor | None = None
         # Mini-batch k-means working state, only between fit_input_sample
@@ -198,7 +198,7 @@ class RBFNeuron(BaseTupleNeuron):
         return self.width0 * self.width_scales()
 
     def _standardize(self, x: torch.Tensor) -> torch.Tensor:
-        """Per-slot standardisation of gathered slot inputs (B, num_neurons, dim)
+        """Per-slot standardization of gathered slot inputs (B, num_neurons, dim)
         eager / (B, 1, dim) under vmap; identity when standardize is off."""
         if not self.standardize:
             return x
@@ -225,7 +225,7 @@ class RBFNeuron(BaseTupleNeuron):
     # ------------------------------------------------------------------
     @property
     def needs_input_stats(self) -> bool:
-        # Always: the standardisation, and the width floor in raw units.
+        # Always: the standardization, and the width floor in raw units.
         return True
 
     def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
@@ -240,7 +240,7 @@ class RBFNeuron(BaseTupleNeuron):
             self.in_std.copy_(slot_std.to(dtype=self.in_std.dtype, device=self.in_std.device))
 
     def _slots(self, x: torch.Tensor) -> torch.Tensor:
-        """Layer input (N, num_feat) -> standardised slots (num_neurons, N, dim),
+        """Layer input (N, num_feat) -> standardized slots (num_neurons, N, dim),
         candidate-major for the batched k-means."""
         n = x.shape[0]
         gathered = torch.index_select(x, 1, self.src_idxs.view(-1).to(device=x.device)).view(n, -1, self.dim)
@@ -263,7 +263,7 @@ class RBFNeuron(BaseTupleNeuron):
         u = self._slots(x_sample)                                   # (n, N, dim)
         n_rows = u.shape[1]
         if n_rows == 0:
-            logger.warning("%s: empty input sample, centres keep their placeholders", self.get_short_name())
+            logger.warning("%s: empty input sample, centers keep their placeholders", self.get_short_name())
             return
         gen = torch.Generator(device="cpu")
         gen.manual_seed(int(seed) if seed is not None else 0)
@@ -273,7 +273,7 @@ class RBFNeuron(BaseTupleNeuron):
             return
         centers = self._kmeans_pp(u, gen)
         if stream:
-            # Start only; the trainer's streaming pass refines the centres.
+            # Start only; the trainer's streaming pass refines the centers.
             with torch.no_grad():
                 self.centers.copy_(centers.to(dtype=self.centers.dtype))
             self._stream_counts = torch.zeros((self.num_neurons, self.num_centers),
@@ -296,7 +296,7 @@ class RBFNeuron(BaseTupleNeuron):
             sums, counts = self._cluster_sums(u, assign, self.num_centers)
             self._stream_counts += counts.to(torch.float64)
             self._stream_rows += u.shape[1]
-            # Sculley's update with the per-centre rate 1 / n_m:
+            # Sculley's update with the per-center rate 1 / n_m:
             #   c_m += (1 / n_m) * sum_{i in batch, a_i = m} (u_i - c_m)
             step = (sums - counts.unsqueeze(-1) * c) / self._stream_counts.clamp(min=1.0).unsqueeze(-1).to(u.dtype)
             self.centers.add_(step.to(dtype=self.centers.dtype))
@@ -312,14 +312,14 @@ class RBFNeuron(BaseTupleNeuron):
         self._stream_rows = 0
         centers = self.centers.detach().clone()
         moved = (centers.to(start.dtype) - start).norm(dim=-1)      # (n, M)
-        note = (f"mini-batch k-means over {rows} streamed rows; centre movement since the start "
+        note = (f"mini-batch k-means over {rows} streamed rows; center movement since the start "
                 f"median {moved.median().item():.3g}, max {moved.max().item():.3g}")
         self._finish_placement(centers, None, note, None, counts=counts)
 
     # -- pieces ----------------------------------------------------------
     @staticmethod
     def _assign(u: torch.Tensor, centers: torch.Tensor) -> torch.Tensor:
-        """Nearest centre per row: u (n, b, dim), centers (n, M, dim) -> (n, b)."""
+        """Nearest center per row: u (n, b, dim), centers (n, M, dim) -> (n, b)."""
         diff = u.unsqueeze(2) - centers.unsqueeze(1)                # (n, b, M, dim)
         return (diff * diff).sum(dim=-1).argmin(dim=-1)
 
@@ -368,13 +368,13 @@ class RBFNeuron(BaseTupleNeuron):
                 sums += s
                 counts += c
             new = sums / counts.clamp(min=1.0).unsqueeze(-1)
-            # An empty cluster keeps its previous centre.
+            # An empty cluster keeps its previous center.
             centers = torch.where(counts.unsqueeze(-1) > 0, new, centers)
         return centers
 
     def _grid_centers(self, u: torch.Tensor) -> torch.Tensor:
         """Product of per-slot quantile grids: K points per slot between the
-        10th and 90th percentile, K^dim centres."""
+        10th and 90th percentile, K^dim centers."""
         n, n_rows, d = u.shape
         k = self._grid_k
         qs = torch.linspace(_GRID_Q_LO, _GRID_Q_HI, k, dtype=torch.float64, device=u.device)
@@ -386,10 +386,10 @@ class RBFNeuron(BaseTupleNeuron):
 
     def _finish_placement(self, centers: torch.Tensor, u: torch.Tensor | None, note: str,
                           t0: float | None, counts: torch.Tensor | None = None) -> None:
-        """Write the placed centres, reset the widths from the local spacing,
+        """Write the placed centers, reset the widths from the local spacing,
         and log one line."""
         n, m, _ = centers.shape
-        # h_m: mean distance from c_m to its two nearest other centres.
+        # h_m: mean distance from c_m to its two nearest other centers.
         cc = (centers.unsqueeze(2) - centers.unsqueeze(1)).norm(dim=-1)            # (n, M, M)
         cc = cc + torch.diag(torch.full((m,), float("inf"), device=cc.device, dtype=cc.dtype))
         k = min(2, m - 1)
@@ -417,16 +417,16 @@ class RBFNeuron(BaseTupleNeuron):
             size_txt = (f"; cluster size min {int(c.min().item())}, median {int(c.median().item())}, "
                         f"{int((c == 0).sum().item())} empty of {n * m}")
         time_txt = f" in {time.perf_counter() - t0:.2f}s" if t0 is not None else ""
-        logger.info("%s: %d centres per neuron placed by %s%s%s; width0 median %.3g",
+        logger.info("%s: %d centers per neuron placed by %s%s%s; width0 median %.3g",
                     self.get_short_name(), m, note, time_txt, size_txt, width0.median().item())
 
     # ------------------------------------------------------------------
     # reports, prune, names
     # ------------------------------------------------------------------
     def fit_report(self) -> str | None:
-        """One line after selection: how far the survivors' centres moved from
+        """One line after selection: how far the survivors' centers moved from
         their placed start and where their width scales sit, so a fit that
-        never moves a centre, or pins widths at the band, is visible."""
+        never moves a center, or pins widths at the band, is visible."""
         if self._centers_start is None or self.num_neurons == 0:
             return None
         moved = (self.centers.detach().to("cpu", torch.float32) - self._centers_start).norm(dim=-1)
@@ -434,9 +434,9 @@ class RBFNeuron(BaseTupleNeuron):
             scale = self.width_scales().to("cpu", torch.float32)
         # "at the band": the smooth bound is 99% saturated.
         at_band = (torch.tanh(self.log_width.detach() / self._log_band).abs() >= 0.99).float().mean().item()
-        return (f"{self.get_short_name()}: {self.num_neurons} survivors; centre movement "
+        return (f"{self.get_short_name()}: {self.num_neurons} survivors; center movement "
                 f"median {moved.median().item():.3g}, max {moved.max().item():.3g} "
-                f"(standardised units); width scale min {scale.min().item():.2f}, "
+                f"(standardized units); width scale min {scale.min().item():.2f}, "
                 f"max {scale.max().item():.2f}, {at_band:.0%} at the band")
 
     def _prune_extra(self, idxs: torch.Tensor) -> None:
@@ -462,16 +462,16 @@ class RBFNeuron(BaseTupleNeuron):
     def get_name(self) -> str:
         learn = []
         if self.learn_centers:
-            learn.append("centres")
+            learn.append("centers")
         if self.learn_widths:
             learn.append("widths")
         learn_txt = " + ".join(learn) if learn else "fixed"
         start = "k-means" if self.placement == "kmeans" else "quantile-grid"
-        parts = [f"Gaussian RBF ({self.num_centers} {start} centres, learnable {learn_txt}, "
+        parts = [f"Gaussian RBF ({self.num_centers} {start} centers, learnable {learn_txt}, "
                  f"width {self.width:g} x local spacing"]
         if self.normalize:
-            parts.append(", normalised")
-        parts.append(f") over {'standardised ' if self.standardize else ''}{self.dim} inputs")
+            parts.append(", normalized")
+        parts.append(f") over {'standardized ' if self.standardize else ''}{self.dim} inputs")
         if self.linear:
             parts.append(" + linear")
         return "".join(parts)

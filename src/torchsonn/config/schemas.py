@@ -317,13 +317,13 @@ class TrainConfig:
 
     # Per-layer input pass (Trainer.fit_layer_inputs). Besides the streamed
     # mean / std the orthogonal families' squash needs, a family can ask for
-    # a row sample of the layer input (RBF centres are placed by k-means on
+    # a row sample of the layer input (RBF centers are placed by k-means on
     # it). `input_sample_rows` caps that sample: a seeded reservoir over the
     # training split, the whole split when it is smaller. It is a memory
-    # guard, not a quality knob - a handful of centres are pinned to within a
+    # guard, not a quality knob - a handful of centers are pinned to within a
     # few percent from a few thousand rows.
     input_sample_rows: int = 65536
-    # How RBF centres are initialised when a family asks for a sample:
+    # How RBF centers are initialized when a family asks for a sample:
     #   'sample' - exact Lloyd k-means on the reservoir sample;
     #   'stream' - k-means++ start on the sample, then mini-batch k-means over
     #              the whole split, `rbf_kmeans_passes` passes, never holding

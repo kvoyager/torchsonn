@@ -663,7 +663,7 @@ def test_all_known_activations_resolve():
         assert isinstance(n.activation, nn.Module)
 
 
-# --- DRAFT-rbf-neurons Patch 1: BaseTupleNeuron and the input-pass hooks ----
+# --- BaseTupleNeuron and the input-pass hooks ----------------------------
 
 class TestBaseTupleNeuron:
     # Captured from the code before the refactor: the orthogonal families'
@@ -735,7 +735,7 @@ class TestBaseTupleNeuron:
         assert BasePolynomNeuron.from_checkpoint_metadata(meta).dim == 3
 
 
-# --- DRAFT-rbf-neurons Patch 2: the RBF family -------------------------------
+# --- The RBF family ----------------------------------------------------------
 
 from torch.func import functional_call, grad as _fgrad, vmap as _fvmap
 
@@ -783,7 +783,7 @@ class TestRBFNeuron:
                 _rbf(**bad)
         assert _rbf(placement="grid", centers=9).num_w == 11
 
-    def test_normalised_bumps_are_a_partition_of_unity_even_far_away(self):
+    def test_normalized_bumps_are_a_partition_of_unity_even_far_away(self):
         n = _rbf()
         x = torch.randn(200, 4)
         _calibrate(n, x, seed=0)
@@ -918,10 +918,10 @@ class TestRBFNeuron:
         grid.finish_input_stream()
 
     def test_local_bump_beats_legendre_design(self):
-        """A fixed 16-centre k-means basis resolves a bump comparable to its
-        centre spacing (radius ~0.7 std here: measured ratio 0.26 of the
-        Legendre-3 residual; 0.07 with 25 centres). A bump much narrower
-        than the spacing is what the learnable centres are for, see the
+        """A fixed 16-center k-means basis resolves a bump comparable to its
+        center spacing (radius ~0.7 std here: measured ratio 0.26 of the
+        Legendre-3 residual; 0.07 with 25 centers). A bump much narrower
+        than the spacing is what the learnable centers are for, see the
         joint-fit test."""
         g = torch.Generator().manual_seed(0)
         u = torch.randn(3000, 2, generator=g)
@@ -952,14 +952,14 @@ class TestRBFNeuron:
         with torch.no_grad():
             return (n(u)[:, 0] - y).pow(2).mean().item()
 
-    def test_joint_fit_moves_a_centre_onto_the_bump(self):
+    def test_joint_fit_moves_a_center_onto_the_bump(self):
         g = torch.Generator().manual_seed(1)
         u = torch.randn(3000, 2, generator=g)
         target = torch.tensor([0.4, -0.3])
         y = torch.exp(-((u - target) ** 2).sum(1) / 0.05)
         n = _rbf(2, max_neuron_models=None)
         _calibrate(n, u, seed=0)
-        # standardised coordinates of the bump
+        # standardized coordinates of the bump
         t_std = (target - n.in_mean[0]) / n.in_std[0]
         fixed = torch.linalg.lstsq(_design(n, u), y.unsqueeze(1)).solution
         r_fixed = ((_design(n, u) @ fixed).squeeze(1) - y).pow(2).mean().item()
@@ -972,9 +972,9 @@ class TestRBFNeuron:
             scale = n.width_scales()
         assert (scale <= 4.0).all() and (scale >= 0.25).all()
         assert torch.allclose(n.widths(), n.width0 * scale)
-        assert "centre movement" in n.fit_report()
+        assert "center movement" in n.fit_report()
 
-    def test_frozen_centres_stay_bit_identical_under_the_same_fit(self):
+    def test_frozen_centers_stay_bit_identical_under_the_same_fit(self):
         g = torch.Generator().manual_seed(1)
         u = torch.randn(1000, 2, generator=g)
         y = torch.exp(-((u - torch.tensor([0.4, -0.3])) ** 2).sum(1) / 0.05)
@@ -1000,7 +1000,7 @@ class TestRBFNeuron:
         assert n.centers.detach().abs().mean() > 50          # raw units, not z-scores
         assert (n.width0 >= 0.05 * n.in_std.mean(-1, keepdim=True) - 1e-4).all()
         assert torch.isfinite(n(x)).all()
-        assert "standardised" not in n.get_name()
+        assert "standardized" not in n.get_name()
 
     def test_create_layer_builds_rbf_from_yaml(self):
         from omegaconf import OmegaConf

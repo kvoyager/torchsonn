@@ -419,7 +419,7 @@ class Trainer:
                 model.layers.append(layer)
                 checkpoint_data = None
                 # Calibrate the neurons on the layer's inputs before it trains
-                # (squash statistics, RBF centres). Only on the freshly-created
+                # (squash statistics, RBF centers). Only on the freshly-created
                 # path: a layer resumed mid-training keeps the state its
                 # checkpoint carries, which was fit on this same training set
                 # before it started.
@@ -1513,7 +1513,7 @@ class Trainer:
     ) -> tuple[torch.Tensor, int]:
         """Feed one batch into a reservoir sample of `max_rows` rows.
 
-        Algorithm R, vectorised per batch: the first `max_rows` rows fill the
+        Algorithm R, vectorized per batch: the first `max_rows` rows fill the
         reservoir; a later row at 0-based position `p` over the whole stream
         replaces a uniformly random slot with probability `max_rows / (p + 1)`.
         Two replacements landing on one slot inside a batch resolve to the
@@ -2258,7 +2258,7 @@ class Trainer:
         before train_layer ran, so `skip_last_layer=True` strips exactly the
         layer we want to fine-tune), then iterates the per-layer + head path
         on the cached features. Every parameter the neuron owns is unfrozen
-        (`weight`, and the RBF family's centres and widths) except
+        (`weight`, and the RBF family's centers and widths) except
         proj_weight / proj_bias, which are intentionally left alone since the
         loss doesn't flow through them in this pass.
         """
@@ -2283,7 +2283,7 @@ class Trainer:
         trainable_params: list[torch.nn.Parameter] = list(head.parameters())
         if not freeze_neurons:
             # Every parameter the neuron owns, not `weight` alone: the RBF
-            # family also carries learnable centres and widths. Unchanged for
+            # family also carries learnable centers and widths. Unchanged for
             # the polynomial families, whose only parameter is `weight`.
             for nm in layer.neuron_models:
                 for name, p in nm.named_parameters():

@@ -341,8 +341,8 @@ class SONN(SONNModule):
                 inputs (options: degree, cross, squash, dim, squash_method,
                 squash_n_sigma, squash_core_range; see 'legendre')
             'rbf': Gaussian radial-basis neuron: `centers` bumps over the
-                neuron's (standardised) inputs, centres and widths learnable
-                and initialised by k-means in the per-layer input pass, plus
+                neuron's (standardized) inputs, centers and widths learnable
+                and initialized by k-means in the per-layer input pass, plus
                 a linear part (options: centers, placement, width,
                 learn_centers, learn_widths, width_band, normalize, linear,
                 standardize, dim). See neurons/rbf.py.
