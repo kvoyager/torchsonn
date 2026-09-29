@@ -54,14 +54,13 @@ import torch
 from torchsonn.modules import SigmaSquashNorm
 from torchsonn.neurons.base import (
     ActivationLike,
-    BasePolynomNeuron,
-    generate_unique_combinations,
+    BaseTupleNeuron,
 )
 
 SQUASH_METHODS = ("sigma", "tanh")
 
 
-class BaseOrthogonalNeuron(BasePolynomNeuron):
+class BaseOrthogonalNeuron(BaseTupleNeuron):
     """Shared machinery for neurons built on an orthogonal-polynomial basis.
 
     For `dim` inputs (xi, xj, ...) — optionally squashed to (ui, uj, ...) —
@@ -93,11 +92,11 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
                  squash_core_range: float = 0.75) -> None:
         if degree < 1:
             raise ValueError(f"degree must be >= 1, got {degree}")
-        if dim < 2:
-            raise ValueError(f"dim must be >= 2, got {dim}")
         self.degree = int(degree)
         self.cross = bool(cross)
         self.squash = bool(squash)
+        # num_w below needs dim before BaseTupleNeuron.__init__ validates and
+        # re-assigns it; the check there is the authoritative one.
         self.dim = int(dim)
         self.squash_method = str(squash_method).lower()
         if self.squash_method not in SQUASH_METHODS:
@@ -181,10 +180,10 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
         )
 
     @property
-    def needs_squash_stats(self) -> bool:
+    def needs_input_stats(self) -> bool:
         return self.squash_norm is not None
 
-    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+    def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
         """Calibrate the sigma squash from this layer's input statistics.
 
         `mean` / `std` are per-*layer-input-feature* vectors of length
@@ -207,35 +206,7 @@ class BaseOrthogonalNeuron(BasePolynomNeuron):
         if self.squash_norm is not None:
             self.squash_norm.mean = self.squash_norm.mean.index_select(0, idxs)
             self.squash_norm.std = self.squash_norm.std.index_select(0, idxs)
-
-    def create_src_idxs(
-        self, num_feat: int, max_neuron_models: int | None
-    ) -> tuple[torch.Tensor, int]:
-        # `dim`-ary input tuples (pairs at dim=2, triplets at dim=3, ...). The
-        # orthogonal design row is symmetric over its input slots — permuted
-        # tuples reach the same least-squares fit — so unordered tuples suffice
-        # (cap C(n, dim), not P(n, dim)). Mirrors PolyQuadratic.create_src_idxs;
-        # the base pair-only version can't express dim > 2.
-        if max_neuron_models is not None:
-            assert max_neuron_models > 0
-            src_idxs = generate_unique_combinations(
-                num_feat, self.dim, max_neuron_models, ordered=False
-            )
-        else:
-            # Exhaustive enumeration of every unordered dim-tuple of inputs. At
-            # dim=2 this reproduces the historical pair double-loop order
-            # [(0,1), (0,2), ...]; itertools.combinations generalizes it to any
-            # dim. Empty (num_neurons == 0) when num_feat < dim — create_layer
-            # then skips this family for the layer until shortcut widening
-            # supplies enough inputs.
-            src_idxs = list(itertools.combinations(range(num_feat), self.dim))
-
-        # Derive num_neurons from the actual list length: generate_unique_combinations
-        # clamps when max_neuron_models exceeds the unique-tuple cap, so trusting
-        # max_neuron_models here would leave self.weight and self.src_idxs with
-        # inconsistent leading dims (vmap would then fail on mixed-size mapped dim).
-        num_neurons = len(src_idxs)
-        return torch.tensor(src_idxs), num_neurons
+        super()._prune_extra(idxs)
 
     @staticmethod
     def _recurrence_coeffs(k: int) -> tuple[float, float]:

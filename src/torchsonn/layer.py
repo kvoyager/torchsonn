@@ -103,16 +103,20 @@ class SONNLayer(SONNModule):
         if len(self.neuron_models) > 0:
             self.layer_norm = self.layer_norm.to(self.neuron_models[0].weight.device)
 
-    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
-        """Calibrate every neuron's input squash from this layer's input stats.
+    def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Hand this layer's input statistics to every neuron model.
 
         `mean` / `std` are length-`num_feat` vectors over the features that
         feed this layer, measured on the training set. Called by
-        `Trainer.fit_layer_squash` after the layer is created and before it
-        trains; a no-op for neuron families that don't squash.
+        `Trainer.fit_layer_inputs` after the layer is created and before it
+        trains; a no-op for neuron families that calibrate nothing.
         """
         for neuron_model in self.neuron_models:
-            neuron_model.fit_squash(mean, std)
+            neuron_model.fit_input_stats(mean, std)
+
+    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Historical name of `fit_input_stats`."""
+        self.fit_input_stats(mean, std)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         self.neuron_models_names = [neuron_model.__class__.__name__ for neuron_model in self.neuron_models]

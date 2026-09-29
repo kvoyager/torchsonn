@@ -1,3 +1,4 @@
+import itertools
 import logging
 import math
 import random
@@ -382,25 +383,87 @@ class BasePolynomNeuron(SONNModule, ABC):
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
+    # ------------------------------------------------------------------
+    # Per-layer input pass (Trainer.fit_layer_inputs). Once per layer, before
+    # the layer trains, the trainer streams the layer's actual inputs over the
+    # training split and hands each neuron model what it asks for through
+    # these hooks. All of them are no-ops here; families that calibrate
+    # something data-dependent override the ones they need:
+    #   * needs_input_stats / fit_input_stats(mean, std): per-input-feature
+    #     moments (the orthogonal families' sigma squash).
+    #   * needs_input_sample / fit_input_sample(x, stream): a seeded reservoir
+    #     sample of the layer input, at most train.input_sample_rows rows,
+    #     for placements that need rows rather than moments (RBF centres).
+    #     `stream=True` says the split exceeded the cap and a streaming pass
+    #     follows, so the module should only initialise from the sample.
+    #   * needs_input_stream / stream_input_batch(x) / finish_input_stream():
+    #     the streaming pass itself, train.rbf_kmeans_passes times over the
+    #     split, one batch of layer input at a time.
+    # ------------------------------------------------------------------
     @property
-    def needs_squash_stats(self) -> bool:
-        """Whether `fit_squash` would do anything for this neuron.
+    def needs_input_stats(self) -> bool:
+        """Whether `fit_input_stats` would do anything for this neuron.
 
         Lets the trainer skip the per-layer statistics pass entirely when no
-        neuron in the layer has a data-dependent squash.
+        neuron in the layer consumes it.
         """
         return False
 
-    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
-        """Calibrate any data-dependent input squash from layer-input statistics.
+    @property
+    def needs_squash_stats(self) -> bool:
+        """Historical name of `needs_input_stats`."""
+        return self.needs_input_stats
+
+    def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Calibrate anything data-dependent from layer-input statistics.
 
         `mean` / `std` are per-layer-input-feature vectors of length
         `num_feat`, measured over the training set before this layer trains.
-        Only the orthogonal-polynomial family currently squashes its inputs, so
-        the base implementation does nothing — see
-        `BaseOrthogonalNeuron.fit_squash`.
+        The base implementation does nothing — see
+        `BaseOrthogonalNeuron.fit_input_stats` for the sigma squash.
         """
         return
+
+    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Historical name of `fit_input_stats`."""
+        self.fit_input_stats(mean, std)
+
+    @property
+    def needs_input_sample(self) -> bool:
+        """Whether this neuron wants a row sample of the layer input."""
+        return False
+
+    def fit_input_sample(self, x_sample: torch.Tensor, stream: bool = False,
+                         seed: int | None = None, iters: int = 20) -> None:
+        """Initialise from a `(N, num_feat)` sample of the layer input.
+
+        With `stream=True` the split exceeded `train.input_sample_rows` and
+        the trainer will follow with `stream_input_batch` over the whole
+        split, so only the start should be taken from the sample. `seed`
+        (from `train.seed` and the layer index) makes any sampling inside
+        reproducible; `iters` is `train.rbf_kmeans_iters`.
+        """
+        return
+
+    @property
+    def needs_input_stream(self) -> bool:
+        """Whether this neuron can refine its initialisation from a streaming
+        pass over the split (mini-batch k-means for RBF centres)."""
+        return False
+
+    def stream_input_batch(self, x_batch: torch.Tensor) -> None:
+        """One batch `(B, num_feat)` of layer input during the streaming pass."""
+        return
+
+    def finish_input_stream(self) -> None:
+        """Called once after the last streaming pass."""
+        return
+
+    def fit_report(self) -> str | None:
+        """One-line summary of this family's survivors after selection, for
+        the trainer's log (e.g. how far learnable centres moved). None when
+        the family has nothing to report."""
+        return None
 
     def prune(self, idxs: torch.Tensor) -> None:
         self.src_idxs = self.src_idxs.index_select(0, idxs)
@@ -417,6 +480,73 @@ class BasePolynomNeuron(SONNModule, ABC):
         Anything with a leading `num_neurons` axis must be index_select'd here
         alongside `weight`, or it goes out of alignment with the surviving
         neurons. This matters most for registered buffers, which
-        `Trainer.create_loss_functions` vmaps with in_dims=0.
+        `Trainer.create_loss_functions` vmaps with in_dims=0. Subclasses that
+        override this must call `super()._prune_extra(idxs)`.
         """
         return
+
+
+class BaseTupleNeuron(BasePolynomNeuron):
+    """A neuron over an unordered `dim`-tuple of inputs (`dim >= 2`).
+
+    The pair ("binary") families hard-code `dim = 2` through the base
+    `create_src_idxs`; this class generalises the candidate enumeration to
+    `dim`-tuples (pairs at dim=2, triplets at dim=3, ...) for families whose
+    design row is symmetric over its input slots — permuted tuples reach the
+    same least-squares fit, so unordered tuples suffice (cap C(n, dim), not
+    P(n, dim)). It carries no state of its own: per-slot calibration (the
+    orthogonal families' squash, an RBF family's centres) lives in the
+    subclass and is fed through the input-pass hooks of `BasePolynomNeuron`,
+    with `_prune_extra` keeping every `(num_neurons, ...)` tensor aligned.
+
+    Subclasses must set `self.num_w` before calling `__init__` (the base
+    allocates `weight` from it) and may read `self.dim` before that, since
+    it is assigned here first.
+    """
+
+    def __init__(self,
+                 num_feat: int,
+                 num_src_feat: int,
+                 activation: ActivationLike,
+                 layer_index: int,
+                 start_index: int,
+                 max_neuron_models: int | None = None,
+                 init_method: str = "xavier",
+                 dim: int = 2) -> None:
+        if dim < 2:
+            raise ValueError(f"dim must be >= 2, got {dim}")
+        self.dim = int(dim)
+        super().__init__(
+            num_feat,
+            num_src_feat,
+            activation,
+            layer_index,
+            start_index,
+            dim=self.dim,
+            max_neuron_models=max_neuron_models,
+            init_method=init_method,
+        )
+
+    def create_src_idxs(
+        self, num_feat: int, max_neuron_models: int | None
+    ) -> tuple[torch.Tensor, int]:
+        if max_neuron_models is not None:
+            assert max_neuron_models > 0
+            src_idxs = generate_unique_combinations(
+                num_feat, self.dim, max_neuron_models, ordered=False
+            )
+        else:
+            # Exhaustive enumeration of every unordered dim-tuple of inputs. At
+            # dim=2 this reproduces the historical pair double-loop order
+            # [(0,1), (0,2), ...]; itertools.combinations generalizes it to any
+            # dim. Empty (num_neurons == 0) when num_feat < dim — create_layer
+            # then skips this family for the layer until shortcut widening
+            # supplies enough inputs.
+            src_idxs = list(itertools.combinations(range(num_feat), self.dim))
+
+        # Derive num_neurons from the actual list length: generate_unique_combinations
+        # clamps when max_neuron_models exceeds the unique-tuple cap, so trusting
+        # max_neuron_models here would leave self.weight and self.src_idxs with
+        # inconsistent leading dims (vmap would then fail on mixed-size mapped dim).
+        num_neurons = len(src_idxs)
+        return torch.tensor(src_idxs), num_neurons

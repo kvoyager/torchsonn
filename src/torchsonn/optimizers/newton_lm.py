@@ -62,7 +62,9 @@ class BatchedNewtonLM:
                 H = torch.diag_embed(flat_g.pow(2)) + self.damping * torch.eye(flat_g.shape[-1], device=device)
 
             update_mask = active_mask.view(-1, *([1] * (p.dim() - 1)))
-            lr = self.lr.unsqueeze(dim=1)
+            # Per-member lr broadcast over every trailing dim of the parameter
+            # (2-D weights, 3-D RBF centres alike).
+            lr = self.lr.view(-1, *([1] * (p.dim() - 1)))
 
             if k in self.shared_param_names:
                 idx = torch.where(active_mask)[0]

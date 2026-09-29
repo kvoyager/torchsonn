@@ -418,11 +418,12 @@ class Trainer:
                 layer = model.create_layer(layer_index)
                 model.layers.append(layer)
                 checkpoint_data = None
-                # Calibrate the input squash before the layer trains. Only on
-                # the freshly-created path: a layer resumed mid-training keeps
-                # the statistics its checkpoint carries, which were fit on this
-                # same training set before it started.
-                self.fit_layer_squash(model, layer, train_dl)
+                # Calibrate the neurons on the layer's inputs before it trains
+                # (squash statistics, RBF centres). Only on the freshly-created
+                # path: a layer resumed mid-training keeps the state its
+                # checkpoint carries, which was fit on this same training set
+                # before it started.
+                self.fit_layer_inputs(model, layer, train_dl)
 
             with timed_block(f"train layer #{layer_index}", verbose=verbose):
                 self.train_layer(model, layer, train_dl, dev_dl, checkpoint_data)
@@ -922,6 +923,10 @@ class Trainer:
                 new_module_idx += 1
         module_idxs = torch.cat(new_module_idxs)
         layer.neuron_models = NeuronModuleList(new_modules)
+        for nm in new_modules:
+            report = nm.fit_report()
+            if report:
+                logger.info("Layer #%d %s", layer.layer_index, report)
         # Keep d_model in sync with the actual post-prune output count so the
         # next create_layer call uses the right number of inputs.
         layer.d_model = len(layer)
@@ -1365,32 +1370,59 @@ class Trainer:
 
         return loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names
 
-    def fit_layer_squash(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
-        """Calibrate the layer's input squash on the whole training set.
+    def fit_layer_inputs(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
+        """Per-layer input pass: calibrate every neuron model on the layer's
+        actual inputs before the layer trains.
 
-        The SigmaSquashNorm squash (`model.squash_method='sigma'`) needs a mean
-        and a std per input feature, and they have to describe the features
-        that actually reach *this* layer: the (preprocessed) raw inputs for
-        layer 0, the frozen prefix's outputs — plus the shortcut-concatenated
-        originals — deeper down. So this runs once per layer, after
-        create_layer and before any of the layer's neurons train, and measures
-        `model(x, skip_last_layer=True)` exactly as train_layer will feed it.
+        The inputs have to be the features that reach *this* layer: the
+        (preprocessed) raw inputs for layer 0, the frozen prefix's outputs —
+        plus the shortcut-concatenated originals — deeper down. So this runs
+        once per layer, after create_layer and before any of the layer's
+        neurons train, and measures `model(x, skip_last_layer=True)` exactly
+        as train_layer will feed it. Three things come out of it, each only
+        when some neuron model in the layer asks (see the hooks on
+        `BasePolynomNeuron`):
 
-        Costs one extra forward pass over the training split per layer. Skipped
-        outright when no neuron in the layer has a data-dependent squash, which
-        includes every tanh-squashed and non-orthogonal-polynomial model — so
-        configs that don't use it pay nothing.
+          * mean / std per input feature (`needs_input_stats`): the sigma
+            squash of the orthogonal families. Streamed in float64.
+          * a seeded reservoir sample of up to `train.input_sample_rows` rows
+            (`needs_input_sample`), the whole split when it is smaller, taken
+            in the same pass. Handed to `fit_input_sample(sample, stream)`.
+          * a streaming pass (`needs_input_stream`, and only when the mode
+            resolves to 'stream': `train.rbf_kmeans_mode` 'stream', or 'auto'
+            with more rows than the cap): `train.rbf_kmeans_passes` further
+            passes over the split feeding `stream_input_batch(x_batch)`, then
+            `finish_input_stream()` once.
+
+        Costs one forward pass over the training split per layer, plus one
+        per streaming pass. Skipped outright when no neuron in the layer asks
+        for anything, so configs that use none of it pay nothing.
         """
-        if not any(nm.needs_squash_stats for nm in layer.neuron_models):
+        modules = list(layer.neuron_models)
+        want_stats = any(nm.needs_input_stats for nm in modules)
+        want_sample = any(nm.needs_input_sample for nm in modules)
+        if not (want_stats or want_sample):
             return
 
-        device = layer.neuron_models[0].device
+        cfg = model.param.train
+        max_rows = int(cfg.input_sample_rows)
+        if want_sample and max_rows <= 0:
+            raise ValueError(f"train.input_sample_rows must be > 0, got {max_rows}")
+        mode = str(cfg.rbf_kmeans_mode).lower()
+        if mode not in ("auto", "sample", "stream"):
+            raise ValueError(
+                f"train.rbf_kmeans_mode must be 'auto', 'sample' or 'stream', got {cfg.rbf_kmeans_mode!r}")
+
+        device = modules[0].device
         # Accumulate in float64 whatever train.dtype is: a running sum of
         # squares over a large split bleeds precision badly in float32, and
         # this runs once per layer so the extra width is free.
         total: torch.Tensor | None = None
         total_sq: torch.Tensor | None = None
         count = 0
+        reservoir: torch.Tensor | None = None
+        filled = 0
+        gen = torch.Generator(device="cpu").manual_seed(int(cfg.seed) + 7919 * (layer.layer_index + 1))
 
         was_training = model.training
         model.eval()
@@ -1400,17 +1432,20 @@ class Trainer:
         with torch.no_grad():
             for batch in train_dl:
                 x_inp, _ = self.batch_callback(batch) if self.batch_callback else batch
-                feats = model(x_inp.to(device=device), skip_last_layer=True).double()
-                batch_sum = feats.sum(dim=0)
-                batch_sq = (feats * feats).sum(dim=0)
+                feats = model(x_inp.to(device=device), skip_last_layer=True)
+                f64 = feats.double()
+                batch_sum = f64.sum(dim=0)
+                batch_sq = (f64 * f64).sum(dim=0)
                 total = batch_sum if total is None else total + batch_sum
                 total_sq = batch_sq if total_sq is None else total_sq + batch_sq
+                if want_sample:
+                    reservoir, filled = self._reservoir_add(reservoir, filled, count, feats, max_rows, gen)
                 count += feats.shape[0]
         model.train(was_training)
 
         if count == 0:
             logger.warning(
-                "Layer #%d squash calibration skipped: training set is empty. "
+                "Layer #%d input pass skipped: training set is empty. "
                 "Neurons keep their identity stats (mean 0, std 1).",
                 layer.layer_index,
             )
@@ -1422,13 +1457,86 @@ class Trainer:
         # reads the resulting std == 0 as a constant feature and neutralizes it.
         std = (total_sq / count - mean * mean).clamp(min=0.0).sqrt()
 
-        layer.fit_squash(mean.to(dtype=model.dtype), std.to(dtype=model.dtype))
+        if want_stats:
+            layer.fit_input_stats(mean.to(dtype=model.dtype), std.to(dtype=model.dtype))
+            logger.info(
+                "Layer #%d squash calibrated on %d training samples over %d input "
+                "feature(s); |mean| max %.4g, std range [%.4g, %.4g]",
+                layer.layer_index, count, mean.numel(),
+                mean.abs().max().item(), std.min().item(), std.max().item(),
+            )
+
+        if not want_sample:
+            return
+        sample = reservoir[:filled]
+        stream = mode == "stream" or (mode == "auto" and count > max_rows)
+        seed = int(cfg.seed) + 7919 * (layer.layer_index + 1)
+        for nm in modules:
+            if nm.needs_input_sample:
+                nm.fit_input_sample(sample, stream=stream, seed=seed, iters=int(cfg.rbf_kmeans_iters))
         logger.info(
-            "Layer #%d squash calibrated on %d training samples over %d input "
-            "feature(s); |mean| max %.4g, std range [%.4g, %.4g]",
-            layer.layer_index, count, mean.numel(),
-            mean.abs().max().item(), std.min().item(), std.max().item(),
+            "Layer #%d input sample: %d of %d training rows kept (%s); k-means mode %s",
+            layer.layer_index, filled, count,
+            "whole split" if filled == count else "seeded reservoir",
+            "stream" if stream else "sample",
         )
+        if not stream:
+            return
+        streamers = [nm for nm in modules if nm.needs_input_stream]
+        if not streamers:
+            return
+        passes = int(cfg.rbf_kmeans_passes)
+        if passes < 1:
+            raise ValueError(f"train.rbf_kmeans_passes must be >= 1, got {passes}")
+        model.eval()
+        with torch.no_grad():
+            for _ in range(passes):
+                for batch in train_dl:
+                    x_inp, _ = self.batch_callback(batch) if self.batch_callback else batch
+                    feats = model(x_inp.to(device=device), skip_last_layer=True)
+                    for nm in streamers:
+                        nm.stream_input_batch(feats)
+        model.train(was_training)
+        for nm in streamers:
+            nm.finish_input_stream()
+        logger.info("Layer #%d streaming pass done: %d pass(es) over %d rows for %d neuron model(s)",
+                    layer.layer_index, passes, count, len(streamers))
+
+    def fit_layer_squash(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
+        """Historical name of `fit_layer_inputs`."""
+        self.fit_layer_inputs(model, layer, train_dl)
+
+    @staticmethod
+    def _reservoir_add(
+        reservoir: torch.Tensor | None, filled: int, seen: int, feats: torch.Tensor,
+        max_rows: int, gen: torch.Generator,
+    ) -> tuple[torch.Tensor, int]:
+        """Feed one batch into a reservoir sample of `max_rows` rows.
+
+        Algorithm R, vectorised per batch: the first `max_rows` rows fill the
+        reservoir; a later row at 0-based position `p` over the whole stream
+        replaces a uniformly random slot with probability `max_rows / (p + 1)`.
+        Two replacements landing on one slot inside a batch resolve to the
+        later row, a negligible bias for a k-means start. `seen` is the
+        number of rows streamed before this batch; the generator is on the
+        CPU so the sample is reproducible for a fixed loader order.
+        """
+        b = feats.shape[0]
+        if reservoir is None:
+            reservoir = torch.empty((max_rows, feats.shape[1]), dtype=feats.dtype, device=feats.device)
+        take = min(b, max_rows - filled)
+        if take > 0:
+            reservoir[filled:filled + take] = feats[:take]
+            filled += take
+        rest = feats[take:]
+        if rest.shape[0] > 0:
+            pos = torch.arange(seen + take, seen + b, dtype=torch.float64)
+            keep = torch.rand(pos.shape[0], generator=gen, dtype=torch.float64) < (max_rows / (pos + 1.0))
+            n_keep = int(keep.sum().item())
+            if n_keep > 0:
+                slots = torch.randint(0, max_rows, (n_keep,), generator=gen)
+                reservoir[slots.to(device=feats.device)] = rest[keep.to(device=feats.device)]
+        return reservoir, filled
 
     def _precompute_dl(
         self,
@@ -2149,9 +2257,10 @@ class Trainer:
         features once (the current layer was already appended to model.layers
         before train_layer ran, so `skip_last_layer=True` strips exactly the
         layer we want to fine-tune), then iterates the per-layer + head path
-        on the cached features. Only `nm.weight` is unfrozen per neuron —
-        proj_weight / proj_bias are intentionally left alone since the loss
-        doesn't flow through them in this pass.
+        on the cached features. Every parameter the neuron owns is unfrozen
+        (`weight`, and the RBF family's centres and widths) except
+        proj_weight / proj_bias, which are intentionally left alone since the
+        loss doesn't flow through them in this pass.
         """
         # Reuse the out_proj_train hyperparam block — same shape, same
         # adam/sgd/lbfgs + ReduceLROnPlateau knobs. Keeps the YAML surface
@@ -2173,9 +2282,15 @@ class Trainer:
         head = torch.nn.Linear(layer.d_model, head_out_dim).to(device=device)
         trainable_params: list[torch.nn.Parameter] = list(head.parameters())
         if not freeze_neurons:
+            # Every parameter the neuron owns, not `weight` alone: the RBF
+            # family also carries learnable centres and widths. Unchanged for
+            # the polynomial families, whose only parameter is `weight`.
             for nm in layer.neuron_models:
-                nm.weight.requires_grad_(True)
-                trainable_params.append(nm.weight)
+                for name, p in nm.named_parameters():
+                    if name in ("proj_weight", "proj_bias"):
+                        continue
+                    p.requires_grad_(True)
+                    trainable_params.append(p)
 
         # Features through layers 0..N-1. Current `layer` is model.layers[-1],
         # so skip_last_layer=True is "everything but this one".

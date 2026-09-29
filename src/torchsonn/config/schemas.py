@@ -128,7 +128,7 @@ class ModelConfig:
     #       +/-squash_n_sigma through linearly onto +/-squash_core_range, and
     #       saturate only beyond that with a C2 rational tail. The statistics
     #       are measured over the whole training set once per layer, before
-    #       that layer trains (Trainer.fit_layer_squash), which costs one extra
+    #       that layer trains (Trainer.fit_layer_inputs), which costs one extra
     #       forward pass over the training split per layer.
     #   'tanh' — the historical stateless squash. No calibration pass, but it
     #       compresses the bulk of the distribution: tanh is at 0.76 by 1 sigma.
@@ -314,6 +314,25 @@ class TrainConfig:
     # pass, and their dev early stopping); the neuron-selection criterion is
     # unchanged. Clip predictions to the cap at inference. None = off.
     censor_target_at: Optional[float] = None
+
+    # Per-layer input pass (Trainer.fit_layer_inputs). Besides the streamed
+    # mean / std the orthogonal families' squash needs, a family can ask for
+    # a row sample of the layer input (RBF centres are placed by k-means on
+    # it). `input_sample_rows` caps that sample: a seeded reservoir over the
+    # training split, the whole split when it is smaller. It is a memory
+    # guard, not a quality knob - a handful of centres are pinned to within a
+    # few percent from a few thousand rows.
+    input_sample_rows: int = 65536
+    # How RBF centres are initialised when a family asks for a sample:
+    #   'sample' - exact Lloyd k-means on the reservoir sample;
+    #   'stream' - k-means++ start on the sample, then mini-batch k-means over
+    #              the whole split, `rbf_kmeans_passes` passes, never holding
+    #              more than one batch (Sculley's algorithm);
+    #   'auto'   - 'sample' when the split has at most input_sample_rows
+    #              rows, 'stream' above it.
+    rbf_kmeans_mode: str = "auto"
+    rbf_kmeans_iters: int = 20
+    rbf_kmeans_passes: int = 1
 
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)

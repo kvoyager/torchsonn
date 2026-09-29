@@ -2,6 +2,55 @@
 
 ## 0.1.4
 
+### Added — `rbf`: Gaussian RBF neuron family with learnable, k-means-initialised centres
+
+A local basis next to the global polynomial families. `RBFNeuron`
+(`ref_functions: - rbf`, alias `gauss`) puts `centers` Gaussian bumps over
+its `dim`-tuple of inputs, standardised per slot, and fits the bump centres
+and widths *together* with the output weights by the existing vmapped
+candidate fit (they are parameters with the `num_neurons` axis; nothing in
+the fit loop changed). The design row is the normalised bumps (a partition
+of unity computed as a softmax, so the constant is in the span and dropped)
+plus the standardised inputs as linear columns: `num_w = M + dim`, 18 for a
+pair neuron at the default `M = 16`. Widths are carried in log form and
+bounded to `(1/width_band, width_band)` times their start by a smooth tanh,
+so a bump can neither collapse onto one row nor blur into the linear part.
+Options: `centers`, `placement` (`kmeans` | `grid`), `width`, `learn_centers`,
+`learn_widths`, `width_band`, `normalize`, `linear`, `standardize`, `dim`.
+`learn_*: false` turns the tensors into buffers (the fixed-basis RBF).
+
+Initialisation happens in the per-layer input pass: batched k-means++ over
+the candidates on a seeded reservoir sample of the layer input, then Lloyd
+iterations (`train.rbf_kmeans_iters`); above `train.input_sample_rows` (or
+with `train.rbf_kmeans_mode: stream`) the centres are refined instead by
+mini-batch k-means over the whole split, `train.rbf_kmeans_passes` passes,
+never holding more than one batch. `placement: grid` uses the product of
+per-slot quantile grids. Widths start at the local centre spacing, floored
+for tied slots. After selection the log reports how far each family's
+survivors' centres moved and where their width scales sit. No CA run yet;
+see `docs/drafts/DRAFT-rbf-neurons.md`.
+
+### Changed — per-layer input pass; `BaseTupleNeuron`
+
+`Trainer.fit_layer_squash` is now `fit_layer_inputs` (old name kept): the
+same streaming mean / std pass, which additionally keeps a seeded reservoir
+sample of the layer input for families that ask (`needs_input_sample`) and
+runs the optional streaming pass (`needs_input_stream`). New no-op hooks on
+`BasePolynomNeuron`: `needs_input_stats` / `fit_input_stats` (old names
+`needs_squash_stats` / `fit_squash` kept as aliases), `needs_input_sample`
+/ `fit_input_sample`, `needs_input_stream` / `stream_input_batch` /
+`finish_input_stream`, `fit_report`. The `dim`-tuple candidate enumeration
+of the orthogonal families moved to `BaseTupleNeuron`, which they and the
+RBF family inherit; class names, state keys and metadata are unchanged, so
+existing checkpoints load. `train.layer_finetune` now unfreezes every
+parameter a neuron owns (except the projection), not `weight` alone.
+
+### Fixed — ensemble optimizers with parameters of rank > 2
+
+`adam`, `sgd`, `newton` and `newton_lm` shaped the per-member learning rate
+as `(num_neurons, 1)`, which only broadcasts against 2-D parameters; it is
+now viewed to the parameter's rank (identical for the existing weights).
+
 ### Added — `train.censor_target_at`: censored least squares for capped targets
 
 `NormMSE` takes an optional `censor_at`, wired from `train.censor_target_at`.

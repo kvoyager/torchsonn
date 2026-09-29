@@ -5,6 +5,7 @@ checks that the resulting model can predict + serialize. The goal is
 coverage of `train_layer → train_model_ensemble → neuron_selection →
 save_model_checkpoint`, not numerical accuracy.
 """
+import math
 import numpy as np
 import pytest
 import torch
@@ -572,3 +573,223 @@ def test_layer_err_source_readout_scores_layers_by_head_dev_loss(tmp_path, layer
     trainer.train_out_proj(trained, dl, dl)
     out = trained.infer(torch.randn(5, 4))
     assert out.shape == (5,)
+
+
+# --- DRAFT-rbf-neurons Patch 1: the per-layer input pass ---------------------
+
+from torchsonn.neurons import LinearCovPolynomNeuron as _LinearCov
+
+
+class _SamplingStub(_LinearCov):
+    """A plain family that asks the input pass for a row sample and, when the
+    mode resolves to stream, for the streaming pass; records every call."""
+
+    def __init__(self, *a, streams=True, **kw):
+        super().__init__(*a, **kw)
+        self.streams = streams
+        self.samples = []
+        self.stream_flags = []
+        self.batches = []
+        self.finished = 0
+
+    @property
+    def needs_input_sample(self):
+        return True
+
+    def fit_input_sample(self, x_sample, stream=False, **kw):
+        self.samples.append(x_sample.clone())
+        self.stream_flags.append(stream)
+
+    @property
+    def needs_input_stream(self):
+        return self.streams
+
+    def stream_input_batch(self, x_batch):
+        self.batches.append(x_batch.clone())
+
+    def finish_input_stream(self):
+        self.finished += 1
+
+
+def _stub_layer(cfg, streams=True):
+    model = SONN(cfg, d_model=4)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+    stub = _SamplingStub(4, 4, None, 0, 0, max_neuron_models=3, streams=streams)
+    layer.neuron_models[0] = stub
+    return model, layer, stub
+
+
+def _all_rows(model, dl):
+    with torch.no_grad():
+        return torch.cat([model(b[0], skip_last_layer=True) for b in dl], 0)
+
+
+def test_input_pass_hands_the_whole_split_below_the_cap(tmp_path):
+    cfg = _cfg(tmp_path, input_sample_rows=1000)
+    model, layer, stub = _stub_layer(cfg, streams=False)
+    dl = _make_dl(48)
+    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    assert len(stub.samples) == 1 and stub.stream_flags == [False]
+    assert torch.equal(stub.samples[0], _all_rows(model, dl))
+    assert stub.batches == [] and stub.finished == 0
+
+
+def test_input_pass_reservoir_above_the_cap_is_seeded_and_from_the_split(tmp_path):
+    cfg = _cfg(tmp_path, input_sample_rows=20, rbf_kmeans_mode="sample")
+    dl = _make_dl(96)
+    model, layer, stub = _stub_layer(cfg)
+    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    sample = stub.samples[0]
+    rows = _all_rows(model, dl)
+    assert sample.shape == (20, rows.shape[1])
+    # every sampled row is a row of the split, and not just the first 20
+    for r in sample:
+        assert (rows == r).all(dim=1).any()
+    assert not torch.equal(sample, rows[:20])
+    # 'sample' mode forced: no streaming even above the cap
+    assert stub.stream_flags == [False] and stub.batches == [] and stub.finished == 0
+    # seeded: a fresh trainer with the same seed reproduces it, another seed does not
+    model2, layer2, stub2 = _stub_layer(cfg)
+    Trainer(config=cfg).fit_layer_inputs(model2, layer2, dl)
+    assert torch.equal(stub2.samples[0], sample)
+    cfg3 = _cfg(tmp_path, input_sample_rows=20, rbf_kmeans_mode="sample", seed=99)
+    model3, layer3, stub3 = _stub_layer(cfg3)
+    Trainer(config=cfg3).fit_layer_inputs(model3, layer3, dl)
+    assert not torch.equal(stub3.samples[0], sample)
+
+
+def test_input_pass_streams_above_the_cap_in_auto_mode(tmp_path):
+    cfg = _cfg(tmp_path, input_sample_rows=20, rbf_kmeans_passes=2)
+    dl = _make_dl(96)          # 12 batches of 8
+    model, layer, stub = _stub_layer(cfg)
+    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    assert stub.stream_flags == [True]
+    assert len(stub.batches) == 2 * 12 and stub.finished == 1
+    assert torch.equal(torch.cat(stub.batches[:12], 0), _all_rows(model, dl))
+    assert torch.equal(torch.cat(stub.batches[12:], 0), _all_rows(model, dl))
+    # a module that samples but does not stream is left alone by the pass
+    model2, layer2, stub2 = _stub_layer(cfg, streams=False)
+    Trainer(config=cfg).fit_layer_inputs(model2, layer2, dl)
+    assert stub2.stream_flags == [True] and stub2.batches == [] and stub2.finished == 0
+
+
+def test_input_pass_stream_mode_can_be_forced_below_the_cap(tmp_path):
+    cfg = _cfg(tmp_path, input_sample_rows=1000, rbf_kmeans_mode="stream")
+    dl = _make_dl(48)
+    model, layer, stub = _stub_layer(cfg)
+    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    assert stub.stream_flags == [True] and len(stub.batches) == 6 and stub.finished == 1
+
+
+def test_input_pass_rejects_bad_settings(tmp_path):
+    dl = _make_dl(16)
+    for bad in ({"rbf_kmeans_mode": "lloyd"}, {"input_sample_rows": 0},
+                {"rbf_kmeans_mode": "stream", "rbf_kmeans_passes": 0}):
+        cfg = _cfg(tmp_path, **bad)
+        model, layer, stub = _stub_layer(cfg)
+        with pytest.raises(ValueError):
+            Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+
+
+def test_input_pass_serves_stats_and_sample_in_one_pass(tmp_path):
+    """A Legendre family (moments) next to a sampling family: both get what
+    they asked for from one pass, and the old entry point still works."""
+    cfg = _legendre_cfg(tmp_path)
+    model = SONN(cfg, d_model=4)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+    stub = _SamplingStub(4, 4, None, 0, 0, max_neuron_models=3, streams=False)
+    layer.neuron_models.append(stub)
+    dl = _offset_dl(64)
+    Trainer(config=cfg).fit_layer_squash(model, layer, dl)
+    leg = layer.neuron_models[0]
+    rows = _all_rows(model, dl)
+    assert torch.allclose(leg.squash_norm.mean, rows.mean(0)[leg.src_idxs], atol=1e-3)
+    assert torch.equal(stub.samples[0], rows)
+
+
+# --- DRAFT-rbf-neurons Patch 2: the RBF family through the trainer -----------
+
+from torchsonn.neurons import RBFNeuron as _RBFNeuron
+
+
+@pytest.mark.parametrize("mode", ["sample", "stream"])
+def test_rbf_family_trains_end_to_end(tmp_path, mode):
+    """Input pass (k-means start, sample or streamed), joint candidate fit of
+    weights + centres + widths, selection with the survivor report, prune,
+    inference and the checkpoint round trip."""
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=2, rbf_kmeans_mode=mode, rbf_kmeans_iters=5),
+        OmegaConf.create({"model": {"ref_functions": [{"rbf": {"centers": 6}}, "linear_cov"],
+                                    "shortcut": True}}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    assert len(trained.layers) >= 1
+    rbf_seen = False
+    for layer in trained.layers:
+        for nm in layer.neuron_models:
+            if isinstance(nm, _RBFNeuron):
+                rbf_seen = True
+                assert nm.centers.shape == (nm.num_neurons, 6, 2)
+                assert torch.isfinite(nm.centers).all() and torch.isfinite(nm.log_width).all()
+                assert nm._centers_start is not None and nm._centers_start.shape[0] == nm.num_neurons
+                with torch.no_grad():
+                    scale = nm.width_scales()
+                assert (scale <= 4.0).all() and (scale >= 0.25).all()
+                assert "centre movement" in nm.fit_report()
+    assert rbf_seen, "no RBF neuron survived selection in any layer"
+    x = torch.randn(5, 4)
+    with torch.inference_mode():
+        pred = trained.infer(x)
+    fresh = SONN(cfg, d_model=4)
+    trainer.load_model_checkpoint(fresh, "cpu")
+    with torch.inference_mode():
+        assert torch.allclose(fresh.infer(x), pred, atol=1e-6)
+    trainer.prune(trained)
+    with torch.inference_mode():
+        assert torch.allclose(trained.infer(x), pred, atol=1e-6)
+
+
+def test_rbf_candidate_fit_moves_centres(tmp_path):
+    """The vmapped candidate fit trains the centres and widths, not just the
+    weights: after one layer the survivors' centres differ from their k-means
+    start."""
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=1, steps=40),
+        OmegaConf.create({"model": {"ref_functions": [{"rbf": {"centers": 4}}], "shortcut": False}}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(96)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    nm = trained.layers[0].neuron_models[0]
+    moved = (nm.centers.detach().cpu() - nm._centers_start).norm(dim=-1)
+    assert moved.max() > 1e-4
+    assert isinstance(nm.centers, torch.nn.Parameter)
+
+
+def test_rbf_layer_finetune_unfreezes_centres(tmp_path):
+    """train.layer_finetune trains every neuron parameter, so an RBF
+    survivor's centres change during the per-layer pass."""
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=1, layer_finetune=True),
+        OmegaConf.create({"model": {"ref_functions": [{"rbf": {"centers": 4}}], "shortcut": False,
+                                    "use_output_projection": True, "num_out_neurons": 2}}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+    trainer.fit_layer_inputs(model, layer, dl)
+    trainer.train_layer(model, layer, dl, dl, None)
+    nm = layer.neuron_models[0]
+    before = nm.centers.detach().clone()
+    trainer._train_layer_finetune(model, layer, dl, dl)
+    assert not torch.equal(nm.centers.detach(), before)
+    for p in model.parameters():
+        assert p.requires_grad

@@ -27,6 +27,7 @@ from torchsonn.neurons import (
     PolyQuadratic,
     LegendrePolynomNeuron,
     ChebyshevPolynomNeuron,
+    RBFNeuron,
 )
 from torchsonn.loss import NormMSE
 from torchsonn.types import RefFunctionType, CriterionType, LayerCreationError
@@ -339,6 +340,12 @@ class SONN(SONNModule):
             'chebyshev': Chebyshev orthogonal-polynomial basis over the neuron's
                 inputs (options: degree, cross, squash, dim, squash_method,
                 squash_n_sigma, squash_core_range; see 'legendre')
+            'rbf': Gaussian radial-basis neuron: `centers` bumps over the
+                neuron's (standardised) inputs, centres and widths learnable
+                and initialised by k-means in the per-layer input pass, plus
+                a linear part (options: centers, placement, width,
+                learn_centers, learn_widths, width_band, normalize, linear,
+                standardize, dim). See neurons/rbf.py.
             examples of using:
              - Regressor(ref_functions='linear')
              - Regressor(ref_functions=('linear_cov', 'quadratic', 'cubic', 'linear'))
@@ -676,6 +683,7 @@ class SONN(SONNModule):
             RefFunctionType.rfPolyQuadratic: PolyQuadratic,           # 2nd degree over `dim` inputs
             RefFunctionType.rfLegendre:      LegendrePolynomNeuron,   # Legendre basis, degree `degree`
             RefFunctionType.rfChebyshev:     ChebyshevPolynomNeuron,  # Chebyshev basis, degree `degree`
+            RefFunctionType.rfRBF:           RBFNeuron,               # Gaussian bumps, `centers` per neuron
         }
 
         neuron_models = []
