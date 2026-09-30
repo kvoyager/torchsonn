@@ -126,6 +126,13 @@
 #     k-means start uses scatter_add_ on CUDA, which is not deterministic,
 #     so each run starts from different centers. The Legendre file under the
 #     same rule repeats to 0.0002 at a fixed depth.
+#   + candidate early stop on the training loss (train.early_stop_source=train),
+#   three runs, 2026-09-30:      MSE 0.1895 / 0.1824 / 0.1957   MAE 0.2745-0.2827
+#     Layer-0 errors 0.190 / 0.208 / 0.190, depths 15 / 8 / 16: without the
+#     dev stop holding every candidate to a dev-shaped answer, the three
+#     non-deterministic k-means starts lead to three different searches. The
+#     0.1824 (best RBF number so far, from the run with the WORST dev curve)
+#     cannot be repeated until the start is deterministic.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by

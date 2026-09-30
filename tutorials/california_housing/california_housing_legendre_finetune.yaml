@@ -108,6 +108,12 @@
 #     three runs, 10 layers each        MSE 0.1882-0.1884   MAE 0.2795 <- current
 #   Same curve, same depth, same number every time; the rule no longer
 #   decides on rounding. +-0.002 is again the resolution of a single run.
+#   + candidate early stop on the training loss (train.early_stop_source=train,
+#   CLI override, 2026-09-30), three runs:
+#     8 layers each                       MSE 0.1891-0.1894   MAE 0.2794
+#   Same 81-step fits, a curve 0.001 off the dev-stopped one at layers 3-6,
+#   two layers shallower, 0.001 above it on test (inside noise): the dev
+#   split was not doing anything for an 8-parameter convex fit.
 #   (log target, same pipeline           MSE 0.1912   MAE 0.2719   (15 layers))
 # MSE-optimal is the conditional mean, which the raw target estimates; the log
 # target estimates the median and wins MAE. The end-to-end pass needed 10875
