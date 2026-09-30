@@ -111,6 +111,13 @@
 #     Legendre regression run under the guarded optimizer: 0.1884 / 0.2772,
 #     same layer curve, same 81-step fits, 0.1% of updates capped, no pair
 #     rejected. End-to-end passes early-stopped at 1100 / 2025 steps.
+#   bounded (radius 2), batched LBFGS recursion, 2026-09-30
+#                                        MSE 0.1901   MAE 0.2799   (16 layers)
+#     11-15 s per layer instead of 90-96, same ~225 fit steps and guard
+#     statistics; the search grew to 16 layers instead of 6 (rounding-level
+#     differences moving the growth stop, as on the Legendre file) for a
+#     test number 0.003 above the loop version's, inside that file's
+#     measured run-to-run spread under the batched optimizer.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by

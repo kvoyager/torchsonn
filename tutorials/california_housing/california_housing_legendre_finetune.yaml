@@ -93,6 +93,17 @@
 #   same, LBFGS with the curvature condition and step cap (optimizer defaults
 #   since 2026-09-30; 0.1% of updates capped, no pair rejected, same 81-step
 #   fits and layer curve)                  MSE 0.1884   MAE 0.2772   (9 layers)
+#   same, LBFGS with the batched two-loop recursion (2026-09-30; 3-5 s per
+#   layer instead of 24-30, same 81-step fits, layer curve identical to three
+#   decimals through layer 8, then the growth criterion runs two layers
+#   further on a 0.001 dev difference and the end-to-end pass stops earlier):
+#     three runs, 11 layers each          MSE 0.1932-0.1938   MAE 0.282
+#     train.max_layer_count=9             MSE 0.1907   MAE 0.2817
+#   The 0.003-0.005 spread between these and the rows above is the two
+#   dev-driven stop rules reacting to 1e-4-level rounding differences, not
+#   seed noise (the three repeats agree to 0.0006); treat +-0.005 as the
+#   resolution of a single run of this file until the stop rules are made
+#   robust.
 #   (log target, same pipeline           MSE 0.1912   MAE 0.2719   (15 layers))
 # MSE-optimal is the conditional mean, which the raw target estimates; the log
 # target estimates the median and wins MAE. The end-to-end pass needed 10875
