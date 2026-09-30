@@ -15,6 +15,9 @@ tags
 src/torchsonn.egg-info/
 __pycache__
 
+# drafts
+docs/drafts
+
 # test-related
 .coverage
 .cache
@@ -35,6 +38,7 @@ __pycache__
 checkpoints_legendre
 checkpoints_legendre_finetune
 checkpoints
+checkpoint
 outputs/
 
 # graphviz's render() writes the DOT source alongside the .svg, with no

@@ -264,8 +264,7 @@ train:
   save_last_layer: True
   keep_last_n: 5
   skip_saving_at_epoch_end: True
-  # Own folder so `resume=true` never picks up the monomial config's checkpoint.
-  checkpoint_dir: "../california_housing/checkpoints_legendre_finetune"
+  checkpoint_dir: "../california_housing/checkpoint/${hydra:job.config_name}"
 
   # Per-layer joint fine-tune: OFF, unlike the CCPP recipe. When on, each
   # layer's survivors are re-trained jointly through a temporary head right

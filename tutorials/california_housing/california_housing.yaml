@@ -98,4 +98,4 @@ train:
   save_last_layer: True
   keep_last_n: 5
   skip_saving_at_epoch_end: True
-  checkpoint_dir: "../california_housing/checkpoints"
+  checkpoint_dir: "../california_housing/checkpoint/${hydra:job.config_name}"

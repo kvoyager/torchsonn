@@ -221,12 +221,18 @@ def engineer_features(x: np.ndarray, names: list[str]) -> tuple[np.ndarray, list
 
 # `config_path` resolves relative to this file. `version_base="1.3"` keeps
 # Hydra's auto-chdir disabled by default, so any relative paths in the YAML
-# (e.g. `checkpoint_dir: tutorials/california_housing/checkpoints`) resolve
+# (e.g. `checkpoint_dir: ../california_housing/checkpoint/<config name>`) resolve
 # from the launch cwd, not from Hydra's per-run output dir.
 @hydra.main(version_base="1.3", config_path=".", config_name="california_housing")
 def main(config: DictConfig) -> None:
     run_dir = Path(HydraConfig.get().runtime.output_dir)
     logger = setup_logger(str(run_dir / "train.log"))
+    # Every config in this folder keeps its checkpoints under
+    # ../california_housing/checkpoint/<config name>/ through the
+    # `${hydra:job.config_name}` interpolation. Reading the value resolves it;
+    # store the plain string so the copies the model and the checkpoints keep
+    # do not carry an interpolation that only resolves inside a Hydra run.
+    config.train.checkpoint_dir = str(config.train.checkpoint_dir)
     logger.info("Loaded config:")
     logger.info(OmegaConf.to_yaml(config))
 
