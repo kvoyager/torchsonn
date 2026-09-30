@@ -25,6 +25,7 @@
 #     model.ref_functions.0.rbf.width=0.7   / =1.5
 #     model.ref_functions.0.rbf.center_radius=1.0 / =4.0   (how far a center may travel, x local spacing)
 #     model.ref_functions.0.rbf.center_radius=null         (no center bound; optimizer experiments)
+#     model.ref_functions.0.rbf.seeding=kmeans++            (seeded random k-means start; default pca_quantiles, deterministic)
 #     train.optimizer.name=adam ~train.optimizer.optimizer_params.history_size
 #                                           batched Adam for the candidate fit instead of LBFGS
 #     model.ref_functions.0.rbf.placement=grid   (centers must be K^2: 9, 16, 25)
@@ -133,6 +134,12 @@
 #     non-deterministic k-means starts lead to three different searches. The
 #     0.1824 (best RBF number so far, from the run with the WORST dev curve)
 #     cannot be repeated until the start is deterministic.
+#   + deterministic k-means start (one-hot cluster sums, seeding pca_quantiles,
+#   the default since 2026-09-30), same train-stop setting, three runs:
+#                                        MSE 0.1893-0.1894   MAE 0.2802   (13 layers)
+#     Identical layer curves, fit steps and survivor reports across the
+#     three runs; the family repeats like the Legendre file does. A tie with
+#     the Legendre baseline under the same rules (0.1891-0.1894).
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
