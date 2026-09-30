@@ -67,6 +67,21 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Changed — ensemble LBFGS: batched two-loop recursion
+
+The correction history of the batched parameters is now a pair of
+`(B, history_size, P)` tensors with a per-member fill count, and the two-loop
+recursion, the curvature test and the step cap run as batched operations
+over the whole ensemble instead of a Python loop over its members. Same
+algorithm (equal to the loop version to 1e-10 in float64); a Legendre layer
+of the California tutorial goes from 24-30 s to 3-5 s and an RBF-8 layer
+from 90-96 s to 11-15 s, with the same fit steps and guard statistics.
+Checkpoints written by the per-member version still load. The float32
+iterates differ at the rounding level, which on that tutorial moves where
+the dev-driven growth criterion (0.1% relative margin) and the end-to-end
+early stop fire: the same config now grows to 11 layers instead of 9 and
+reads 0.193 instead of 0.188 on test, reproducibly, see the config header.
+
 ### Fixed — ensemble optimizers with parameters of rank > 2
 
 `adam`, `sgd`, `newton` and `newton_lm` shaped the per-member learning rate

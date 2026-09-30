@@ -42,9 +42,21 @@ class BatchedLBFGS(BaseOptimizer):
         bounds the damage of any single step; the curvature test keeps the
         estimate positive definite. Neither changes a well-conditioned
         convex fit (the polynomial families) beyond its first steps.
+
+        Storage. For the batched (per-member) parameters the correction
+        history is a pair of tensors `s_hist[k]`, `y_hist[k]` of shape
+        (B, history_size, P) plus a per-member fill count `hist_count[k]`;
+        the newest pair sits in the last slot and the valid slots are the
+        last `hist_count` ones. The two-loop recursion then runs as
+        `history_size` batched operations over the whole ensemble instead
+        of a Python loop over its members, which was most of a layer's time.
+        Shared parameters keep a single deque history and the single-vector
+        recursion.
         """
         super().__init__(shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier)
-        self.history_size = history_size
+        self.history_size = int(history_size)
+        if self.history_size < 1:
+            raise ValueError(f"history_size must be >= 1, got {history_size}")
         if max_step is not None and float(max_step) <= 0.0:
             raise ValueError(f"max_step must be > 0 or None, got {max_step}")
         if curvature_eps is not None and float(curvature_eps) < 0.0:
@@ -58,21 +70,28 @@ class BatchedLBFGS(BaseOptimizer):
         self.batch_size = first.shape[0]
 
         # per-key storage:
-        # - for non-shared keys: a list of deques, one deque per model index
+        # - for non-shared keys: (B, m, P) tensors + a (B,) fill count
         # - for shared keys: a single deque used for the shared parameter history
-        self.s_hist = {}
-        self.y_hist = {}
-        for k in params.keys():
+        self.s_hist: dict[str, Any] = {}
+        self.y_hist: dict[str, Any] = {}
+        self.hist_count: dict[str, torch.Tensor] = {}
+        for k, v in params.items():
             if k in self.shared_param_names:
-                self.s_hist[k] = deque(maxlen=history_size)
-                self.y_hist[k] = deque(maxlen=history_size)
+                self.s_hist[k] = deque(maxlen=self.history_size)
+                self.y_hist[k] = deque(maxlen=self.history_size)
             else:
-                self.s_hist[k] = [deque(maxlen=history_size) for _ in range(self.batch_size)]
-                self.y_hist[k] = [deque(maxlen=history_size) for _ in range(self.batch_size)]
+                self._init_batched_history(k, v)
 
         # prev params/grads for computing s = p - p_prev, y = g - g_prev
         self.prev_params = {k: v.detach().clone() for k, v in params.items()}
         self.prev_grads = {k: torch.zeros_like(v) for k, v in params.items()}
+
+    def _init_batched_history(self, k: str, v: torch.Tensor) -> None:
+        b = v.shape[0]
+        p = v[0].numel() if b > 0 else 0
+        self.s_hist[k] = torch.zeros((b, self.history_size, p), dtype=v.dtype, device=v.device)
+        self.y_hist[k] = torch.zeros((b, self.history_size, p), dtype=v.dtype, device=v.device)
+        self.hist_count[k] = torch.zeros(b, dtype=torch.long, device=v.device)
 
     def _flatten(self, t: torch.Tensor) -> torch.Tensor:
         """Flatten a parameter tensor preserving device/dtype: input shape [B, ...] -> [B, P]."""
@@ -143,6 +162,46 @@ class BatchedLBFGS(BaseOptimizer):
 
         return r
 
+    @staticmethod
+    def _two_loop_recursion_batched(
+        S: torch.Tensor, Y: torch.Tensor, count: torch.Tensor, g: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Two-loop recursion for every member at once.
+        S, Y: (B, m, P) histories, newest pair in the last slot, the last
+              `count[b]` slots valid for member b
+        g: (B, P) gradients
+        returns: (B, P) ~ H_k g per member; the plain gradient for a member
+        with an empty history. Same arithmetic as the single-vector version,
+        with the per-slot dot products batched over B.
+        """
+        b, m, _ = S.shape
+        eps = 1e-12
+        slots = torch.arange(m, device=S.device)
+        valid = slots.unsqueeze(0) >= (m - count).unsqueeze(1)                 # (B, m)
+        ys = (S * Y).sum(dim=-1)                                                # (B, m)
+        rho = 1.0 / (ys + eps)
+        zero = torch.zeros((), dtype=g.dtype, device=g.device)
+
+        q = g.clone()
+        alphas = [None] * m
+        for j in range(m - 1, -1, -1):                                          # newest -> oldest
+            a = rho[:, j] * (S[:, j] * q).sum(dim=-1)
+            a = torch.where(valid[:, j], a, zero)
+            alphas[j] = a
+            q = q - a.unsqueeze(1) * Y[:, j]
+
+        has = count > 0
+        denom = (Y[:, m - 1] * Y[:, m - 1]).sum(dim=-1) + eps
+        gamma = torch.where(has, ys[:, m - 1] / denom, torch.ones_like(denom))
+        r = gamma.unsqueeze(1) * q
+
+        for j in range(m):                                                      # oldest -> newest
+            beta = rho[:, j] * (Y[:, j] * r).sum(dim=-1)
+            upd = (alphas[j] - beta).unsqueeze(1) * S[:, j]
+            r = torch.where(valid[:, j].unsqueeze(1), r + upd, r)
+        return r
+
     def step(
         self,
         params: dict[str, torch.Tensor],
@@ -167,13 +226,6 @@ class BatchedLBFGS(BaseOptimizer):
 
             # Apply gradient clipping (no-op when clip_value / clip_norm are None).
             g = self.gradient_clipping(g)
-
-            p_flat = self._flatten(p)
-            g_flat = self._flatten(g)
-            prev_p_flat = self._flatten(self.prev_params[k])
-            prev_g_flat = self._flatten(self.prev_grads[k])
-
-            Pk = p_flat.shape[1]
 
             if k in self.shared_param_names:
                 # Shared params are not batched — shape is the raw param shape,
@@ -223,42 +275,44 @@ class BatchedLBFGS(BaseOptimizer):
                 self.prev_grads[k] = g_1d.reshape_as(p).detach().clone()
 
             else:
+                p_flat = self._flatten(p)
+                g_flat = self._flatten(g)
+                prev_p_flat = self._flatten(self.prev_params[k])
+                prev_g_flat = self._flatten(self.prev_grads[k])
+
                 s = p_flat - prev_p_flat
                 y = g_flat - prev_g_flat
 
-                for i in range(self.batch_size):
-                    if not active_mask[i]:
-                        continue
-                    if s[i].abs().sum() > 1e-12:
-                        self.stats["pairs"] += 1
-                        if self._accept_pair(s[i], y[i]):
-                            self.s_hist[k][i].append(s[i].detach().clone())
-                            self.y_hist[k][i].append(y[i].detach().clone())
-                        else:
-                            self.stats["rejected"] += 1
-
-                updates = torch.zeros_like(p_flat, device=device)
-                if isinstance(self.lr, torch.Tensor):
-                    lr_per = self.lr.view(-1, 1)
+                # Curvature condition, batched: which members' pairs to store.
+                s_norm = s.norm(dim=1)
+                nonzero = (s_norm > 1e-12) & active_mask
+                if self.curvature_eps is None:
+                    accept = nonzero
                 else:
-                    lr_per = None
+                    ys = (s * y).sum(dim=1)
+                    accept = nonzero & (ys > self.curvature_eps * s_norm * y.norm(dim=1))
+                n_nonzero = int(nonzero.sum().item())
+                if n_nonzero:
+                    self.stats["pairs"] += n_nonzero
+                    self.stats["rejected"] += n_nonzero - int(accept.sum().item())
+                    if accept.any():
+                        acc = torch.nonzero(accept, as_tuple=False).squeeze(1)
+                        S, Y = self.s_hist[k], self.y_hist[k]
+                        # Push: shift the member's history left, newest in the last slot.
+                        S[acc] = torch.cat([S[acc, 1:], s[acc].detach().unsqueeze(1)], dim=1)
+                        Y[acc] = torch.cat([Y[acc, 1:], y[acc].detach().unsqueeze(1)], dim=1)
+                        self.hist_count[k][acc] = (self.hist_count[k][acc] + 1).clamp(max=self.history_size)
 
-                for i in range(self.batch_size):
-                    if not active_mask[i]:
-                        continue
-                    g_i = g_flat[i]
-                    d_i = self._two_loop_recursion_single(self.s_hist[k][i], self.y_hist[k][i], g_i)
-                    if lr_per is None:
-                        lr_i = float(self.lr)
-                    else:
-                        lr_i = float(lr_per[i].item())
-                    updates[i] = lr_i * d_i
+                d = self._two_loop_recursion_batched(self.s_hist[k], self.y_hist[k], self.hist_count[k], g_flat)
+                if isinstance(self.lr, torch.Tensor):
+                    updates = self.lr.view(-1, 1).to(dtype=d.dtype) * d
+                else:
+                    updates = float(self.lr) * d
 
                 self.stats["updates"] += int(active_mask.sum().item())
                 updates = self._cap_updates(updates, active_mask)
 
-                update_mask = active_mask.view(-1, *([1] * (p.dim() - 1)))
-                p_new_flat = torch.where(update_mask.view(self.batch_size, 1), p_flat - updates, p_flat)
+                p_new_flat = torch.where(active_mask.view(self.batch_size, 1), p_flat - updates, p_flat)
 
                 new_params[k] = p_new_flat.reshape_as(p)
 
@@ -270,12 +324,9 @@ class BatchedLBFGS(BaseOptimizer):
     def state_dict(self) -> dict[str, Any]:
         """Snapshot of curvature history + prev params/grads + lr so a resumed run
         keeps the L-BFGS approximation rather than starting from identity."""
-        def dump_deque(d):
-            return [t.clone() for t in d]
-
         def dump_hist(h):
             return {
-                k: dump_deque(v) if isinstance(v, deque) else [dump_deque(dq) for dq in v]
+                k: [t.clone() for t in v] if isinstance(v, deque) else v.clone()
                 for k, v in h.items()
             }
 
@@ -286,8 +337,11 @@ class BatchedLBFGS(BaseOptimizer):
             "shared_param_names": list(self.shared_param_names),
             "clip_value": self.clip_value,
             "clip_norm": self.clip_norm,
+            "max_step": self.max_step,
+            "curvature_eps": self.curvature_eps,
             "s_hist": dump_hist(self.s_hist),
             "y_hist": dump_hist(self.y_hist),
+            "hist_count": {k: v.clone() for k, v in self.hist_count.items()},
             "prev_params": {k: v.clone() for k, v in self.prev_params.items()},
             "prev_grads": {k: v.clone() for k, v in self.prev_grads.items()},
             "shared_param_lr_multiplier": self.shared_param_lr_multiplier,
@@ -300,24 +354,30 @@ class BatchedLBFGS(BaseOptimizer):
         self.shared_param_names = set(state_dict["shared_param_names"])
         self.clip_value = state_dict.get("clip_value")
         self.clip_norm = state_dict.get("clip_norm")
+        self.max_step = state_dict.get("max_step", self.max_step)
+        self.curvature_eps = state_dict.get("curvature_eps", self.curvature_eps)
         self.shared_param_lr_multiplier = state_dict.get("shared_param_lr_multiplier", 1.0)
-
-        def load_hist(saved):
-            out = {}
-            for k, v in saved.items():
-                if k in self.shared_param_names:
-                    dq = deque(maxlen=self.history_size)
-                    for t in v:
-                        dq.append(t.clone())
-                    out[k] = dq
-                else:
-                    out[k] = [
-                        deque((t.clone() for t in lst), maxlen=self.history_size)
-                        for lst in v
-                    ]
-            return out
-
-        self.s_hist = load_hist(state_dict["s_hist"])
-        self.y_hist = load_hist(state_dict["y_hist"])
         self.prev_params = {k: v.clone() for k, v in state_dict["prev_params"].items()}
         self.prev_grads = {k: v.clone() for k, v in state_dict["prev_grads"].items()}
+
+        counts = state_dict.get("hist_count", {})
+        self.s_hist, self.y_hist, self.hist_count = {}, {}, {}
+        for k, v in state_dict["s_hist"].items():
+            yv = state_dict["y_hist"][k]
+            if k in self.shared_param_names:
+                self.s_hist[k] = deque((t.clone() for t in v), maxlen=self.history_size)
+                self.y_hist[k] = deque((t.clone() for t in yv), maxlen=self.history_size)
+            elif isinstance(v, torch.Tensor):
+                self.s_hist[k] = v.clone()
+                self.y_hist[k] = yv.clone()
+                self.hist_count[k] = counts[k].clone()
+            else:
+                # A checkpoint written by the per-member deque version: rebuild
+                # the right-aligned tensors from the lists.
+                self._init_batched_history(k, self.prev_params[k])
+                for i, lst in enumerate(v):
+                    n = min(len(lst), self.history_size)
+                    for j, (st, yt) in enumerate(zip(lst[-n:], yv[i][-n:])):
+                        self.s_hist[k][i, self.history_size - n + j] = st
+                        self.y_hist[k][i, self.history_size - n + j] = yt
+                    self.hist_count[k][i] = n

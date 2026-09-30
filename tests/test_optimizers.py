@@ -162,7 +162,7 @@ class TestBatchedLBFGS:
         for _ in range(3):
             p = opt.step(p, _make_grads())
         # At least one history entry per batch member
-        assert any(len(opt.s_hist["weight"][i]) > 0 for i in range(3))
+        assert (opt.hist_count["weight"] > 0).any()
 
     def test_active_mask_skips_history(self):
         p = _make_params()
@@ -368,11 +368,11 @@ class TestLBFGSGuards:
         p = opt.step(p, {"weight": torch.tensor([[1.0, 0.0]])})       # moves along -x
         # a gradient that grew along the direction of the step: y.s < 0
         p = opt.step(p, {"weight": torch.tensor([[3.0, 0.0]])})
-        assert len(opt.s_hist["weight"][0]) == 0
+        assert opt.hist_count["weight"][0] == 0
         assert opt.stats["rejected"] == 1 and opt.stats["pairs"] == 1
         # a gradient that shrank along the step: y.s > 0, stored
         p = opt.step(p, {"weight": torch.tensor([[0.5, 0.0]])})
-        assert len(opt.s_hist["weight"][0]) == 1
+        assert opt.hist_count["weight"][0] == 1
 
     def test_defaults_reproduce_the_old_iterates_on_a_convex_fit(self):
         """A batched least-squares fit (the polynomial families' case): the
@@ -424,4 +424,130 @@ class TestLBFGSGuards:
             BatchedLBFGS({"weight": torch.zeros(1, 2)}, [], lr=torch.ones(1), max_step=0.0)
         with pytest.raises(ValueError, match="curvature_eps"):
             BatchedLBFGS({"weight": torch.zeros(1, 2)}, [], lr=torch.ones(1), curvature_eps=-1.0)
+
+
+class _LoopLBFGS:
+    """Reference: the per-member deque implementation the batched recursion
+    replaced (DRAFT-ensemble-lbfgs Patch 2), guards included, for the
+    equivalence test."""
+
+    def __init__(self, params, lr, history_size, max_step, curvature_eps):
+        from collections import deque
+        self.lr, self.m, self.max_step, self.eps = lr, history_size, max_step, curvature_eps
+        self.b = next(iter(params.values())).shape[0]
+        self.s = {k: [deque(maxlen=history_size) for _ in range(self.b)] for k in params}
+        self.y = {k: [deque(maxlen=history_size) for _ in range(self.b)] for k in params}
+        self.prev_p = {k: v.clone() for k, v in params.items()}
+        self.prev_g = {k: torch.zeros_like(v) for k, v in params.items()}
+        self.ref = BatchedLBFGS(params, [], lr=lr, history_size=history_size,
+                                max_step=max_step, curvature_eps=curvature_eps)
+
+    def step(self, params, grads, active):
+        out = {}
+        for k, p in params.items():
+            g = grads[k]
+            pf, gf = p.reshape(self.b, -1), g.reshape(self.b, -1)
+            sm, ym = pf - self.prev_p[k].reshape(self.b, -1), gf - self.prev_g[k].reshape(self.b, -1)
+            upd = torch.zeros_like(pf)
+            for i in range(self.b):
+                if not active[i]:
+                    continue
+                if sm[i].norm() > 1e-12 and (self.eps is None or ym[i].dot(sm[i]) > self.eps * sm[i].norm() * ym[i].norm()):
+                    self.s[k][i].append(sm[i].clone())
+                    self.y[k][i].append(ym[i].clone())
+                d = self.ref._two_loop_recursion_single(self.s[k][i], self.y[k][i], gf[i])
+                u = float(self.lr[i]) * d
+                if self.max_step is not None and u.norm() > self.max_step:
+                    u = u * (self.max_step / u.norm())
+                upd[i] = u
+            out[k] = torch.where(active.view(-1, 1), pf - upd, pf).reshape_as(p)
+            self.prev_p[k], self.prev_g[k] = p.clone(), g.clone()
+        return out
+
+
+class TestLBFGSBatchedRecursion:
+    """DRAFT-ensemble-lbfgs Patch 2: the two-loop recursion batched over members."""
+
+    @pytest.mark.parametrize("dtype,atol", [(torch.float64, 1e-10), (torch.float32, 1e-3)])
+    @pytest.mark.parametrize("b,pdim,m", [(1, 1, 1), (3, 4, 2), (8, 64, 10), (5, 7, 3)])
+    def test_matches_the_per_member_loop(self, b, pdim, m, dtype, atol):
+        torch.manual_seed(b * 100 + pdim + m)
+        p0 = {"w": torch.randn(b, pdim, dtype=dtype), "c": torch.randn(b, 2, max(1, pdim // 2), dtype=dtype)}
+        lr = torch.rand(b, dtype=dtype) * 0.5 + 0.1
+        fast = BatchedLBFGS({k: v.clone() for k, v in p0.items()}, [], lr=lr, history_size=m)
+        slow = _LoopLBFGS({k: v.clone() for k, v in p0.items()}, lr, m, 1.0, 1e-8)
+        pf = {k: v.clone() for k, v in p0.items()}
+        ps = {k: v.clone() for k, v in p0.items()}
+        # float32 trajectories driven by random gradients amplify rounding
+        # differences (dot vs sum-of-products order) chaotically; float64 shows
+        # the two implementations agree to 1e-10 over the full run.
+        n_steps = 3 * m + 4 if dtype == torch.float64 else min(12, 3 * m + 4)
+        for t in range(n_steps):
+            grads = {k: torch.randn_like(v) * (0.3 if t % 4 else 3.0) for k, v in pf.items()}
+            active = torch.rand(b) > 0.2 if t > 2 else torch.ones(b, dtype=torch.bool)
+            pf = fast.step(pf, {k: v.clone() for k, v in grads.items()}, active_mask=active)
+            ps = slow.step(ps, grads, active)
+            for k in pf:
+                assert torch.allclose(pf[k], ps[k], atol=atol, rtol=0), (t, k)
+        for k in ("w", "c"):
+            for i in range(b):
+                assert int(fast.hist_count[k][i]) == len(slow.s[k][i])
+
+    def test_inactive_members_keep_params_and_history(self):
+        torch.manual_seed(0)
+        p = {"w": torch.randn(4, 3)}
+        opt = BatchedLBFGS(p, [], lr=torch.ones(4) * 0.1)
+        for _ in range(3):
+            p = opt.step(p, {"w": torch.randn(4, 3)})
+        frozen_p = p["w"][1].clone()
+        frozen_s = opt.s_hist["w"][1].clone()
+        frozen_n = int(opt.hist_count["w"][1])
+        mask = torch.tensor([True, False, True, False])
+        for _ in range(3):
+            p = opt.step(p, {"w": torch.randn(4, 3)}, active_mask=mask)
+        assert torch.equal(p["w"][1], frozen_p)
+        assert torch.equal(opt.s_hist["w"][1], frozen_s) and int(opt.hist_count["w"][1]) == frozen_n
+        assert int(opt.hist_count["w"][0]) > frozen_n or frozen_n == opt.history_size
+
+    def test_state_roundtrip_and_legacy_checkpoint(self):
+        from collections import deque
+        torch.manual_seed(1)
+        p = {"w": torch.randn(3, 4), "shared": torch.randn(2)}
+        opt = BatchedLBFGS(p, ["shared"], lr=torch.ones(3) * 0.1, history_size=3)
+        for _ in range(5):
+            p = opt.step(p, {"w": torch.randn(3, 4), "shared": torch.randn(3, 2)})
+        sd = opt.state_dict()
+        again = BatchedLBFGS(p, ["shared"], lr=torch.ones(3) * 0.1, history_size=3)
+        again.load_state_dict(sd)
+        assert torch.equal(again.s_hist["w"], opt.s_hist["w"]) and torch.equal(again.hist_count["w"], opt.hist_count["w"])
+        assert isinstance(again.s_hist["shared"], deque) and len(again.s_hist["shared"]) == len(opt.s_hist["shared"])
+        g = {"w": torch.randn(3, 4), "shared": torch.randn(3, 2)}
+        a = opt.step({k: v.clone() for k, v in p.items()}, {k: v.clone() for k, v in g.items()})
+        b = again.step({k: v.clone() for k, v in p.items()}, {k: v.clone() for k, v in g.items()})
+        assert torch.equal(a["w"], b["w"]) and torch.equal(a["shared"], b["shared"])
+        # a checkpoint written by the deque-per-member version loads too
+        legacy = dict(sd)
+        legacy["s_hist"] = {"w": [[opt.s_hist["w"][i, j] for j in range(3 - int(opt.hist_count["w"][i]), 3)] for i in range(3)],
+                            "shared": sd["s_hist"]["shared"]}
+        legacy["y_hist"] = {"w": [[opt.y_hist["w"][i, j] for j in range(3 - int(opt.hist_count["w"][i]), 3)] for i in range(3)],
+                            "shared": sd["y_hist"]["shared"]}
+        legacy.pop("hist_count")
+        old = BatchedLBFGS(p, ["shared"], lr=torch.ones(3) * 0.1, history_size=3)
+        old.load_state_dict(legacy)
+        assert torch.equal(old.s_hist["w"], opt.s_hist["w"]) and torch.equal(old.hist_count["w"], opt.hist_count["w"])
+
+    def test_step_time_is_independent_of_the_ensemble_size(self):
+        import time
+        def clock(b):
+            p = {"w": torch.randn(b, 18), "c": torch.randn(b, 8, 2), "lw": torch.randn(b, 8)}
+            opt = BatchedLBFGS(p, [], lr=torch.ones(b) * 0.1)
+            for _ in range(12):
+                p = opt.step(p, {k: torch.randn_like(v) for k, v in p.items()})
+            t0 = time.perf_counter()
+            for _ in range(20):
+                p = opt.step(p, {k: torch.randn_like(v) for k, v in p.items()})
+            return (time.perf_counter() - t0) / 20
+        small, large = clock(4), clock(140)
+        assert large < 0.05, f"step over 140 members took {large * 1e3:.1f} ms"
+        assert large < 6 * max(small, 1e-4)
 
