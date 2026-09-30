@@ -734,9 +734,9 @@ def test_rbf_family_trains_end_to_end(tmp_path, mode):
         for nm in layer.neuron_models:
             if isinstance(nm, _RBFNeuron):
                 rbf_seen = True
-                assert nm.centers.shape == (nm.num_neurons, 6, 2)
-                assert torch.isfinite(nm.centers).all() and torch.isfinite(nm.log_width).all()
-                assert nm._centers_start is not None and nm._centers_start.shape[0] == nm.num_neurons
+                assert nm.centers().shape == (nm.num_neurons, 6, 2)
+                assert torch.isfinite(nm.centers()).all() and torch.isfinite(nm.log_width).all()
+                assert (nm.displacements().norm(dim=-1) < nm.radius).all()
                 with torch.no_grad():
                     scale = nm.width_scales()
                 assert (scale <= 4.0).all() and (scale >= 0.25).all()
@@ -767,9 +767,9 @@ def test_rbf_candidate_fit_moves_centers(tmp_path):
     dl = _make_dl(96)
     trained = trainer.train(model, dl, dl, dl, verbose=False)
     nm = trained.layers[0].neuron_models[0]
-    moved = (nm.centers.detach().cpu() - nm._centers_start).norm(dim=-1)
+    moved = nm.displacements().detach().norm(dim=-1)
     assert moved.max() > 1e-4
-    assert isinstance(nm.centers, torch.nn.Parameter)
+    assert isinstance(nm.center_shift, torch.nn.Parameter)
 
 
 def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
@@ -788,8 +788,8 @@ def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
     trainer.fit_layer_inputs(model, layer, dl)
     trainer.train_layer(model, layer, dl, dl, None)
     nm = layer.neuron_models[0]
-    before = nm.centers.detach().clone()
+    before = nm.centers().detach().clone()
     trainer._train_layer_finetune(model, layer, dl, dl)
-    assert not torch.equal(nm.centers.detach(), before)
+    assert not torch.equal(nm.centers().detach(), before)
     for p in model.parameters():
         assert p.requires_grad

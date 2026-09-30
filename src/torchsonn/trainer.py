@@ -184,7 +184,7 @@ class Trainer:
             checkpoint_dir = Path(__file__).parent.parent.parent / "checkpoints"
         else:
             checkpoint_dir = Path(checkpoint_dir)
-        checkpoint_dir.mkdir(exist_ok=True)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
         return checkpoint_dir
 
     @classmethod

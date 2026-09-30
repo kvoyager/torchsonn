@@ -775,9 +775,10 @@ class TestRBFNeuron:
             n = _rbf(5, dim=dim, centers=m, normalize=norm, linear=lin)
             assert n.num_w == m + (dim if lin else 0) + (0 if norm else 1)
             assert n.weight.shape == (3, n.num_w)
-            assert n.centers.shape == (3, m, dim) and n.log_width.shape == (3, m)
+            assert n.centers().shape == (3, m, dim) and n.center_shift.shape == (3, m, dim)
+            assert n.log_width.shape == (3, m) and n.radius.shape == (3, m)
             assert n.get_args(_slots(n, torch.randn(6, 5))).shape == (6, 3, n.num_w)
-        for bad in ({"centers": 1}, {"width": 0.0}, {"width_band": 1.0}, {"placement": "random"},
+        for bad in ({"centers": 1}, {"width": 0.0}, {"width_band": 1.0}, {"center_radius": 0.0}, {"placement": "random"},
                     {"dim": 1}, {"placement": "grid", "centers": 10}):
             with pytest.raises(ValueError):
                 _rbf(**bad)
@@ -824,7 +825,7 @@ class TestRBFNeuron:
         n.zero_grad()
         for k in range(n.num_neurons):
             eager[:, k].pow(2).mean().backward(retain_graph=True)
-        for name in ("weight", "centers", "log_width"):
+        for name in ("weight", "center_shift", "log_width"):
             assert torch.allclose(g_vm[name], getattr(n, name).grad, atol=1e-5), name
 
     @pytest.mark.parametrize("learn", [True, False])
@@ -834,12 +835,12 @@ class TestRBFNeuron:
         _calibrate(n, x, seed=0)
         with torch.no_grad():
             n.log_width.add_(0.3)
-        assert isinstance(n.centers, nn.Parameter) is learn
-        assert "centers" in n.state_dict() and "width0" in n.state_dict()
+        assert isinstance(n.center_shift, nn.Parameter) is learn
+        assert {"centers0", "radius", "center_shift", "width0"} <= set(n.state_dict())
         meta = {k: getattr(n, k) for k in n.params_metadata_names}
         back = BasePolynomNeuron.from_checkpoint_metadata(meta)
         assert isinstance(back, RBFNeuron) and back.num_centers == 9 and back.placement == "grid"
-        assert isinstance(back.centers, nn.Parameter) is learn
+        assert isinstance(back.center_shift, nn.Parameter) is learn
         back.load_state_dict(n.state_dict(), strict=False)
         assert torch.equal(back(x), n(x))
         assert back.get_name() == n.get_name()
@@ -849,17 +850,17 @@ class TestRBFNeuron:
         x = torch.randn(200, 6)
         _calibrate(n, x, seed=0)
         with torch.no_grad():
-            n.centers.add_(torch.randn_like(n.centers) * 0.1)
+            n.center_shift.add_(torch.randn_like(n.center_shift) * 0.5)
         before = n(x)
         keep = torch.tensor([4, 1])
         expect = {name: getattr(n, name).detach()[keep].clone()
-                  for name in ("centers", "log_width", "width0", "in_mean", "in_std")}
-        start = n._centers_start[keep].clone()
+                  for name in ("centers0", "radius", "center_shift", "log_width", "width0", "in_mean", "in_std")}
+        start = n.centers().detach()[keep].clone()
         n.prune(keep)
-        assert isinstance(n.centers, nn.Parameter) and isinstance(n.log_width, nn.Parameter)
+        assert isinstance(n.center_shift, nn.Parameter) and isinstance(n.log_width, nn.Parameter)
         for name, t in expect.items():
             assert torch.equal(getattr(n, name).detach(), t), name
-        assert torch.equal(n._centers_start, start)
+        assert torch.equal(n.centers().detach(), start)
         assert dict(n.named_buffers()).keys() >= {"width0", "in_mean", "in_std"}
         assert torch.equal(n(x), before[:, keep])
 
@@ -869,17 +870,17 @@ class TestRBFNeuron:
         _calibrate(n, x, seed=3)
         u_means = torch.stack([((x[x[:, 0] > 0]).mean(0) - n.in_mean[0]) / n.in_std[0],
                                ((x[x[:, 0] < 0]).mean(0) - n.in_mean[0]) / n.in_std[0]])
-        c = n.centers.detach()[0]
+        c = n.centers().detach()[0]
         for target in u_means:
             assert (c - target).norm(dim=-1).min() < 0.1
         again = _rbf(2, centers=2, max_neuron_models=None)
         _calibrate(again, x, seed=3)
-        assert torch.equal(again.centers.detach(), n.centers.detach())
+        assert torch.equal(again.centers().detach(), n.centers().detach())
         other = _rbf(2, centers=2, max_neuron_models=None)
         _calibrate(other, x, seed=4)
         # same clusters, possibly the other order
-        assert (other.centers.detach()[0].flip(0) - c).abs().max() < 1e-4 or \
-            (other.centers.detach()[0] - c).abs().max() < 1e-4
+        assert (other.centers().detach()[0].flip(0) - c).abs().max() < 1e-4 or \
+            (other.centers().detach()[0] - c).abs().max() < 1e-4
 
     def test_constant_slot_gives_floored_widths_and_finite_output(self):
         x = torch.randn(300, 3)
@@ -900,16 +901,16 @@ class TestRBFNeuron:
         assert streamed.needs_input_stream and streamed._stream_counts is not None
         for i in range(0, 4096, 256):
             streamed.stream_input_batch(x[i:i + 256])
-        after_one = streamed.centers.detach().clone()
+        after_one = streamed.centers0.detach().clone()
         for i in range(0, 4096, 256):
             streamed.stream_input_batch(x[i:i + 256])
         streamed.finish_input_stream()
         assert streamed._stream_counts is None
-        c_exact = exact.centers.detach()[0]
-        c_stream = streamed.centers.detach()[0]
+        c_exact = exact.centers().detach()[0]
+        c_stream = streamed.centers().detach()[0]
         for row in c_exact:
             assert (c_stream - row).norm(dim=-1).min() < 0.05
-        assert (streamed.centers.detach() - after_one).abs().max() < 0.01
+        assert (streamed.centers0.detach() - after_one).abs().max() < 0.01
         assert streamed.fit_report() is not None
         # a grid family does not stream, and the stream hooks are no-ops on it
         grid = _rbf(2, centers=4, placement="grid", max_neuron_models=None)
@@ -963,11 +964,13 @@ class TestRBFNeuron:
         t_std = (target - n.in_mean[0]) / n.in_std[0]
         fixed = torch.linalg.lstsq(_design(n, u), y.unsqueeze(1)).solution
         r_fixed = ((_design(n, u) @ fixed).squeeze(1) - y).pow(2).mean().item()
-        start = n.centers.detach().clone()
+        start = n.centers().detach().clone()
         r_joint = self._fit_joint(n, u, y)
         assert r_joint < r_fixed
-        assert (n.centers.detach()[0] - t_std).norm(dim=-1).min() < 0.1
-        assert not torch.equal(n.centers.detach(), start)
+        assert (n.centers().detach()[0] - t_std).norm(dim=-1).min() < 0.1
+        assert not torch.equal(n.centers().detach(), start)
+        # every center stays inside its radius around the k-means start
+        assert (n.displacements().detach().norm(dim=-1) < n.radius).all()
         with torch.no_grad():
             scale = n.width_scales()
         assert (scale <= 4.0).all() and (scale >= 0.25).all()
@@ -980,10 +983,10 @@ class TestRBFNeuron:
         y = torch.exp(-((u - torch.tensor([0.4, -0.3])) ** 2).sum(1) / 0.05)
         n = _rbf(2, max_neuron_models=None, learn_centers=False, learn_widths=False)
         _calibrate(n, u, seed=0)
-        c0, w0 = n.centers.clone(), n.log_width.clone()
+        c0, w0 = n.center_shift.clone(), n.log_width.clone()
         assert [name for name, _ in n.named_parameters()] == ["weight"]
         self._fit_joint(n, u, y, steps=40)
-        assert torch.equal(n.centers, c0) and torch.equal(n.log_width, w0)
+        assert torch.equal(n.center_shift, c0) and torch.equal(n.log_width, w0)
 
     def test_dim_three_builds_places_and_runs(self):
         n = _rbf(5, dim=3, centers=8, max_neuron_models=4)
@@ -991,13 +994,13 @@ class TestRBFNeuron:
         _calibrate(n, x, seed=0)
         assert n.get_short_name() == "RBF8x3" and n.num_w == 8 + 3
         assert n(x).shape == (500, 4) and torch.isfinite(n(x)).all()
-        assert n.centers.shape == (4, 8, 3)
+        assert n.centers().shape == (4, 8, 3)
 
     def test_standardize_off_uses_raw_units(self):
         x = torch.randn(300, 4) * 50 + 200
         n = _rbf(standardize=False)
         _calibrate(n, x, seed=0)
-        assert n.centers.detach().abs().mean() > 50          # raw units, not z-scores
+        assert n.centers().detach().abs().mean() > 50        # raw units, not z-scores
         assert (n.width0 >= 0.05 * n.in_std.mean(-1, keepdim=True) - 1e-4).all()
         assert torch.isfinite(n(x)).all()
         assert "standardized" not in n.get_name()
@@ -1021,3 +1024,22 @@ class TestRBFNeuron:
         assert isinstance(b, RBFNeuron) and b.num_centers == 16 and b.placement == "kmeans"
         assert RefFunctionType.get("rbf") is RefFunctionType.rfRBF
         assert RefFunctionType.get_name(RefFunctionType.rfRBF) == "RBF"
+
+    def test_center_radius_null_is_unbounded(self):
+        n = _rbf(2, max_neuron_models=None, center_radius=None)
+        x = torch.randn(300, 2)
+        _calibrate(n, x, seed=0)
+        assert n.center_radius is None and "unbounded" in n.get_name()
+        with torch.no_grad():
+            n.center_shift.add_(torch.full_like(n.center_shift, 7.0))
+        assert torch.equal(n.displacements(), n.center_shift)
+        assert (n.displacements().norm(dim=-1) > n.radius).all()
+        assert "unbounded" in n.fit_report() and "beyond 5 std" in n.fit_report()
+        meta = {k: getattr(n, k) for k in n.params_metadata_names}
+        back = BasePolynomNeuron.from_checkpoint_metadata(meta)
+        assert back.center_radius is None
+        back.load_state_dict(n.state_dict(), strict=False)
+        assert torch.equal(back(x), n(x))
+        with pytest.raises(ValueError, match="center_radius"):
+            _rbf(center_radius=0.0)
+

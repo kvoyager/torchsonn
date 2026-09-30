@@ -15,8 +15,14 @@ plus the standardized inputs as linear columns: `num_w = M + dim`, 18 for a
 pair neuron at the default `M = 16`. Widths are carried in log form and
 bounded to `(1/width_band, width_band)` times their start by a smooth tanh,
 so a bump can neither collapse onto one row nor blur into the linear part.
+Centers are carried as a displacement from their k-means start whose length
+is squashed below `center_radius` times the local center spacing, the same
+smooth bound, so a cell can move across its neighbourhood but never off the
+data (unbounded centers were ejected by the per-tensor quasi-Newton step on
+California housing: 37-68% of survivors' centers ended outside the data).
 Options: `centers`, `placement` (`kmeans` | `grid`), `width`, `learn_centers`,
-`learn_widths`, `width_band`, `normalize`, `linear`, `standardize`, `dim`.
+`learn_widths`, `center_radius`, `width_band`, `normalize`, `linear`,
+`standardize`, `dim`.
 `learn_*: false` turns the tensors into buffers (the fixed-basis RBF).
 
 Initialization happens in the per-layer input pass: batched k-means++ over
