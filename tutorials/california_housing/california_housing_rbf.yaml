@@ -118,6 +118,14 @@
 #     differences moving the growth stop, as on the Legendre file) for a
 #     test number 0.003 above the loop version's, inside that file's
 #     measured run-to-run spread under the batched optimizer.
+#   8 centers, bounded, batched LBFGS, growth rule with stop_train_min_delta
+#   0.002 / width 3 (this file since 2026-09-30), three runs:
+#                                        MSE 0.1893-0.1908   MAE 0.279-0.280
+#     Spread 0.0015, inside the +-0.002 target, but the three runs differ
+#     from layer 0 (0.189-0.191) and grew to 12, 19 and 12 layers: the
+#     k-means start uses scatter_add_ on CUDA, which is not deterministic,
+#     so each run starts from different centers. The Legendre file under the
+#     same rule repeats to 0.0002 at a fixed depth.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
@@ -227,8 +235,14 @@ train:
   criterion_type: validate
   error_alpha: 0.5
   layer_err_criterion: top
-  criterion_minimum_width: 2
+  # Growth stop rule: a layer improves when it lowers the error of the last
+  # accepted improvement by max(0.002, 0.001 x best); the search stops after
+  # 3 consecutive layers without one. 0.002 is the dev evaluation's noise
+  # floor here; with the old 0.001-relative margin (0.00017) alone, float32
+  # summation order decided between 9 and 11 layers (2026-09-30).
+  criterion_minimum_width: 3
   stop_train_epsilon_condition: 0.001
+  stop_train_min_delta: 0.002
   max_layer_count: 50
 
   # Survivor selection. 'plain' keeps the top-16 candidates by individual dev
