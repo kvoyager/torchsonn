@@ -1043,3 +1043,67 @@ class TestRBFNeuron:
         with pytest.raises(ValueError, match="center_radius"):
             _rbf(center_radius=0.0)
 
+
+
+    # --- deterministic k-means: one-hot sums and PCA-quantile seeding ---------
+
+    def test_one_hot_sums_match_scatter_add(self):
+        torch.manual_seed(0)
+        u = torch.randn(3, 50, 2)
+        assign = torch.randint(0, 4, (3, 50))
+        sums, counts = RBFNeuron._cluster_sums(u, assign, 4)
+        ref_s = torch.zeros(3, 4, 2).scatter_add_(1, assign.unsqueeze(-1).expand(3, 50, 2), u)
+        ref_c = torch.zeros(3, 4).scatter_add_(1, assign, torch.ones(3, 50))
+        assert torch.allclose(sums, ref_s, atol=1e-5) and torch.equal(counts, ref_c)
+
+    def test_pca_quantile_seeds_are_rows_at_quantiles_of_the_main_axis(self):
+        g = torch.Generator().manual_seed(0)
+        base = torch.randn(400, 2, generator=g)
+        u = torch.stack([base @ torch.tensor([[3.0, 0.0], [0.0, 0.5]]),          # spread along x
+                         base @ torch.tensor([[1.0, 1.0], [-0.2, 0.2]])])         # spread along the diagonal
+        seeds = RBFNeuron._pca_quantile_seeds(u, 8)
+        assert seeds.shape == (2, 8, 2)
+        for n in range(2):
+            for s in seeds[n]:
+                assert ((u[n] - s).abs().sum(-1) < 1e-6).any()                   # a real row
+        # candidate 0: the axis is x, so the seeds are ordered in x and span it
+        xs = seeds[0, :, 0]
+        assert torch.all(xs[1:] > xs[:-1]) and xs[0] < -2.0 and xs[-1] > 2.0
+        # candidate 1: ordered along the diagonal
+        diag = seeds[1] @ torch.tensor([1.0, 1.0])
+        assert torch.all(diag[1:] > diag[:-1])
+        # no randomness: the same input gives the same seeds without any seed
+        assert torch.equal(RBFNeuron._pca_quantile_seeds(u, 8), seeds)
+
+    def test_default_seeding_is_deterministic_and_seed_independent(self):
+        x = _two_clusters(n_rows=1000, seed=2)
+        a = _rbf(2, centers=4, max_neuron_models=None)
+        b = _rbf(2, centers=4, max_neuron_models=None)
+        _calibrate(a, x, seed=1)
+        _calibrate(b, x, seed=99)
+        assert a.seeding == "pca_quantiles"
+        assert torch.equal(a.centers().detach(), b.centers().detach())
+        assert torch.equal(a.width0, b.width0)
+        # both clusters get centers
+        c = a.centers().detach()[0]
+        for sign in (1.0, -1.0):
+            target = ((x[torch.sign(x[:, 0]) == sign]).mean(0) - a.in_mean[0]) / a.in_std[0]
+            assert (c - target).norm(dim=-1).min() < 0.5
+
+    def test_kmeanspp_seeding_is_still_available_and_seeded(self):
+        x = _two_clusters(n_rows=1000, seed=2)
+        a = _rbf(2, centers=4, max_neuron_models=None, seeding="kmeans++")
+        b = _rbf(2, centers=4, max_neuron_models=None, seeding="kmeans++")
+        c = _rbf(2, centers=4, max_neuron_models=None, seeding="kmeans++")
+        _calibrate(a, x, seed=1)
+        _calibrate(b, x, seed=1)
+        _calibrate(c, x, seed=2)
+        assert torch.equal(a.centers().detach(), b.centers().detach())
+        assert "k-means++" in a.get_name() and "PCA" in _rbf(2, max_neuron_models=None).get_name()
+        meta = {k: getattr(a, k) for k in a.params_metadata_names}
+        assert BasePolynomNeuron.from_checkpoint_metadata(meta).seeding == "kmeans++"
+        legacy = dict(meta)
+        legacy.pop("seeding")
+        assert BasePolynomNeuron.from_checkpoint_metadata(legacy).seeding == "kmeans++"
+        with pytest.raises(ValueError, match="seeding"):
+            _rbf(seeding="random")

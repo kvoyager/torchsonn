@@ -67,6 +67,19 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Changed — `rbf`: deterministic k-means start (`seeding: pca_quantiles`)
+
+Lloyd's cluster sums are a one-hot batched matrix product instead of
+`scatter_add_`, whose summation order on CUDA varied between runs and, with
+many near-tied assignments, drifted the iterations apart. The default start
+is no longer a seeded k-means++ draw but the rows at the quantiles of each
+candidate's projection on the first principal axis of its input tuple
+(`seeding: pca_quantiles`; `kmeans++` keeps the seeded draw, and old
+checkpoints restore with it). The same data now gives the same centers
+under any seed: three runs of the California RBF-8 config are identical at
+every layer and end at 0.1893-0.1894 on test, where the random start had
+given 0.1824-0.1957.
+
 ### Added — `train.early_stop_source`: candidate fits can stop on the training loss
 
 `early_stop_source: train` makes the per-candidate early stop and its

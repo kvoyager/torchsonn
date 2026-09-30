@@ -68,6 +68,10 @@ from torchsonn.neurons.base import ActivationLike, BaseTupleNeuron
 logger = logging.getLogger(__name__)
 
 PLACEMENTS = ("kmeans", "grid")
+# How the k-means start is chosen: rows at the quantiles of the projection
+# on the tuple's first principal axis (deterministic, data-driven), or the
+# seeded k-means++ draw.
+SEEDINGS = ("pca_quantiles", "kmeans++")
 
 # Quantile grid of the `grid` placement: K points per slot, K = M^(1/dim).
 _GRID_Q_LO, _GRID_Q_HI = 0.1, 0.9
@@ -89,6 +93,7 @@ class RBFNeuron(BaseTupleNeuron):
                  dim: int = 2,
                  centers: int = 16,
                  placement: str = "kmeans",
+                 seeding: str = "pca_quantiles",
                  width: float = 1.0,
                  learn_centers: bool = True,
                  learn_widths: bool = True,
@@ -108,10 +113,14 @@ class RBFNeuron(BaseTupleNeuron):
         placement = str(placement).lower()
         if placement not in PLACEMENTS:
             raise ValueError(f"placement must be one of {list(PLACEMENTS)}, got {placement!r}")
+        seeding = str(seeding).lower()
+        if seeding not in SEEDINGS:
+            raise ValueError(f"seeding must be one of {list(SEEDINGS)}, got {seeding!r}")
         if int(dim) < 2:
             raise ValueError(f"dim must be >= 2, got {dim}")
         self.num_centers = int(centers)
         self.placement = placement
+        self.seeding = seeding
         self.width = float(width)
         self.learn_centers = bool(learn_centers)
         self.learn_widths = bool(learn_widths)
@@ -169,7 +178,7 @@ class RBFNeuron(BaseTupleNeuron):
         self._stream_start: torch.Tensor | None = None
 
         self.params_metadata_names.extend([
-            "num_centers", "placement", "width", "learn_centers", "learn_widths",
+            "num_centers", "placement", "seeding", "width", "learn_centers", "learn_widths",
             "center_radius", "width_band", "normalize", "linear", "standardize",
         ])
 
@@ -185,6 +194,7 @@ class RBFNeuron(BaseTupleNeuron):
             dim=metadata["dim"],
             centers=metadata["num_centers"],
             placement=metadata.get("placement", "kmeans"),
+            seeding=metadata.get("seeding", "kmeans++"),
             width=metadata.get("width", 1.0),
             learn_centers=metadata.get("learn_centers", True),
             learn_widths=metadata.get("learn_widths", True),
@@ -306,7 +316,8 @@ class RBFNeuron(BaseTupleNeuron):
             centers = self._grid_centers(u)
             self._finish_placement(centers, u, f"grid on {n_rows} rows", t0)
             return
-        centers = self._kmeans_pp(u, gen)
+        centers = (self._kmeans_pp(u, gen) if self.seeding == "kmeans++"
+                   else self._pca_quantile_seeds(u, self.num_centers))
         if stream:
             # Start only; the trainer's streaming pass refines the centers.
             with torch.no_grad():
@@ -360,12 +371,38 @@ class RBFNeuron(BaseTupleNeuron):
 
     @staticmethod
     def _cluster_sums(u: torch.Tensor, assign: torch.Tensor, m: int) -> tuple[torch.Tensor, torch.Tensor]:
-        n, b, d = u.shape
-        sums = torch.zeros((n, m, d), dtype=u.dtype, device=u.device)
-        counts = torch.zeros((n, m), dtype=u.dtype, device=u.device)
-        sums.scatter_add_(1, assign.unsqueeze(-1).expand(n, b, d), u)
-        counts.scatter_add_(1, assign, torch.ones_like(assign, dtype=u.dtype))
+        """Per-cluster row sums and counts as a one-hot matrix product.
+        `scatter_add_` was used first; on CUDA its summation order varies
+        between runs, and k-means has enough near-tied assignments that the
+        rounding difference flipped rows and the runs drifted apart. A
+        batched matmul is evaluated deterministically."""
+        onehot = torch.nn.functional.one_hot(assign, m).to(dtype=u.dtype)       # (n, b, m)
+        sums = torch.einsum("nbm,nbd->nmd", onehot, u)
+        counts = onehot.sum(dim=1)
         return sums, counts
+
+    @staticmethod
+    def _pca_quantile_seeds(u: torch.Tensor, m: int | None = None) -> torch.Tensor:
+        """Deterministic, data-driven k-means start: project each candidate's
+        rows onto the first principal axis of its tuple and take the rows at
+        the quantiles (j + 0.5) / M of that projection. Every seed is a real
+        row, the seeds span the joint distribution's main direction, and
+        Lloyd spreads them across the others. u: (n, N, dim) -> (n, M, dim)."""
+        n, n_rows, d = u.shape
+        centred = u - u.mean(dim=1, keepdim=True)
+        cov = torch.einsum("nbd,nbe->nde", centred, centred) / max(1, n_rows)
+        # eigh returns ascending eigenvalues; the last vector is the first axis.
+        _, vecs = torch.linalg.eigh(cov.to(torch.float64))
+        axis = vecs[:, :, -1].to(dtype=u.dtype)                                   # (n, d)
+        # An eigenvector's sign is arbitrary; make the largest component
+        # positive so the seed order (and any downstream reproduction) is fixed.
+        lead = axis.gather(1, axis.abs().argmax(dim=1, keepdim=True))
+        axis = axis * torch.sign(lead).clamp(min=0).mul(2).sub(1)
+        proj = torch.einsum("nbd,nd->nb", centred, axis)                          # (n, N)
+        order = torch.sort(proj, dim=1, stable=True).indices
+        q = ((torch.arange(m, device=u.device, dtype=torch.float64) + 0.5) / m * n_rows).floor().long().clamp(max=n_rows - 1)
+        picks = order[:, q]                                                       # (n, M)
+        return torch.gather(u, 1, picks.unsqueeze(-1).expand(n, m, d)).clone()
 
     def _row_chunk(self, n_rows: int) -> int:
         # Keep the (n, chunk, M, dim) distance tensor around 64M floats.
@@ -511,7 +548,8 @@ class RBFNeuron(BaseTupleNeuron):
         if self.learn_widths:
             learn.append(f"widths within 1/{self.width_band:g}..{self.width_band:g} x start")
         learn_txt = "learnable " + ", ".join(learn) if learn else "fixed centers and widths"
-        start = "k-means" if self.placement == "kmeans" else "quantile-grid"
+        start = ("k-means from PCA quantiles" if self.seeding == "pca_quantiles" else "k-means++") \
+            if self.placement == "kmeans" else "quantile-grid"
         parts = [f"Gaussian RBF ({self.num_centers} {start} centers, {learn_txt}, "
                  f"width {self.width:g} x local spacing"]
         if self.normalize:
