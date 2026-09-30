@@ -31,6 +31,58 @@ import torch.nn.functional as F
 
 
 @dataclass
+class GrowthCriterion:
+    """The layer-growth stop rule of `Trainer.train`, kept out of the loop so
+    it can be tested on a scripted sequence of layer errors.
+
+    A layer *improves* when it lowers the error of the last accepted
+    improvement (`ref_error`) by at least `max(min_delta, epsilon * best)`,
+    so several small steps down add up instead of each failing the margin
+    on its own; the search stops after `width` consecutive layers without
+    an improvement. `best_index` (the layer with the lowest error, margin or
+    not) is what the trainer keeps; the window is counted from
+    `last_improved_index`. Layer 0 always improves.
+    """
+    width: int
+    epsilon: float
+    min_delta: float = 0.0
+    min_error: float = field(default=sys.float_info.max)
+    ref_error: float = field(default=sys.float_info.max)
+    best_index: int = 0
+    last_improved_index: int = 0
+    # Filled by the last `update` for the log.
+    last_gain: float = 0.0
+    last_margin: float = 0.0
+    last_since: int = 0
+
+    def update(self, layer_index: int, err: float) -> bool:
+        """Record a layer's error; returns True when the search should stop."""
+        err = float(err)
+        if layer_index == 0 or self.min_error == sys.float_info.max:
+            margin = 0.0
+            gain = float("inf")
+            improved = True
+        else:
+            margin = max(float(self.min_delta), float(self.epsilon) * self.min_error)
+            gain = self.ref_error - err
+            improved = gain >= margin - 1e-12
+        if err < self.min_error:
+            self.min_error = err
+            self.best_index = layer_index
+        if improved:
+            self.last_improved_index = layer_index
+            self.ref_error = err
+        self.last_gain, self.last_margin = gain, margin
+        self.last_since = layer_index - self.last_improved_index
+        return layer_index > 0 and self.last_since >= int(self.width)
+
+    def describe(self, layer_index: int, err: float) -> str:
+        gain = "first layer" if self.last_gain == float("inf") else f"improved by {self.last_gain:+.4f} (margin {self.last_margin:.4f})"
+        return (f"Layer #{layer_index}: error {float(err):.4f}, best {self.min_error:.4f} at layer "
+                f"{self.best_index}; {gain}; {self.last_since} of {int(self.width)} layers without improvement")
+
+
+@dataclass
 class LayerAccumulator:
     """Mutable per-layer state accumulated across neuron-model training calls.
 
@@ -380,10 +432,12 @@ class Trainer:
         if self.class_weights is not None:
             model.set_class_weights(self.class_weights)
 
-        min_error = sys.float_info.max
-        error_stopped_decrease = False
+        growth = GrowthCriterion(
+            width=int(self.config.train.criterion_minimum_width),
+            epsilon=float(self.config.train.stop_train_epsilon_condition),
+            min_delta=float(getattr(self.config.train, "stop_train_min_delta", 0.0)),
+        )
         model.layers = nn.ModuleList()
-        error_min_index = 0
         checkpoint_data = None
         # Per-layer snapshots of projection weights (multi-class only).
         # Each train_layer call overwrites model.shared_proj / model.neuron_proj
@@ -444,30 +498,13 @@ class Trainer:
                     k: v.detach().cpu().clone() for k, v in model.shared_proj.state_dict().items()
                 }
 
-            # proceed until stop condition is fulfilled
-
-            if layer.err < min_error:
-                # layer error has been decreased, memorize the layer index
-                error_min_index = layer.layer_index
-
-            if (layer.err > min_error and
-                layer.layer_index > 0 and
-                layer.layer_index - error_min_index >= self.config.train.criterion_minimum_width):
-
-                # layer error stopped decreasing
-                error_stopped_decrease = True
-
-            if layer.layer_index > 0 and layer.err < min_error and min_error > 0:
-                if (min_error - layer.err) / min_error < self.config.train.stop_train_epsilon_condition:
-                    # layer relative error decrease value is below stop condition
-                    error_stopped_decrease = True
-
-            min_error = min(min_error, layer.err)
-
-            # if error does not decrease anymore or number of layers reached the limit
-            # or the layer does not have any valid neuron - stop training
+            # proceed until the stop rule fires (see GrowthCriterion) or the
+            # number of layers reaches the limit
+            error_stopped_decrease = growth.update(layer.layer_index, layer.err)
+            logger.info(growth.describe(layer.layer_index, layer.err))
             if error_stopped_decrease or not (layer.layer_index < self.config.train.max_layer_count - 1):
                 break
+        error_min_index = growth.best_index
 
         model.layer_err.clear()
         for i in range(0, len(model.layers)):

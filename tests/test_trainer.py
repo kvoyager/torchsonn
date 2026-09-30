@@ -440,3 +440,66 @@ class TestLayerAccumulator:
         assert a.err == []
         assert a.module_idxs == []
         assert a.layer_completed is False
+
+
+# --- Layer-growth stop rule (GrowthCriterion) --------------------------------
+
+from torchsonn.trainer import GrowthCriterion
+
+
+def _run_rule(errors, **kw):
+    g = GrowthCriterion(**kw)
+    for i, e in enumerate(errors):
+        if g.update(i, e):
+            return i, g
+    return None, g
+
+
+class TestGrowthCriterion:
+    # The California Legendre curve to three decimals; the two variants differ
+    # at layer 8 by less than the printed precision (loop vs batched LBFGS).
+    CURVE = [0.194, 0.182, 0.173, 0.172, 0.170, 0.170, 0.168, 0.169]
+
+    def test_margin_makes_the_depth_insensitive_to_rounding(self):
+        for tail in ([0.16799, 0.167, 0.167, 0.167], [0.1675, 0.167, 0.167, 0.167], [0.1681, 0.167, 0.167, 0.167]):
+            stop, g = _run_rule(self.CURVE + tail, width=3, epsilon=1e-3, min_delta=0.002)
+            assert stop == 9, (tail, stop)
+            assert g.best_index == 9
+
+    def test_small_steps_add_up_against_the_last_accepted_improvement(self):
+        # 0.001 per layer never clears a 0.002 margin on its own; measured
+        # against the last accepted improvement every second layer does.
+        errs = [0.200] + [0.200 - 0.001 * k for k in range(1, 12)]
+        stop, g = _run_rule(errs, width=3, epsilon=0.0, min_delta=0.002)
+        assert stop is None
+        assert g.last_improved_index == 10 and g.best_index == 11
+
+    def test_legacy_settings_match_the_old_rule_except_the_documented_case(self):
+        # Old rule, width 2, relative 1e-3: stop when two layers pass the best
+        # without a new best, or when a new best falls short of the margin.
+        stop, g = _run_rule([0.20, 0.19, 0.195, 0.196], width=2, epsilon=1e-3, min_delta=0.0)
+        assert stop == 3 and g.best_index == 1
+        # A new best short of the margin used to stop on the spot; now it
+        # counts toward the window and the run continues.
+        stop, g = _run_rule([0.20, 0.19, 0.18999, 0.17, 0.16], width=2, epsilon=1e-3, min_delta=0.0)
+        assert stop is None and g.best_index == 4
+        # ... and stops once the window is full of such layers.
+        stop, g = _run_rule([0.20, 0.19, 0.18999, 0.18998], width=2, epsilon=1e-3, min_delta=0.0)
+        assert stop == 3 and g.best_index == 3
+        # Width 1 with a vanishing margin (the smoke-test setting): stop at
+        # the first layer that does not lower the error.
+        stop, g = _run_rule([0.20, 0.19, 0.19], width=1, epsilon=1e-9, min_delta=0.0)
+        assert stop == 2 and g.best_index == 1
+
+    def test_kept_depth_is_the_best_error_even_below_the_margin(self):
+        stop, g = _run_rule([0.20, 0.19, 0.1899, 0.1898, 0.1897], width=3, epsilon=0.0, min_delta=0.01)
+        assert stop == 4
+        assert g.best_index == 4 and g.last_improved_index == 1
+
+    def test_describe_mentions_gain_margin_and_window(self):
+        g = GrowthCriterion(width=3, epsilon=1e-3, min_delta=0.002)
+        g.update(0, 0.2)
+        assert "first layer" in g.describe(0, 0.2)
+        g.update(1, 0.19)
+        line = g.describe(1, 0.19)
+        assert "improved by +0.0100" in line and "margin 0.0020" in line and "0 of 3" in line

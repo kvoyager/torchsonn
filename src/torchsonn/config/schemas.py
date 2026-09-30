@@ -211,8 +211,29 @@ class TrainConfig:
     error_normalization: str = "variance"
 
     max_layer_count: int = 999
+    # Layer-growth stop rule (Trainer.train, GrowthCriterion). A layer counts
+    # as an improvement when it lowers the error of the last accepted
+    # improvement by at least
+    #     max(stop_train_min_delta, stop_train_epsilon_condition * best)
+    # (so several small steps down add up), and the search stops once
+    # `criterion_minimum_width` consecutive layers have passed without one. The layers kept are those up to the best
+    # error, whether or not that layer cleared the margin.
+    #   stop_train_epsilon_condition: relative margin (gmdhpy's rule). At an
+    #       error of 0.17 the default 1e-3 is 0.00017, below what a dev
+    #       evaluation of a few thousand rows resolves, so rounding-level
+    #       differences between runs decide the depth (California: 9 vs 11
+    #       layers, 0.005 on test, from float32 summation order alone).
+    #   stop_train_min_delta: absolute margin in the units of the layer error
+    #       (NormMSE for regression). 0 = off. Set it at the noise floor of
+    #       the dev evaluation (0.002 on the California tutorial) so "still
+    #       improving" means something the data can resolve.
+    # Before 2026-09-30 a new best that fell short of the relative margin
+    # stopped the search on the spot; now it counts toward the window like
+    # any other non-improving layer, so one flat layer does not end a run
+    # that is still descending slowly.
     criterion_minimum_width: int = 5
     stop_train_epsilon_condition: float = 0.001
+    stop_train_min_delta: float = 0.0
 
     manual_best_neurons_selection: bool = False
     min_best_neurons_count: int = 0

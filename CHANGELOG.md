@@ -67,6 +67,24 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Changed — layer-growth stop rule: `train.stop_train_min_delta`, window from the last accepted improvement
+
+`Trainer.train`'s growth rule is now `GrowthCriterion`, testable on a
+scripted sequence. A layer improves when it lowers the error of the last
+accepted improvement by at least `max(stop_train_min_delta,
+stop_train_epsilon_condition * best)`, so small steps down add up, and the
+search stops after `criterion_minimum_width` consecutive layers without an
+improvement; the kept depth is still the layer with the lowest error. One
+behaviour change with the old settings: a new best that falls short of the
+relative margin no longer stops the search on the spot, it counts toward
+the window. `stop_train_min_delta` (absolute, default 0 = off) gives the
+rule a margin the dev evaluation can resolve: with the relative 1e-3 alone
+(0.00017 at an error of 0.17) float32 summation order decided between 9
+and 11 layers on the California tutorial, 0.005 on test; with 0.002 and a
+width of 3 the same config repeats to 0.0002 at a fixed depth
+(0.1882-0.1884 / 0.2795 over three runs). Per-layer log line with the gain,
+the margin and the window count.
+
 ### Changed — ensemble LBFGS: batched two-loop recursion
 
 The correction history of the batched parameters is now a pair of
