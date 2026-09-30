@@ -793,3 +793,59 @@ def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
     assert not torch.equal(nm.centers().detach(), before)
     for p in model.parameters():
         assert p.requires_grad
+
+
+# --- Candidate early stop on the training loss (train.early_stop_source) ----
+
+@pytest.mark.parametrize("source", ["dev", "train"])
+def test_early_stop_source_routes_the_candidate_stop(tmp_path, source, monkeypatch):
+    """With 'train' the candidate fit never evaluates the dev split (ds_loss
+    is only called after the fit, for selection); with 'dev' it does."""
+    cfg = _cfg(tmp_path, max_layer_count=1, early_stop_source=source, steps=30)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    calls = {"during_fit": 0, "total": 0}
+    real = Trainer.ds_loss
+    state = {"fitting": False}
+
+    def spy(self, *a, **kw):
+        calls["total"] += 1
+        if state["fitting"]:
+            calls["during_fit"] += 1
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Trainer, "ds_loss", spy)
+    real_reg = Trainer.regularity_err
+    reg_calls = {"n": 0}
+
+    def reg_spy(self, *a, **kw):
+        reg_calls["n"] += 1
+        return real_reg(self, *a, **kw)
+
+    monkeypatch.setattr(Trainer, "regularity_err", reg_spy)
+    real_step = Trainer.train_model_ensemble
+
+    def wrapped(self, *a, **kw):
+        state["fitting"] = True
+        try:
+            return real_step(self, *a, **kw)
+        finally:
+            state["fitting"] = False
+
+    monkeypatch.setattr(Trainer, "train_model_ensemble", wrapped)
+    dl = _make_dl(64)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    assert len(trained.layers) == 1
+    if source == "train":
+        assert calls["total"] == 0                    # the dev split is not touched by the fit
+    else:
+        assert calls["during_fit"] > 0
+    assert reg_calls["n"] > 0                         # selection still scores every candidate on dev
+
+
+def test_early_stop_source_rejected_when_unknown(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1, early_stop_source="test")
+    model = SONN(cfg, d_model=4)
+    dl = _make_dl(32)
+    with pytest.raises(ValueError, match="early_stop_source"):
+        Trainer(config=cfg).train(model, dl, dl, dl, verbose=False)

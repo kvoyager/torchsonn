@@ -67,6 +67,18 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Added — `train.early_stop_source`: candidate fits can stop on the training loss
+
+`early_stop_source: train` makes the per-candidate early stop and its
+learning-rate drop watch the training loss of the current batch instead of
+the dev loss (same smoothing, patience and thresholds); the dev split is
+then used once per layer, by selection, which is the method's regularizer.
+Default `dev` is the historical behaviour. On the California Legendre
+baseline the two agree (81-step fits either way, 0.1891-0.1894 vs
+0.1882-0.1884 over three runs, two layers shallower); on the RBF family the
+dev stop had been holding non-repeatable candidate fits to a common answer,
+which the train stop exposes (three runs from 0.1824 to 0.1957).
+
 ### Changed — layer-growth stop rule: `train.stop_train_min_delta`, window from the last accepted improvement
 
 `Trainer.train`'s growth rule is now `GrowthCriterion`, testable on a

@@ -1046,6 +1046,10 @@ class Trainer:
         else:
             _local_start, _local_size = 0, ensemble_size
 
+        early_stop_source = str(model.param.train.early_stop_source).lower()
+        if early_stop_source not in ("dev", "train"):
+            raise ValueError(
+                f"train.early_stop_source must be 'dev' or 'train', got {model.param.train.early_stop_source!r}")
         opt = optimizer_cls(params_batch, shared_param_names, shared_param_lr_multiplier=shared_param_lr_multiplier, **optimizer_params)
         if model.param.train.scheduler.name is None:
             scheduler = None
@@ -1150,7 +1154,12 @@ class Trainer:
 
                     model.eval()
                     with torch.inference_mode():
-                        val_losses = self.ds_loss(model, eval_loss_fn_vmapped, params_batch, buffers_batch, dev_dl, device, features_precomputed)
+                        if early_stop_source == "train":
+                            # The training loss of the current batch, per
+                            # member; the dev split is left to selection.
+                            val_losses = eval_loss_fn_vmapped(params_batch, buffers_batch, x, targets).detach()
+                        else:
+                            val_losses = self.ds_loss(model, eval_loss_fn_vmapped, params_batch, buffers_batch, dev_dl, device, features_precomputed)
 
                     # Exclude models that have diverged. NaN is unrecoverable.
                     # The absolute val-loss threshold is configurable via

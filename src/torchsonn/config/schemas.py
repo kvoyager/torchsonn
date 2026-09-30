@@ -298,6 +298,21 @@ class TrainConfig:
     early_stop_completion_percentage: int = 100
     early_stop_patience: float = 1.0e-4
     early_stop_tolerance_steps: int = 10
+    # Which loss the per-candidate early stop (and its learning-rate drop)
+    # watches during the candidate fit:
+    #   'dev'   - the dev split, evaluated every eval_step_interval steps
+    #             (historical). Every candidate is then tuned to the split
+    #             that selects it, 120 times per layer; the minimum over
+    #             thousands of dev-stopped candidates is an optimistic dev
+    #             floor (California, RBF family: 0.145 on dev, worse on test).
+    #   'train' - the training loss of the current batch, same smoothing,
+    #             patience and lr drop. Candidates run to their own
+    #             convergence; the dev split is used once per layer, by
+    #             selection, which is the method's regularizer (classic
+    #             GMDH: least squares on train, ranking on dev). A candidate
+    #             that overfits its rows is rejected by selection rather than
+    #             stopped early.
+    early_stop_source: str = "dev"
 
     shared_proj_lr_multiplier: float = 0.1
 
