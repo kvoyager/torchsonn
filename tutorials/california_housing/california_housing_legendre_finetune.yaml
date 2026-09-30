@@ -90,6 +90,9 @@
 # with this feature set, and the trees prefer the raw target for MSE.
 # Raw target (script LOG_TARGET False, cap in price units), single model:
 #   raw target                            MSE 0.1877   MAE 0.2791   (9 layers) <- current
+#   same, LBFGS with the curvature condition and step cap (optimizer defaults
+#   since 2026-09-30; 0.1% of updates capped, no pair rejected, same 81-step
+#   fits and layer curve)                  MSE 0.1884   MAE 0.2772   (9 layers)
 #   (log target, same pipeline           MSE 0.1912   MAE 0.2719   (15 layers))
 # MSE-optimal is the conditional mean, which the raw target estimates; the log
 # target estimates the median and wins MAE. The end-to-end pass needed 10875

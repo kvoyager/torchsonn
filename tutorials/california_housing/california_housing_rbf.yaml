@@ -94,6 +94,23 @@
 #     Python loop); a first Adam attempt with the LBFGS early-stop schedule
 #     (lr 0.03, patience 3 evals) stopped every fit at step 95 with dev 0.8.
 #     End-to-end pass early-stopped at 800 steps.
+#   guarded LBFGS (curvature condition + step cap, optimizer defaults since
+#   2026-09-30), 8 centers, 2026-09-30:
+#     unbounded (center_radius=null)     MSE 0.1891   MAE 0.2794   (16 layers)
+#     bounded (center_radius 2)          MSE 0.1871   MAE 0.2793   (6 layers)
+#     The guards fix the fit: no runaway (0-6% of centers beyond 5 std,
+#     unbounded), no pinning (0-3% at the radius, 0-5% of widths at the
+#     band), layer-0 dev 0.192 / 0.191 (Legendre 0.194, Adam RBF-8 0.187),
+#     dev floors 0.154 / 0.165, about 230 fit steps per candidate with 15% of
+#     curvature pairs rejected and 1.3% of updates capped, 70-100 s per layer
+#     (Adam: 400+ s; the remaining gap to Legendre's 25 s is the per-member
+#     Python loop of the recursion over three parameter tensors, draft
+#     Patch 2). Test: both within noise of the 0.1877 / 0.2791 baseline; the
+#     bounded run is the best MSE of any LBFGS-fitted RBF and stops at 6
+#     layers, the unbounded one grows to 16 for the same test number. The
+#     Legendre regression run under the guarded optimizer: 0.1884 / 0.2772,
+#     same layer curve, same 81-step fits, 0.1% of updates capped, no pair
+#     rejected. End-to-end passes early-stopped at 1100 / 2025 steps.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
