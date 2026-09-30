@@ -50,6 +50,23 @@ RBF family inherit; class names, state keys and metadata are unchanged, so
 existing checkpoints load. `train.layer_finetune` now unfreezes every
 parameter a neuron owns (except the projection), not `weight` alone.
 
+### Fixed — ensemble LBFGS: curvature condition and step cap
+
+`BatchedLBFGS` stored every correction pair and took a fixed step with no
+bound, so on a direction whose gradient and curvature vanish together (an
+RBF bump losing its mass, where `y.s <= 0`) its quasi-Newton step pointed
+away from the minimum and grew without limit; unbounded RBF centers were
+thrown tens of standard units off the data. Two guards, both on by default:
+a pair is kept only if `y.s > curvature_eps |s||y|` (`curvature_eps` 1e-8,
+the standard skipping rule) and each member's update of each parameter
+tensor is capped at `max_step` in norm (1.0). Both are `optimizer_params`
+keys; `null` restores the old behaviour. The candidate-fit log reports the
+share of updates capped and pairs rejected per family and layer. On the
+polynomial families the guards touch 0.1% of updates and no pair, and the
+California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
+0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
+std against 37-68%) with about 15% of pairs rejected.
+
 ### Fixed — ensemble optimizers with parameters of rank > 2
 
 `adam`, `sgd`, `newton` and `newton_lm` shaped the per-member learning rate

@@ -58,9 +58,14 @@ def _default_optimizer_params() -> Dict[str, Any]:
 
     The trainer pops `min_lr` and `gamma` (LR-drop schedule) before handing
     the rest to the chosen optimizer class. The optimizer-specific extras
-    (`betas`/`eps` for adam, `momentum`/`nesterov` for sgd, `history_size`
-    for lbfgs, `damping`/`max_damping` for newton-LM) are NOT enumerated
-    here — see the note on `OptimizerConfig.optimizer_params` below.
+    (`betas`/`eps` for adam, `momentum`/`nesterov` for sgd, `history_size`,
+    `max_step` and `curvature_eps` for lbfgs, `damping`/`max_damping` for
+    newton-LM) are NOT enumerated here — see the note on
+    `OptimizerConfig.optimizer_params` below. lbfgs defaults: `max_step`
+    1.0 (cap on one member's update norm per parameter tensor, in parameter
+    units; null = uncapped) and `curvature_eps` 1e-8 (a correction pair is
+    kept only if y.s > eps |s||y|; null = keep every pair, the historical
+    behaviour). The candidate-fit log reports how often either guard acted.
     """
     return {
         "lr": 1.0e-4,

@@ -316,3 +316,112 @@ def test_optimizer_map_contents():
     assert optimizer_map["lbfgs"] is BatchedLBFGS
     assert optimizer_map["newton"] is BatchedNewton
     assert optimizer_map["newton-lm"] is BatchedNewtonLM
+
+
+class TestLBFGSGuards:
+    """DRAFT-ensemble-lbfgs Patch 1: curvature condition and step cap."""
+
+    @staticmethod
+    def _run(opt, p, grad_fn, steps):
+        params = {"weight": p.clone()}
+        for _ in range(steps):
+            params = opt.step(params, {"weight": grad_fn(params["weight"])})
+        return params["weight"]
+
+    def test_unguarded_runs_away_on_a_concave_tail_and_guarded_returns(self):
+        """Loss per member: f(w) = w0^2 + 1 - exp(-w1^2), minimum at the origin,
+        concave in w1 beyond 1/sqrt(2): out there the gradient and the
+        curvature vanish together and y.s < 0, the situation of an RBF bump
+        losing its mass. The historical optimizer's quasi-Newton step points
+        away from the minimum and every member ends further out than it
+        started (one in a single step of tens of units); the guarded one
+        rejects those pairs, keeps every step below max_step, never moves a
+        member outward, and converges the members that start inside reach."""
+        def grad(w):
+            return torch.stack([2.0 * w[:, 0], 2.0 * w[:, 1] * torch.exp(-w[:, 1] ** 2)], dim=1)
+        start = torch.tensor([[1.0, 2.0], [0.5, 2.5], [2.0, 3.0]])
+        old = BatchedLBFGS({"weight": start.clone()}, [], lr=torch.ones(3), max_step=None, curvature_eps=None)
+        params = {"weight": start.clone()}
+        biggest = 0.0
+        for _ in range(80):
+            prev = params["weight"].clone()
+            params = old.step(params, {"weight": grad(params["weight"])})
+            biggest = max(biggest, (params["weight"] - prev).norm(dim=1).max().item())
+        assert (params["weight"][:, 1].abs() > start[:, 1].abs() + 1.0).all()
+        assert biggest > 10.0
+        assert old.stats["rejected"] == 0 and old.stats["capped"] == 0
+
+        new = BatchedLBFGS({"weight": start.clone()}, [], lr=torch.ones(3))
+        params = {"weight": start.clone()}
+        for _ in range(80):
+            prev = params["weight"].clone()
+            params = new.step(params, {"weight": grad(params["weight"])})
+            assert ((params["weight"] - prev).norm(dim=1) <= 1.0 + 1e-6).all()
+        assert (params["weight"][:, 1].abs() <= start[:, 1].abs() + 1e-6).all()
+        assert (params["weight"][:2, 1].abs() < 0.05).all()          # members starting at 2.0 and 2.5 converge
+        assert params["weight"][:, 0].abs().max() < 1e-3
+        assert new.stats["rejected"] > 0 and new.stats["capped"] > 0 and new.stats["steps"] == 80
+
+    def test_negative_curvature_pair_is_not_stored(self):
+        opt = BatchedLBFGS({"weight": torch.zeros(1, 2)}, [], lr=torch.ones(1))
+        p = {"weight": torch.tensor([[0.0, 0.0]])}
+        p = opt.step(p, {"weight": torch.tensor([[1.0, 0.0]])})       # moves along -x
+        # a gradient that grew along the direction of the step: y.s < 0
+        p = opt.step(p, {"weight": torch.tensor([[3.0, 0.0]])})
+        assert len(opt.s_hist["weight"][0]) == 0
+        assert opt.stats["rejected"] == 1 and opt.stats["pairs"] == 1
+        # a gradient that shrank along the step: y.s > 0, stored
+        p = opt.step(p, {"weight": torch.tensor([[0.5, 0.0]])})
+        assert len(opt.s_hist["weight"][0]) == 1
+
+    def test_defaults_reproduce_the_old_iterates_on_a_convex_fit(self):
+        """A batched least-squares fit (the polynomial families' case): the
+        guards never act after the first steps and the iterates match the
+        historical optimizer bitwise once max_step and curvature_eps are off."""
+        torch.manual_seed(0)
+        x = torch.randn(200, 4)
+        w_true = torch.randn(3, 4)
+        y = torch.einsum("nd,bd->bn", x, w_true)
+
+        def grad(w):
+            resid = torch.einsum("nd,bd->bn", x, w) - y
+            return 2.0 * torch.einsum("bn,nd->bd", resid, x) / x.shape[0]
+        start = torch.zeros(3, 4)
+        guarded = BatchedLBFGS({"weight": start.clone()}, [], lr=torch.full((3,), 0.1))
+        w_g = self._run(guarded, start, grad, 150)
+        assert torch.allclose(w_g, w_true, atol=1e-2)
+        assert guarded.stats["rejected"] == 0
+        assert guarded.stats["capped"] <= 3 * 3            # at most the first steps of each member
+        old = BatchedLBFGS({"weight": start.clone()}, [], lr=torch.full((3,), 0.1), max_step=None, curvature_eps=None)
+        w_o = self._run(old, start, grad, 150)
+        assert torch.allclose(w_o, w_true, atol=1e-2)
+        assert torch.allclose(w_g, w_o, atol=1e-2)
+
+    def test_null_settings_are_the_old_optimizer_bitwise(self):
+        torch.manual_seed(1)
+        grads = [torch.randn(2, 3) for _ in range(8)]
+        a = BatchedLBFGS({"weight": torch.zeros(2, 3)}, [], lr=torch.ones(2) * 0.3, max_step=None, curvature_eps=None)
+        b = BatchedLBFGS({"weight": torch.zeros(2, 3)}, [], lr=torch.ones(2) * 0.3, max_step=None, curvature_eps=None)
+        pa = {"weight": torch.zeros(2, 3)}
+        pb = {"weight": torch.zeros(2, 3)}
+        for g in grads:
+            pa = a.step(pa, {"weight": g})
+            pb = b.step(pb, {"weight": g})
+        assert torch.equal(pa["weight"], pb["weight"])
+        assert a.stats["capped"] == 0 and a.stats["rejected"] == 0
+
+    def test_shared_parameter_path_is_guarded_too(self):
+        opt = BatchedLBFGS({"weight": torch.zeros(2, 2), "shared": torch.zeros(2)}, ["shared"],
+                           lr=torch.ones(2), max_step=0.5)
+        params = {"weight": torch.zeros(2, 2), "shared": torch.zeros(2)}
+        grads = {"weight": torch.zeros(2, 2), "shared": torch.stack([torch.tensor([3.0, 4.0])] * 2)}
+        out = opt.step(params, grads)
+        assert torch.isclose(out["shared"].norm(), torch.tensor(0.5))
+        assert opt.stats["capped"] == 1
+
+    def test_bad_settings_rejected(self):
+        with pytest.raises(ValueError, match="max_step"):
+            BatchedLBFGS({"weight": torch.zeros(1, 2)}, [], lr=torch.ones(1), max_step=0.0)
+        with pytest.raises(ValueError, match="curvature_eps"):
+            BatchedLBFGS({"weight": torch.zeros(1, 2)}, [], lr=torch.ones(1), curvature_eps=-1.0)
+

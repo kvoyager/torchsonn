@@ -1243,6 +1243,15 @@ class Trainer:
             if stop:
                 break
         tbar.close()
+        stats = getattr(opt, "stats", None)
+        if stats and stats["updates"]:
+            logger.info(
+                "%s fit: %d optimizer steps; %.1f%% of updates capped at max_step, "
+                "%.1f%% of curvature pairs rejected",
+                neuron_model.__class__.__name__, stats["steps"],
+                100.0 * stats["capped"] / stats["updates"],
+                100.0 * stats["rejected"] / max(1, stats["pairs"]),
+            )
 
         # Restore the full ensemble shape before write-back and error evaluation.
         params_batch = self._gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch

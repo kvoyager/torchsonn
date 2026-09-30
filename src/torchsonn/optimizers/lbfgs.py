@@ -16,6 +16,8 @@ class BatchedLBFGS(BaseOptimizer):
         clip_value: float | None = None,
         clip_norm: float | None = None,
         shared_param_lr_multiplier: float = 1.0,
+        max_step: float | None = 1.0,
+        curvature_eps: float | None = 1e-8,
     ) -> None:
         """
         params: dict of batched tensors (shape [B, ...])
@@ -23,9 +25,34 @@ class BatchedLBFGS(BaseOptimizer):
         lr: torch.Tensor of shape (B,) or scalar
         history_size: number of (s,y) correction pairs to keep
         clip_value / clip_norm: forwarded to BaseOptimizer.gradient_clipping
+        max_step: cap on the norm of one member's update of one parameter
+            tensor, in parameter units (a crude trust region); None = no cap.
+        curvature_eps: a correction pair (s, y) is stored only if
+            y.s > curvature_eps * |s| |y| (the BFGS curvature condition, with
+            the standard skipping rule); None = store every pair with s != 0,
+            the historical behaviour.
+
+        Why the two guards. The two-loop recursion scales its direction by
+        s.y / y.y and takes a fixed step. On a direction whose gradient and
+        curvature vanish together (an RBF bump losing its mass) that scale
+        is a ratio of two vanishing numbers and the step does not shrink
+        with the gradient: one step threw centres tens of standard units
+        off the data. A pair with y.s <= 0 makes the inverse-Hessian
+        estimate indefinite and the direction can point uphill. The cap
+        bounds the damage of any single step; the curvature test keeps the
+        estimate positive definite. Neither changes a well-conditioned
+        convex fit (the polynomial families) beyond its first steps.
         """
         super().__init__(shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier)
         self.history_size = history_size
+        if max_step is not None and float(max_step) <= 0.0:
+            raise ValueError(f"max_step must be > 0 or None, got {max_step}")
+        if curvature_eps is not None and float(curvature_eps) < 0.0:
+            raise ValueError(f"curvature_eps must be >= 0 or None, got {curvature_eps}")
+        self.max_step = None if max_step is None else float(max_step)
+        self.curvature_eps = None if curvature_eps is None else float(curvature_eps)
+        # Diagnostics for the trainer's log: how often the guards acted.
+        self.stats = {"steps": 0, "pairs": 0, "rejected": 0, "updates": 0, "capped": 0}
 
         first = next(iter(params.values()))
         self.batch_size = first.shape[0]
@@ -51,6 +78,28 @@ class BatchedLBFGS(BaseOptimizer):
         """Flatten a parameter tensor preserving device/dtype: input shape [B, ...] -> [B, P]."""
         B = t.shape[0]
         return t.reshape(B, -1)
+
+    def _accept_pair(self, s: torch.Tensor, y: torch.Tensor) -> bool:
+        """Curvature condition for one (s, y) pair (1-D tensors)."""
+        s_norm = s.norm()
+        if s_norm <= 1e-12:
+            return False
+        if self.curvature_eps is None:
+            return True
+        return bool(y.dot(s) > self.curvature_eps * s_norm * y.norm())
+
+    def _cap_updates(self, updates: torch.Tensor, active: torch.Tensor | None) -> torch.Tensor:
+        """Scale each row of `updates` (n, P) down to `max_step` in norm; counts
+        the rows that were capped among the active ones."""
+        if self.max_step is None:
+            return updates
+        norms = updates.norm(dim=-1, keepdim=True)
+        over = norms > self.max_step
+        if active is not None:
+            over = over & active.view(-1, 1)
+        self.stats["capped"] += int(over.sum().item())
+        scale = torch.clamp(self.max_step / norms.clamp(min=1e-12), max=1.0)
+        return updates * scale
 
     def _two_loop_recursion_single(
         self,
@@ -110,6 +159,7 @@ class BatchedLBFGS(BaseOptimizer):
             active_mask = torch.ones(self.batch_size, dtype=torch.bool, device=device)
 
         new_params = {}
+        self.stats["steps"] += 1
 
         for k in params.keys():
             p = params[k]
@@ -149,8 +199,12 @@ class BatchedLBFGS(BaseOptimizer):
                 y = g_1d - prev_g_1d
 
                 if s.abs().sum() > 1e-12:
-                    self.s_hist[k].append(s.clone())
-                    self.y_hist[k].append(y.clone())
+                    self.stats["pairs"] += 1
+                    if self._accept_pair(s, y):
+                        self.s_hist[k].append(s.clone())
+                        self.y_hist[k].append(y.clone())
+                    else:
+                        self.stats["rejected"] += 1
 
                 d = self._two_loop_recursion_single(self.s_hist[k], self.y_hist[k], g_1d)
 
@@ -159,7 +213,9 @@ class BatchedLBFGS(BaseOptimizer):
                 else:
                     lr_mean = float(self.lr) * self.shared_param_lr_multiplier
 
-                new_params[k] = (p_1d - lr_mean * d).reshape_as(p)
+                self.stats["updates"] += 1
+                update = self._cap_updates((lr_mean * d).view(1, -1), None).view(-1)
+                new_params[k] = (p_1d - update).reshape_as(p)
 
                 self.prev_params[k] = p.detach().clone()
                 # Save the mean gradient (not the full batched tensor) so the
@@ -174,8 +230,12 @@ class BatchedLBFGS(BaseOptimizer):
                     if not active_mask[i]:
                         continue
                     if s[i].abs().sum() > 1e-12:
-                        self.s_hist[k][i].append(s[i].detach().clone())
-                        self.y_hist[k][i].append(y[i].detach().clone())
+                        self.stats["pairs"] += 1
+                        if self._accept_pair(s[i], y[i]):
+                            self.s_hist[k][i].append(s[i].detach().clone())
+                            self.y_hist[k][i].append(y[i].detach().clone())
+                        else:
+                            self.stats["rejected"] += 1
 
                 updates = torch.zeros_like(p_flat, device=device)
                 if isinstance(self.lr, torch.Tensor):
@@ -193,6 +253,9 @@ class BatchedLBFGS(BaseOptimizer):
                     else:
                         lr_i = float(lr_per[i].item())
                     updates[i] = lr_i * d_i
+
+                self.stats["updates"] += int(active_mask.sum().item())
+                updates = self._cap_updates(updates, active_mask)
 
                 update_mask = active_mask.view(-1, *([1] * (p.dim() - 1)))
                 p_new_flat = torch.where(update_mask.view(self.batch_size, 1), p_flat - updates, p_flat)
