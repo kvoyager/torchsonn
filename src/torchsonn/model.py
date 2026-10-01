@@ -603,6 +603,25 @@ class SONN(SONNModule):
             col += m.num_neurons
         return col
 
+    def _head_columns(self, layer: SONNLayer, k: int) -> torch.Tensor:
+        """`_best_neuron_columns(layer, k)` as a long tensor on the model's
+        device, cached. Recomputing the list on every `infer` call cost a
+        host-to-device copy per forward (and made the forward uncapturable
+        in a CUDA graph). The cache key is everything the list derives from:
+        the layer object, `k`, the identity and length of `layer.err_values`
+        (replaced by selection and by `prune`), the per-module neuron counts
+        (changed by `prune`) and the device.
+        """
+        err = layer.err_values
+        key = (id(layer), int(k), err.data_ptr(), int(err.shape[0]),
+               tuple(int(m.num_neurons) for m in layer.neuron_models), str(self.device))
+        cached = getattr(self, "_head_columns_cache", None)
+        if cached is None or cached[0] != key:
+            cols = torch.as_tensor(self._best_neuron_columns(layer, k), dtype=torch.long, device=self.device)
+            cached = (key, cols)
+            self._head_columns_cache = cached
+        return cached[1]
+
     def _best_neuron_columns(self, layer: SONNLayer, k: int) -> list[int]:
         """Cumulative column indices of the top-k lowest-error neurons."""
         k = min(k, layer.err_values.shape[0])
@@ -740,11 +759,11 @@ class SONN(SONNModule):
         out = self(x.to(device=self.device))
         if self.out_proj is not None:
             k = self.out_proj.in_features
-            cols = self._best_neuron_columns(self.layers[-1], k)
-            selected = out[:, cols]
+            cols = self._head_columns(self.layers[-1], k)
+            selected = out.index_select(1, cols)
             # pad with zeros if fewer neurons available than out_proj expects
-            if len(cols) < k:
-                pad = torch.zeros(selected.shape[0], k - len(cols), device=selected.device, dtype=selected.dtype)
+            if cols.numel() < k:
+                pad = torch.zeros(selected.shape[0], k - cols.numel(), device=selected.device, dtype=selected.dtype)
                 selected = torch.cat([selected, pad], dim=-1)
             proj_out = self.out_proj(selected)
             if self.param.model.type == "multi-class":

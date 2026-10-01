@@ -67,6 +67,16 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Changed — `SONN.infer`: the head's input columns cached on the device
+
+The top-k column index the head reads from the last layer was recomputed
+from `layer.err_values` on the CPU on every call, one host-to-device copy
+per forward. It is now cached as a long tensor on the model's device, keyed
+on the layer, `k`, the identity of `err_values` and the neuron counts (so
+selection and `prune` invalidate it), and applied with `index_select`. The
+prediction path therefore captures into a CUDA graph unchanged (end-to-end
+step on the California Legendre model: 2.7 ms replayed vs 14-18 ms eager).
+
 ### Added — validation split reporting (`val_dl`) and `train.stop_source`
 
 `Trainer.train` and `train_finetune` accept an optional `val_dl`, a split

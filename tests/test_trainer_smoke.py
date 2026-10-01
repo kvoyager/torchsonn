@@ -933,3 +933,33 @@ def test_stop_source_val_needs_a_loader_and_rejects_unknown(tmp_path):
     cfg = _cfg(tmp_path, max_layer_count=1, stop_source="test")
     with pytest.raises(ValueError, match="stop_source"):
         Trainer(config=cfg).train(SONN(cfg, d_model=4), dl, dl, dl, verbose=False)
+
+
+# --- head column index cached on the device ---------------------------------
+
+def test_head_columns_are_cached_and_invalidated_by_prune(tmp_path):
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=2),
+        OmegaConf.create({"model": {"use_output_projection": True, "num_out_neurons": 2}}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    trainer.train_out_proj(trained, dl, dl)
+    last = trained.layers[-1]
+    k = trained.out_proj.in_features
+    cols = trained._head_columns(last, k)
+    assert cols.dtype == torch.long and cols.device == trained.device
+    assert cols.tolist() == trained._best_neuron_columns(last, k)
+    assert trained._head_columns(last, k) is cols                      # cache hit
+    x = torch.randn(6, 4)
+    with torch.inference_mode():
+        before = trained.infer(x)
+    trainer.prune(trained)
+    after_cols = trained._head_columns(trained.layers[-1], k)
+    assert after_cols is not cols                                       # invalidated
+    assert after_cols.tolist() == trained._best_neuron_columns(trained.layers[-1], k)
+    with torch.inference_mode():
+        assert torch.allclose(trained.infer(x), before, atol=1e-6)
+
