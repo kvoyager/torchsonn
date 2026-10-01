@@ -428,6 +428,7 @@ class Trainer:
         test_dl: DataLoader,
         verbose: bool = True,
         resume: bool = False,
+        val_dl: DataLoader | None = None,
     ) -> SONN:
         if self.class_weights is not None:
             model.set_class_weights(self.class_weights)
@@ -437,7 +438,9 @@ class Trainer:
             epsilon=float(self.config.train.stop_train_epsilon_condition),
             min_delta=float(getattr(self.config.train, "stop_train_min_delta", 0.0)),
         )
+        stop_source = self._stop_source(val_dl)
         model.layers = nn.ModuleList()
+        model.layer_val_err = []
         checkpoint_data = None
         # Per-layer snapshots of projection weights (multi-class only).
         # Each train_layer call overwrites model.shared_proj / model.neuron_proj
@@ -498,10 +501,22 @@ class Trainer:
                     k: v.detach().cpu().clone() for k, v in model.shared_proj.state_dict().items()
                 }
 
+            # The validation split, when given, selects nothing: it is reported
+            # next to the dev error (the gap is the selection bias, per layer)
+            # and, under stop_source 'val', is what the growth rule reads.
+            stop_err = layer.err
+            if val_dl is not None:
+                val_err = self._layer_val_err(model, layer, val_dl)
+                layer.val_err = val_err
+                model.layer_val_err.append(val_err)
+                logger.info(f"Layer #{layer.layer_index}: dev {fmt_err(layer.err)} | val {fmt_err(val_err)} "
+                            f"(best neuron on each split; gap {val_err - layer.err:+.4f})")
+                if stop_source == "val":
+                    stop_err = val_err
             # proceed until the stop rule fires (see GrowthCriterion) or the
             # number of layers reaches the limit
-            error_stopped_decrease = growth.update(layer.layer_index, layer.err)
-            logger.info(growth.describe(layer.layer_index, layer.err))
+            error_stopped_decrease = growth.update(layer.layer_index, stop_err)
+            logger.info(growth.describe(layer.layer_index, stop_err))
             if error_stopped_decrease or not (layer.layer_index < self.config.train.max_layer_count - 1):
                 break
         error_min_index = growth.best_index
@@ -1557,6 +1572,41 @@ class Trainer:
         logger.info("Layer #%d streaming pass done: %d pass(es) over %d rows for %d neuron model(s)",
                     layer.layer_index, passes, count, len(streamers))
 
+    def _stop_source(self, val_dl: DataLoader | None) -> str:
+        source = str(getattr(self.config.train, "stop_source", "dev")).lower()
+        if source not in ("dev", "val"):
+            raise ValueError(f"train.stop_source must be 'dev' or 'val', got {self.config.train.stop_source!r}")
+        if source == "val" and val_dl is None:
+            raise ValueError("train.stop_source='val' needs a validation loader (val_dl)")
+        return source
+
+    def _layer_val_err(self, model: SONN, layer: SONNLayer, dl: DataLoader) -> float:
+        """Best surviving neuron's error of the (last) layer on a split, under the
+        model's loss: the counterpart of `layer.err` (`layer_err_criterion:
+        top`, `layer_err_source: neuron`) on rows that selected nothing.
+        Regression / binary only; a multi-class model gets NaN (its neurons
+        are scored through a projection this helper does not rebuild)."""
+        if model.param.model.type == "multi-class":
+            return float("nan")
+        device = layer.neuron_models[0].device
+        was_training = model.training
+        model.eval()
+        total: torch.Tensor | None = None
+        rows = 0
+        with torch.no_grad():
+            for batch in dl:
+                x_inp, targets = self.batch_callback(batch) if self.batch_callback else batch
+                out = model(x_inp.to(device=device))                       # (B, d_layer)
+                targets = targets.to(device=device)
+                losses = torch.stack([model.loss_fn(out[:, j], targets).mean() for j in range(out.shape[1])])
+                n = out.shape[0]
+                total = losses * n if total is None else total + losses * n
+                rows += n
+        model.train(was_training)
+        if total is None or rows == 0:
+            return float("nan")
+        return float((total / rows).min().item())
+
     def fit_layer_squash(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
         """Historical name of `fit_layer_inputs`."""
         self.fit_layer_inputs(model, layer, train_dl)
@@ -2159,7 +2209,7 @@ class Trainer:
         return model.infer(x)
 
     def train_finetune(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader,
-                       cfg: Any = None) -> None:
+                       cfg: Any = None, val_dl: DataLoader | None = None) -> None:
         """End-to-end fine-tuning of all SONN parameters.
 
         After SONN's structural search is done every layer is a normal
@@ -2179,6 +2229,9 @@ class Trainer:
         cfg    = cfg if cfg is not None else model.param.train.finetune_train
         device = model.device
 
+        # Early stop and lr schedule read the dev split, or the validation
+        # split under train.stop_source 'val' (a split that selected nothing).
+        stop_dl = val_dl if (self._stop_source(val_dl) == "val") else dev_dl
         for p in model.parameters():
             p.requires_grad_(True)
 
@@ -2244,14 +2297,14 @@ class Trainer:
                 model.eval()
                 val_loss = 0.0
                 with torch.no_grad():
-                    for vbatch in dev_dl:
+                    for vbatch in stop_dl:
                         vx, vt = self.batch_callback(vbatch) if self.batch_callback else vbatch
                         val_loss += model.loss_fn(
                             self._finetune_prediction(model, vx.to(device=device)),
                             vt.to(device=device),
                         ).mean().item()
 
-                val_loss /= len(dev_dl)
+                val_loss /= len(stop_dl)
                 scheduler.step(val_loss)
                 current_lr = opt.param_groups[0]["lr"]
 

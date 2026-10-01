@@ -67,6 +67,21 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Added — validation split reporting (`val_dl`) and `train.stop_source`
+
+`Trainer.train` and `train_finetune` accept an optional `val_dl`, a split
+that selects nothing. After every layer the trainer logs the best surviving
+neuron's loss on it next to the dev error (`Layer #k: dev .. | val .. (gap
+..)`) and keeps it on `layer.val_err` / `model.layer_val_err`; the
+evolution of the gap shows whether the search is fitting the dev split.
+`train.stop_source: val` routes the growth criterion and the end-to-end
+early stop to that split (default `dev`, unchanged behaviour). The
+California tutorial carves the split with `VAL_SPLIT` (every k-th training
+row), off by default: measured at 10% it costs the fits 0.006 MSE on the
+Legendre baseline and reading the stop rules from the 1239-row split costs
+0.003-0.010 more, while the dev-val gap narrows with depth for both
+families (no sign of dev fitting under the train stop).
+
 ### Changed — `rbf`: deterministic k-means start (`seeding: pca_quantiles`)
 
 Lloyd's cluster sums are a one-hot batched matrix product instead of

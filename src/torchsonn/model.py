@@ -149,6 +149,8 @@ class SONN(SONNModule):
         self.d_model = d_model     # number of original features
 
         self.layer_err: list[float] = []          # array of layer's errors
+        self.layer_val_err: list[float] = []      # same on the validation split, when one is given
+        self.layer_val_err: list[float] = []      # same on the validation split, when one is given
 
         cw = class_weights.to(dtype=self.dtype) if class_weights is not None else None
 

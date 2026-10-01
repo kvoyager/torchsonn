@@ -849,3 +849,87 @@ def test_early_stop_source_rejected_when_unknown(tmp_path):
     dl = _make_dl(32)
     with pytest.raises(ValueError, match="early_stop_source"):
         Trainer(config=cfg).train(model, dl, dl, dl, verbose=False)
+
+
+# --- Validation split: per-layer report and stop_source ---------------------
+
+class _NoIter:
+    """A loader stand-in that must not be iterated (a split the pass must not read)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __iter__(self):
+        raise AssertionError("this split must not be read here")
+
+    def __len__(self):
+        return len(self.inner)
+
+
+def test_val_split_is_reported_per_layer_and_stored(tmp_path, caplog):
+    cfg = _cfg(tmp_path, max_layer_count=2)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl, val = _make_dl(64), _make_dl(24)
+    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+        trained = trainer.train(model, dl, dl, dl, verbose=False, val_dl=val)
+    n = len(trained.layers)
+    assert len(trained.layer_val_err) >= n and all(v == v for v in trained.layer_val_err)   # finite
+    assert all(hasattr(l, "val_err") for l in trained.layers)
+    assert any("| val" in r.message and "gap" in r.message for r in caplog.records)
+    # without a validation loader nothing is reported or stored
+    plain = Trainer(config=cfg).train(SONN(cfg, d_model=4), dl, dl, dl, verbose=False)
+    assert plain.layer_val_err == []
+
+
+def test_layer_val_err_is_the_best_neuron_loss_on_the_split(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl, val = _make_dl(64), _make_dl(24)
+    trained = trainer.train(model, dl, dl, dl, verbose=False, val_dl=val)
+    layer = trained.layers[0]
+    x = torch.cat([b[0] for b in val]); y = torch.cat([b[1] for b in val])
+    with torch.no_grad():
+        out = trained(x)
+        per_col = torch.stack([trained.loss_fn(out[:, j], y).mean() for j in range(out.shape[1])])
+    assert abs(per_col.min().item() - layer.val_err) < 1e-5
+    # the dev figure is the same statistic on the dev rows
+    x = torch.cat([b[0] for b in dl]); y = torch.cat([b[1] for b in dl])
+    with torch.no_grad():
+        out = trained(x)
+        dev_best = torch.stack([trained.loss_fn(out[:, j], y).mean() for j in range(out.shape[1])]).min().item()
+    assert abs(dev_best - layer.err) < 1e-4
+
+
+def test_stop_source_val_routes_the_growth_rule_and_the_end_to_end_stop(tmp_path, monkeypatch):
+    from torchsonn.trainer import GrowthCriterion
+    cfg = _cfg(tmp_path, max_layer_count=2, stop_source="val")
+    seen = []
+    real = GrowthCriterion.update
+
+    def spy(self, layer_index, err):
+        seen.append(float(err))
+        return real(self, layer_index, err)
+
+    monkeypatch.setattr(GrowthCriterion, "update", spy)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl, val = _make_dl(64), _make_dl(24)
+    trained = trainer.train(model, dl, dl, dl, verbose=False, val_dl=val)
+    assert seen == [float(v) for v in trained.layer_val_err]
+    assert any(abs(l.val_err - l.err) > 1e-6 for l in trained.layers)   # the two splits do differ
+    # the end-to-end pass reads val for its stop and never touches dev
+    cfg2 = OmegaConf.merge(cfg, OmegaConf.create({"train": {"finetune_train": {"max_steps": 30, "eval_interval": 10}}}))
+    trainer.config = cfg2
+    trainer.train_finetune(trained, dl, _NoIter(dl), val_dl=val)
+
+
+def test_stop_source_val_needs_a_loader_and_rejects_unknown(tmp_path):
+    dl = _make_dl(32)
+    cfg = _cfg(tmp_path, max_layer_count=1, stop_source="val")
+    with pytest.raises(ValueError, match="val_dl"):
+        Trainer(config=cfg).train(SONN(cfg, d_model=4), dl, dl, dl, verbose=False)
+    cfg = _cfg(tmp_path, max_layer_count=1, stop_source="test")
+    with pytest.raises(ValueError, match="stop_source"):
+        Trainer(config=cfg).train(SONN(cfg, d_model=4), dl, dl, dl, verbose=False)
