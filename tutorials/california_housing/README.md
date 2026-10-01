@@ -229,6 +229,66 @@ fewer parameters relative to the trees.
 
 Neither tree model was tuned beyond these settings.
 
+**Reproducing the tree models.** The script below builds the tutorial's
+features and split with the tutorial's own functions, then fits both
+models. Run it from the repo root (`pip install xgboost` if needed). It
+prints the per-seed numbers behind the table.
+
+<details>
+<summary>Show the script</summary>
+
+```python
+import numpy as np
+import xgboost as xgb
+from omegaconf import OmegaConf
+from sklearn.datasets import fetch_california_housing
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
+
+from torchsonn.data.preprocessing import split_dataset
+from tutorials.california_housing import california_housing as ch
+
+# The tutorial's features and split: 16 inputs, 20% test, train/dev 3:1.
+p = ch.tutorial_params(OmegaConf.create({"tutorial": {"feature_engineering": True}}))
+data = fetch_california_housing()
+X, names = ch.engineer_features(data.data.astype(np.float32), list(data.feature_names), p)
+y = data.target.astype(np.float32)
+X_rest, X_test, y_rest, y_test = train_test_split(X, y, test_size=p.test_size, random_state=42)
+X_train, y_train, X_dev, y_dev = split_dataset(X_rest, y_rest, p.dev_split)
+
+# kNN price feature, fitted on the training rows only.
+ll = [names.index("Latitude"), names.index("Longitude")]
+knn_train, knn_dev, knn_test = ch.knn_price_feature(
+    X_train[:, ll], np.log(y_train), [X_dev[:, ll], X_test[:, ll]], p.knn_price_k)
+X_train = np.column_stack([X_train, knn_train])
+X_dev = np.column_stack([X_dev, knn_dev])
+X_test = np.column_stack([X_test, knn_test])
+
+
+def report(name, y_pred):
+    y_pred = np.clip(y_pred, y_train.min(), y_train.max())  # same clip as the tutorial
+    print(f"{name}: test MSE {mean_squared_error(y_test, y_pred):.4f}  "
+          f"MAE {mean_absolute_error(y_test, y_pred):.4f}")
+
+
+for seed in range(5):
+    hgb = HistGradientBoostingRegressor(
+        learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0, min_samples_leaf=20,
+        max_iter=5000, early_stopping=True, validation_fraction=0.15, n_iter_no_change=50,
+        random_state=seed)
+    hgb.fit(X_train, y_train)
+    report(f"HistGradientBoosting, seed {seed}", hgb.predict(X_test))
+
+booster = xgb.XGBRegressor(
+    n_estimators=5000, learning_rate=0.05, max_depth=6, tree_method="hist",
+    early_stopping_rounds=50, random_state=0)
+booster.fit(X_train, y_train, eval_set=[(X_dev, y_dev)], verbose=False)
+report("XGBoost", booster.predict(X_test, iteration_range=(0, booster.best_iteration + 1)))
+```
+
+</details>
+
 ## The models
 
 These are the pruned networks of two of the seed runs above, cut down to
@@ -253,7 +313,7 @@ accurate RBF-8 seed): 13 layers and 6,485 learned parameters after
 pruning, using all 16 inputs. The unpruned network has 10,633 parameters:
 [`unpruned_rbf8_smallest.svg`](unpruned_rbf8_smallest.svg).
 
-<details open>
+<details>
 <summary>Pruned RBF-8 network (click to expand; click the image for full size)</summary>
 
 <a href="rbf8_smallest_pruned.svg"><img src="rbf8_smallest_pruned.svg" alt="Pruned RBF-8 network" width="100%"></a>
