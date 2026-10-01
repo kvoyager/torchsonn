@@ -144,6 +144,153 @@ class StepCheckpoint:
         }
 
 
+class _FinetuneStep:
+    """One end-to-end training step, eager or as a replayed CUDA graph.
+
+    The graph is captured once over static buffers of the loader's batch
+    shape (`x_s`, `y_s`, a static loss); every later step copies the next
+    batch into the buffers and replays. A batch of a different shape (the
+    tail of an epoch) runs the same forward / backward / optimizer step
+    eagerly, on the same parameters, gradient tensors and optimizer state,
+    so no row is dropped. The loss is accumulated on the device and read
+    back only when `drain` is called (no per-step host sync).
+
+    Capture recipe: three eager warm-up steps on a side stream (allocator
+    and cuBLAS workspaces), then `torch.cuda.graph` on that stream with the
+    optimizer's gradients kept allocated (`zero_grad(set_to_none=False)`)
+    and a capturable Adam / AdamW whose lr is a device tensor. The warm-up
+    steps are real steps on the first batch and are counted.
+    """
+
+    def __init__(self, model: SONN, opt: torch.optim.Optimizer, loss_fn: nn.Module,
+                 pred_fn: Callable, use_graph: bool) -> None:
+        self.model, self.opt, self.loss_fn, self.pred_fn = model, opt, loss_fn, pred_fn
+        self.use_graph = bool(use_graph)
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self.x_s: torch.Tensor | None = None
+        self.y_s: torch.Tensor | None = None
+        self.loss_s: torch.Tensor | None = None
+        self.stream = torch.cuda.Stream() if self.use_graph else None
+        device = model.device
+        self.loss_sum = torch.zeros((), dtype=torch.float64, device=device)
+        self.n_steps = 0
+        self.graph_steps = 0
+        self.eager_steps = 0
+        self.capture_error: str | None = None
+
+    def _eager(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        self.opt.zero_grad(set_to_none=False)
+        loss = self.loss_fn(self.pred_fn(self.model, x), y).mean()
+        loss.backward()
+        self.opt.step()
+        return loss.detach()
+
+    def _capture(self, x: torch.Tensor, y: torch.Tensor) -> None:
+        self.x_s = x.detach().clone()
+        self.y_s = y.detach().clone()
+        s = self.stream
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(3):
+                self.loss_sum += self._eager(self.x_s, self.y_s).to(torch.float64)
+                self.n_steps += 1
+                self.eager_steps += 1
+        torch.cuda.current_stream().wait_stream(s)
+        graph = torch.cuda.CUDAGraph()
+        self.opt.zero_grad(set_to_none=False)
+        with torch.cuda.graph(graph, stream=s):
+            # The zeroing must be part of the graph: a replay accumulates into
+            # the same static gradient tensors as the previous one.
+            self.opt.zero_grad(set_to_none=False)
+            loss = self.loss_fn(self.pred_fn(self.model, self.x_s), self.y_s).mean()
+            loss.backward()
+            self.opt.step()
+        self.loss_s = loss.detach()
+        self.graph = graph
+
+    def step(self, x: torch.Tensor, y: torch.Tensor) -> None:
+        """Train on one batch (already on the device)."""
+        if self.use_graph and (self.x_s is None or x.shape == self.x_s.shape):
+            if self.graph is None:
+                try:
+                    self._capture(x, y)
+                except Exception as e:  # noqa: BLE001 - any capture failure falls back
+                    self.capture_error = f"{type(e).__name__}: {e}"
+                    self.use_graph = False
+                    self.graph = None
+                    self.loss_sum += self._eager(x, y).to(torch.float64)
+                    self.n_steps += 1
+                    self.eager_steps += 1
+                    return
+            else:
+                self.x_s.copy_(x, non_blocking=True)
+                self.y_s.copy_(y, non_blocking=True)
+            self.graph.replay()
+            self.loss_sum += self.loss_s.to(torch.float64)
+            self.graph_steps += 1
+        else:
+            self.loss_sum += self._eager(x, y).to(torch.float64)
+            self.eager_steps += 1
+        self.n_steps += 1
+
+    def drain(self) -> float:
+        """Mean training loss over the steps since the last call."""
+        if self.n_steps == 0:
+            return float("nan")
+        mean = (self.loss_sum / self.n_steps).item()
+        self.loss_sum.zero_()
+        self.n_steps = 0
+        return mean
+
+
+def _finetune_batches(train_dl: DataLoader, device: torch.device, mode: str, batch_callback: Callable | None):
+    """Yield (x, y) batches on the device for the end-to-end pass, once per
+    epoch, from one of two sources (see OutProjTrainConfig.data_on_device):
+    the whole split resident on the device, index-selected in a fresh
+    permutation per epoch (or in order when the loader does not shuffle),
+    or streamed from the loader with a non-blocking copy. Returns the
+    generator and a description for the log."""
+    on_cuda = torch.device(device).type == "cuda"
+    resident = False
+    desc = "streamed from the loader"
+    if on_cuda and mode in ("auto", "true"):
+        xs, ys = [], []
+        rows = 0
+        for batch in train_dl:
+            x, y = batch_callback(batch) if batch_callback else batch
+            xs.append(x)
+            ys.append(y)
+            rows += x.shape[0]
+        nbytes = sum(t.numel() * t.element_size() for t in xs) + sum(t.numel() * t.element_size() for t in ys)
+        free, _ = torch.cuda.mem_get_info(device)
+        if mode == "true" or nbytes * 2 < free // 4:
+            X = torch.cat(xs, 0).to(device=device)
+            Y = torch.cat(ys, 0).to(device=device)
+            resident = True
+            desc = f"{rows} rows resident on the device ({nbytes / 1e6:.1f} MB)"
+        del xs, ys
+    shuffle = isinstance(getattr(train_dl, "sampler", None), torch.utils.data.RandomSampler)
+    batch_size = int(train_dl.batch_size)
+
+    def epochs():
+        while True:
+            if resident:
+                n = X.shape[0]
+                order = torch.randperm(n, device=device) if shuffle else torch.arange(n, device=device)
+                for start in range(0, n, batch_size):
+                    idx = order[start:start + batch_size]
+                    yield X.index_select(0, idx), Y.index_select(0, idx)
+            else:
+                for batch in train_dl:
+                    x, y = batch_callback(batch) if batch_callback else batch
+                    if on_cuda and not x.is_pinned():
+                        x, y = x.pin_memory(), y.pin_memory()
+                    yield x.to(device=device, non_blocking=True), y.to(device=device, non_blocking=True)
+            yield None, None   # epoch boundary
+
+    return epochs(), desc
+
+
 class Trainer:
     def __init__(
         self,
@@ -2216,9 +2363,13 @@ class Trainer:
         differentiable module — gradients flow through BasePolynomNeuron.weight,
         shared_proj / soft_binner / neuron_proj, and out_proj all at once.
 
-        Unlike out_proj training the full model forward runs on every step
-        (frozen-feature precomputation is not applicable here).  Use a large
-        batch size and/or torch.compile(model) to keep the GPU busy.
+        The step is launch-bound on these models (hundreds of tiny kernels),
+        so on a CUDA device with adam / adamw it is captured once as a CUDA
+        graph over a static buffer of the loader's batch shape and replayed
+        per step, with the next batch copied into the buffer; see
+        `_FinetuneStep` and `OutProjTrainConfig.cuda_graph` /
+        `data_on_device`. Evaluation, the plateau schedule and the early
+        stop run outside the graph every `eval_interval` steps.
 
         `cfg` is an OutProjTrainConfig-shaped block of LR / scheduler /
         early-stop hyperparameters; it defaults to
@@ -2235,15 +2386,20 @@ class Trainer:
         for p in model.parameters():
             p.requires_grad_(True)
 
+        on_cuda = torch.device(device).type == "cuda"
+        use_graph = bool(getattr(cfg, "cuda_graph", True)) and on_cuda and cfg.optimizer in ("adam", "adamw")
+        # A device-tensor lr is what lets the captured optimizer step pick up
+        # the plateau schedule's changes (the value is copied in place).
+        lr = torch.tensor(float(cfg.lr), device=device) if use_graph else cfg.lr
         if cfg.optimizer == "adam":
-            opt = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+            opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=cfg.weight_decay, capturable=use_graph)
         elif cfg.optimizer == "adamw":
             # Decoupled weight decay. On a refinement pass over an already-fitted
             # network this is the better-behaved of the two: the penalty is
             # applied straight to the weights instead of entering the gradient
             # (and so the adaptive second-moment estimate), which keeps the decay
             # from being scaled differently per parameter.
-            opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+            opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=cfg.weight_decay, capturable=use_graph)
         elif cfg.optimizer == "sgd":
             opt = torch.optim.SGD(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=0.9)
         else:
@@ -2258,6 +2414,26 @@ class Trainer:
             min_lr=cfg.lr_min, threshold=cfg.early_stop_min_delta,
         )
 
+        def sync_lr() -> float:
+            """ReduceLROnPlateau writes a float into the param group; copy it
+            into the lr tensor the captured step reads and put the tensor back."""
+            group = opt.param_groups[0]
+            if isinstance(lr, torch.Tensor):
+                if not isinstance(group["lr"], torch.Tensor):
+                    lr.fill_(float(group["lr"]))
+                    group["lr"] = lr
+                return float(lr.item())
+            return float(group["lr"])
+
+        mode = str(getattr(cfg, "data_on_device", "auto")).lower()
+        if mode not in ("auto", "true", "false"):
+            raise ValueError(f"finetune_train.data_on_device must be 'auto', 'true' or 'false', got {mode!r}")
+        batches, source_desc = _finetune_batches(train_dl, device, mode if use_graph else "false", self.batch_callback)
+        stepper = _FinetuneStep(model, opt, model.loss_fn, self._finetune_prediction, use_graph)
+        logger.info("end-to-end pass: %s; batches %s; batch size %d",
+                    "CUDA graph (captured on the first batch)" if use_graph else "eager steps",
+                    source_desc, int(train_dl.batch_size))
+
         verbose = model.param.train.verbose
         tbar = tqdm(total=cfg.max_steps, desc="finetune", file=sys.stdout,
                     ncols=140, disable=not verbose)
@@ -2266,76 +2442,76 @@ class Trainer:
         best_val_loss = float("inf")
         evals_no_improve = 0
         stop = False
-        train_loss_accum = 0.0
         train_steps_accum = 0
+        captured_logged = False
 
+        model.train()
         while step < cfg.max_steps and not stop:
+            x, y = next(batches)
+            if x is None:          # epoch boundary
+                continue
+            stepper.step(x, y)
+            if stepper.capture_error and not captured_logged:
+                logger.warning("end-to-end pass: CUDA graph capture failed (%s); running eager steps",
+                               stepper.capture_error)
+                captured_logged = True
+            elif use_graph and stepper.graph is not None and not captured_logged:
+                logger.info("end-to-end pass: CUDA graph captured (%d parameters, batch %s)",
+                            sum(p.numel() for p in model.parameters()), tuple(stepper.x_s.shape))
+                captured_logged = True
+            n_new = stepper.n_steps - train_steps_accum
+            train_steps_accum = stepper.n_steps
+            step += n_new
+
+            if step % cfg.eval_interval != 0 and not (n_new > 1 and step // cfg.eval_interval > (step - n_new) // cfg.eval_interval):
+                continue
+
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for vbatch in stop_dl:
+                    vx, vt = self.batch_callback(vbatch) if self.batch_callback else vbatch
+                    val_loss += model.loss_fn(
+                        self._finetune_prediction(model, vx.to(device=device)),
+                        vt.to(device=device),
+                    ).mean().item()
+
+            val_loss /= len(stop_dl)
+            scheduler.step(val_loss)
+            current_lr = sync_lr()
+
+            if val_loss < best_val_loss - cfg.early_stop_min_delta:
+                best_val_loss = val_loss
+                evals_no_improve = 0
+            else:
+                evals_no_improve += 1
+
+            train_loss = stepper.drain()
+            train_steps_accum = 0
+            tbar.set_postfix({
+                "train_loss": f"{train_loss:.4f}",
+                "val_loss":   f"{val_loss:.4f}",
+                "best":       f"{best_val_loss:.4f}",
+                "lr":         f"{current_lr:.2e}",
+                "no_imp":     evals_no_improve,
+            })
+            tbar.n = min(step, cfg.max_steps)
+            tbar.refresh()
+
+            if evals_no_improve >= cfg.early_stop_patience:
+                tbar.total = tbar.n
+                tbar.refresh()
+                logger.info(f"finetune early stop at step {step} — "
+                            f"no improvement for {evals_no_improve} evals")
+                stop = True
+                break
+
             model.train()
 
-            for batch in train_dl:
-                if step >= cfg.max_steps:
-                    break
-
-                x_inp, targets = self.batch_callback(batch) if self.batch_callback else batch
-                x_inp   = x_inp.to(device=device)
-                targets = targets.to(device=device)
-
-                log_probs = self._finetune_prediction(model, x_inp)
-                loss      = model.loss_fn(log_probs, targets).mean()
-
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-
-                train_loss_accum += loss.item()
-                train_steps_accum += 1
-                step += 1
-
-                if step % cfg.eval_interval != 0:
-                    continue
-
-                model.eval()
-                val_loss = 0.0
-                with torch.no_grad():
-                    for vbatch in stop_dl:
-                        vx, vt = self.batch_callback(vbatch) if self.batch_callback else vbatch
-                        val_loss += model.loss_fn(
-                            self._finetune_prediction(model, vx.to(device=device)),
-                            vt.to(device=device),
-                        ).mean().item()
-
-                val_loss /= len(stop_dl)
-                scheduler.step(val_loss)
-                current_lr = opt.param_groups[0]["lr"]
-
-                if val_loss < best_val_loss - cfg.early_stop_min_delta:
-                    best_val_loss = val_loss
-                    evals_no_improve = 0
-                else:
-                    evals_no_improve += 1
-
-                tbar.set_postfix({
-                    "train_loss": f"{train_loss_accum / train_steps_accum:.4f}",
-                    "val_loss":   f"{val_loss:.4f}",
-                    "best":       f"{best_val_loss:.4f}",
-                    "lr":         f"{current_lr:.2e}",
-                    "no_imp":     evals_no_improve,
-                })
-                tbar.update(train_steps_accum)
-                train_loss_accum = 0.0
-                train_steps_accum = 0
-
-                if evals_no_improve >= cfg.early_stop_patience:
-                    tbar.total = tbar.n
-                    tbar.refresh()
-                    logger.info(f"finetune early stop at step {step} — "
-                                f"no improvement for {evals_no_improve} evals")
-                    stop = True
-                    break
-
-                model.train()
-
         tbar.close()
+        if use_graph:
+            logger.info("end-to-end pass: %d steps replayed, %d eager (warm-up and tail batches)",
+                        stepper.graph_steps, stepper.eager_steps)
 
     def _train_layer_finetune(
             self,

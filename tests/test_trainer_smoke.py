@@ -963,3 +963,169 @@ def test_head_columns_are_cached_and_invalidated_by_prune(tmp_path):
     with torch.inference_mode():
         assert torch.allclose(trained.infer(x), before, atol=1e-6)
 
+
+
+# --- End-to-end pass: static-batch CUDA graph, batch sources, lr sync -------
+
+from torchsonn.trainer import _FinetuneStep, _finetune_batches
+
+
+def _trained_head_model(tmp_path, n=64, bs=8, **over):
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=1, batch_size=bs),
+        OmegaConf.create({"model": {"use_output_projection": True, "num_out_neurons": 2}, **over}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(n)
+    dl = DataLoader(dl.dataset, batch_size=bs, shuffle=True)
+    trainer.train(model, dl, dl, dl, verbose=False)
+    trainer.train_out_proj(model, dl, dl)
+    return cfg, model, trainer, dl
+
+
+def test_finetune_batches_resident_visits_every_row_once_per_epoch_with_a_tail():
+    x = torch.arange(50, dtype=torch.float32).unsqueeze(1).repeat(1, 4)
+    y = torch.arange(50, dtype=torch.float32)
+    dl = DataLoader(SONNDataset(x, y), batch_size=8, shuffle=True)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    gen, desc = _finetune_batches(dl, torch.device(device), "true" if device == "cuda" else "false", None)
+    for epoch in range(2):
+        seen, shapes = [], []
+        while True:
+            bx, by = next(gen)
+            if bx is None:
+                break
+            assert torch.equal(bx[:, 0].cpu(), by.cpu())
+            seen.append(by.cpu()); shapes.append(bx.shape[0])
+        rows = torch.cat(seen)
+        assert sorted(rows.tolist()) == list(range(50))            # every row once
+        assert shapes == [8] * 6 + [2]                               # a tail batch of 2
+        if epoch == 0:
+            first = rows.clone()
+        else:
+            assert not torch.equal(first, rows)                      # reshuffled per epoch
+    if device == "cuda":
+        assert "resident" in desc
+
+
+def test_finetune_batches_streamed_matches_the_loader():
+    x = torch.randn(30, 4); y = torch.randn(30)
+    dl = DataLoader(SONNDataset(x, y), batch_size=7, shuffle=False)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    gen, desc = _finetune_batches(dl, torch.device(device), "false", None)
+    out = []
+    while True:
+        bx, by = next(gen)
+        if bx is None:
+            break
+        out.append(bx.cpu())
+    assert torch.equal(torch.cat(out), x) and "streamed" in desc
+
+
+def test_finetune_step_eager_path_trains_and_counts(tmp_path):
+    cfg, model, trainer, dl = _trained_head_model(tmp_path)
+    model.to("cpu")
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    stepper = _FinetuneStep(model, opt, model.loss_fn, Trainer._finetune_prediction, use_graph=False)
+    x = torch.cat([b[0] for b in dl]); y = torch.cat([b[1] for b in dl])
+    first = None
+    for _ in range(30):
+        stepper.step(x, y)
+        if first is None:
+            first = stepper.drain()
+    last = stepper.drain()
+    assert stepper.eager_steps == 30 and stepper.graph_steps == 0 and stepper.n_steps == 0
+    assert last < first
+
+
+def test_finetune_lr_tensor_follows_the_plateau_scheduler(tmp_path):
+    """Force a plateau and check the lr the optimizer group holds halves and
+    stays a tensor (the object the captured step reads) when a tensor lr is
+    in use; on CPU the pass uses a float lr and the scheduler as before."""
+    cfg, model, trainer, dl = _trained_head_model(tmp_path)
+    device = model.device
+    use_graph = torch.cuda.is_available()
+    if use_graph:
+        model.to("cuda")
+        for layer in model.layers:
+            for nm in layer.neuron_models:
+                nm.to("cuda")
+    lr = torch.tensor(1e-3, device=model.device) if use_graph else 1e-3
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, capturable=use_graph)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=0, min_lr=1e-6)
+    for _ in range(3):
+        sched.step(1.0)                                   # no improvement -> reduce each time
+        group = opt.param_groups[0]
+        if use_graph and not isinstance(group["lr"], torch.Tensor):
+            lr.fill_(float(group["lr"])); group["lr"] = lr
+    got = float(opt.param_groups[0]["lr"]) if not use_graph else float(lr.item())
+    assert abs(got - 1e-3 * 0.5 ** 2) < 1e-9 or abs(got - 1e-3 * 0.5 ** 3) < 1e-9
+    if use_graph:
+        assert opt.param_groups[0]["lr"] is lr
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+def test_finetune_graph_matches_eager_and_handles_the_tail(tmp_path):
+    """Two identical models: one trained by replayed graphs over 8-row
+    buffers (with a 2-row tail batch each epoch), one eagerly on the same
+    batches. Same loss trajectory to 1e-4; lr change is picked up."""
+    cfg, model, trainer, dl = _trained_head_model(tmp_path, n=50, bs=8)
+    import copy
+    twin = copy.deepcopy(model)
+    for m in (model, twin):
+        m.to("cuda")
+        for layer in m.layers:
+            for nm in layer.neuron_models:
+                nm.to("cuda")
+    torch.manual_seed(0)
+    x = torch.randn(50, 4, device="cuda"); y = torch.randn(50, device="cuda")
+    batches = [(x[i:i + 8], y[i:i + 8]) for i in range(0, 50, 8)]        # last one has 2 rows
+    lr_g = torch.tensor(1e-3, device="cuda")
+    opt_g = torch.optim.AdamW(model.parameters(), lr=lr_g, capturable=True)
+    opt_e = torch.optim.AdamW(twin.parameters(), lr=1e-3)
+    g = _FinetuneStep(model, opt_g, model.loss_fn, Trainer._finetune_prediction, use_graph=True)
+    e = _FinetuneStep(twin, opt_e, twin.loss_fn, Trainer._finetune_prediction, use_graph=False)
+    # the graph path warms up with 3 extra steps on the first batch: do the same eagerly
+    for _ in range(3):
+        e.step(*batches[0])
+    for epoch in range(4):
+        for bx, by in batches:
+            g.step(bx, by); e.step(bx, by)
+        assert abs(g.drain() - e.drain()) < 1e-4, epoch
+    assert g.graph is not None and g.capture_error is None
+    assert g.graph_steps == 4 * 6 and g.eager_steps == 3 + 4 * 1          # tails ran eagerly
+    for pg, pe in zip(model.parameters(), twin.parameters()):
+        assert torch.allclose(pg, pe, atol=1e-4)
+    # an lr change in place reaches the captured step
+    before = [p.detach().clone() for p in model.parameters()]
+    lr_g.fill_(0.0)
+    g.step(*batches[0])
+    for p, b in zip(model.parameters(), before):
+        assert torch.allclose(p, b)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+def test_train_finetune_uses_the_graph_on_cuda_and_falls_back_when_told(tmp_path, caplog):
+    cfg, model, trainer, dl = _trained_head_model(tmp_path, n=64, bs=16)
+    cfg = OmegaConf.merge(cfg, OmegaConf.create({"train": {"device": "cuda", "finetune_train": {
+        "optimizer": "adamw", "max_steps": 40, "eval_interval": 10, "early_stop_patience": 100}}}))
+    model.to("cuda")
+    for layer in model.layers:
+        for nm in layer.neuron_models:
+            nm.to("cuda")
+    trainer.config = cfg
+    x = torch.randn(5, 4, device="cuda")
+    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+        trainer.train_finetune(model, dl, dl, cfg=cfg.train.finetune_train)
+    assert any("CUDA graph captured" in r.message for r in caplog.records)
+    assert any("steps replayed" in r.message for r in caplog.records)
+    with torch.inference_mode():
+        assert torch.isfinite(model.infer(x)).all()
+    caplog.clear()
+    cfg_e = OmegaConf.merge(cfg, OmegaConf.create({"train": {"finetune_train": {"cuda_graph": False}}}))
+    trainer.config = cfg_e
+    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+        trainer.train_finetune(model, dl, dl, cfg=cfg_e.train.finetune_train)
+    assert any("eager steps" in r.message for r in caplog.records)
+    assert not any("CUDA graph captured" in r.message for r in caplog.records)

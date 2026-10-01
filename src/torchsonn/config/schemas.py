@@ -52,6 +52,28 @@ class OutProjTrainConfig:
     lbfgs_max_iter: int = 20
     lbfgs_line_search: str = "strong_wolfe"  # "" / None to disable
 
+    # End-to-end pass only (Trainer.train_finetune). The step (forward,
+    # backward, adam / adamw update) is launch-bound on these models: several
+    # hundred tiny kernels, 15-18 ms of launch latency for ~1 ms of work. With
+    # cuda_graph on and a CUDA device the step is captured once over a
+    # static batch buffer of train_dl's batch size and replayed per step
+    # (about 3 ms on the California Legendre model); each step copies the
+    # next batch into the buffer, so the dataset size does not matter. A
+    # batch of another shape (the tail of an epoch) runs the same step
+    # eagerly; CPU, sgd and a capture failure fall back to the eager loop.
+    cuda_graph: bool = True
+    # Where the training batches come from under cuda_graph:
+    #   'auto'  - the whole split is kept on the device when it fits in a
+    #             quarter of the free memory, else streamed from the loader
+    #   'true'  - always resident (each step index-selects the next batch of
+    #             a per-epoch permutation; shuffling as the loader would)
+    #   'false' - always streamed (pinned host copy per step, overlapping the
+    #             previous replay; the way for splits larger than the GPU).
+    #             Build the loader with pin_memory=True (and workers) for
+    #             this: pinning a pageable batch inside the step costs ~35 ms
+    #             per 12k rows, more than the replay.
+    data_on_device: str = "auto"
+
 
 def _default_optimizer_params() -> Dict[str, Any]:
     """Shared optimizer/trainer kwargs.

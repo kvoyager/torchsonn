@@ -67,6 +67,25 @@ California Legendre baseline reproduces (0.1884 / 0.2772 vs 0.1877 /
 0.2791); on the RBF family they end the runaway (0-6% of centers beyond 5
 std against 37-68%) with about 15% of pairs rejected.
 
+### Changed — end-to-end pass as a captured CUDA graph (`finetune_train.cuda_graph`, `data_on_device`)
+
+`Trainer.train_finetune` was launch-bound: hundreds of tiny kernels per
+step, 15-18 ms of latency for about 1 ms of work. On a CUDA device with
+adam / adamw the step (gradient zeroing, forward, backward, update) is now
+captured once as a CUDA graph over a static buffer of the loader's batch
+shape and replayed per step, the next batch copied into the buffer, so the
+dataset size does not matter; a batch of another shape (an epoch's tail)
+runs the same step eagerly, so no row is dropped. Adam / AdamW are built
+capturable with a tensor learning rate that the plateau scheduler's value
+is copied into. `data_on_device` keeps the split resident on the device
+(index-selected in a fresh permutation per epoch) when it fits in a quarter
+of the free memory, or streams it from the loader with pinned non-blocking
+copies. CPU, sgd, `cuda_graph: false` and a capture failure take the eager
+loop, which has lost its per-step host sync. The loss is accumulated on the
+device. California, three runs each: the pass 60-80 s -> 8-11 s with the
+test numbers unchanged to 0.0001 (Legendre 0.1891-0.1894, RBF-8 0.1893-
+0.1894); a whole Legendre run takes about 90 s.
+
 ### Changed — `SONN.infer`: the head's input columns cached on the device
 
 The top-k column index the head reads from the last layer was recomputed
