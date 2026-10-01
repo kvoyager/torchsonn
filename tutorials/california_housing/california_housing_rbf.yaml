@@ -140,6 +140,14 @@
 #     Identical layer curves, fit steps and survivor reports across the
 #     three runs; the family repeats like the Legendre file does. A tie with
 #     the Legendre baseline under the same rules (0.1891-0.1894).
+#   + a 10% validation split (script VAL_SPLIT 0.1; 11145 training rows), same
+#   settings, three runs each:
+#     reported only                       MSE 0.1882-0.1886   MAE 0.2796   (15 layers)
+#     train.stop_source=val               MSE 0.1915-0.1917   MAE 0.2810   (14 layers)
+#   Val below dev at every layer (0.178 vs 0.191 at layer 0, 0.152 vs 0.154
+#   at the end), gap narrowing with depth: no sign of the search fitting the
+#   dev split under the train stop. Stop decisions on the small split cost
+#   0.003. VAL_SPLIT is 0 by default.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by

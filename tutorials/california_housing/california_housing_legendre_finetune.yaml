@@ -114,6 +114,14 @@
 #   Same 81-step fits, a curve 0.001 off the dev-stopped one at layers 3-6,
 #   two layers shallower, 0.001 above it on test (inside noise): the dev
 #   split was not doing anything for an 8-parameter convex fit.
+#   + a 10% validation split (script VAL_SPLIT 0.1; 11145 training rows), same
+#   candidate stop, three runs each:
+#     reported only                       MSE 0.1949-0.1950   MAE 0.2844   (6 layers)
+#     train.stop_source=val               MSE 0.2054-0.2055   MAE 0.2943   (7 layers)
+#   The rows taken from the fits cost 0.006; stop decisions on the 1239-row
+#   split cost another 0.010. Val sits ~0.012 below dev at layer 0 and 0.003
+#   at the end (different random subsets, the val rows are easier); the gap
+#   narrows with depth. VAL_SPLIT is 0 by default.
 #   (log target, same pipeline           MSE 0.1912   MAE 0.2719   (15 layers))
 # MSE-optimal is the conditional mean, which the raw target estimates; the log
 # target estimates the median and wins MAE. The end-to-end pass needed 10875

@@ -71,6 +71,21 @@ from torchsonn.trainer import Trainer
 # Keep train.batch_size above the train-row count so LBFGS stays full-batch.
 TEST_SIZE = 0.2
 DEV_SPLIT = SequenceTypeSet.sqMode4_1
+# Validation split: this fraction of the *training* rows (after the dev
+# split) is set aside and used by nothing that selects - not the candidate
+# fits, not selection. The trainer reports the best neuron's error on it
+# next to the dev error after every layer (the gap is the selection bias),
+# and `train.stop_source: val` lets the growth criterion and the end-to-end
+# early stop read it instead of dev. Taken as every k-th training row, so it
+# is deterministic. 0 = no validation split.
+# Measured 2026-09-30 (three repeats each, candidate stop on train): at 0.1
+# the Legendre baseline loses 0.006 MSE to the 10% fewer training rows
+# (0.1950 vs 0.1892), RBF-8 moves 0.001; reading the stop rules from the
+# 1239-row split (train.stop_source=val) costs another 0.003-0.010; and the
+# dev-vs-val gap narrows with depth for both families, i.e. no sign of the
+# search fitting the dev split. Off by default so the published numbers
+# keep every training row; set 0.1 for a diagnostic run.
+VAL_SPLIT = 0.0
 
 # Ensemble size. Member m uses seed train.seed + m and, for m > 0, a reshuffle
 # of the non-test rows before the train/dev split, so the members differ in
@@ -275,22 +290,33 @@ def main(config: DictConfig) -> None:
         # fine-tune passes); see DEV_SPLIT above for the ratio.
         train_x, train_y, dev_x, dev_y = split_dataset(ux, uy, DEV_SPLIT)
         tx, ty = test_x, test_y
+        val_x = val_y = None
+        if VAL_SPLIT:
+            every = int(round(1.0 / VAL_SPLIT))
+            is_val = (np.arange(len(train_x)) % every) == 0
+            val_x, val_y = train_x[is_val], train_y[is_val]
+            train_x, train_y = train_x[~is_val], train_y[~is_val]
 
         if LOCATION_FEATURES:
             # Fitted on the training rows only, so it has to come after the split.
             ll = [names.index("Latitude"), names.index("Longitude")]
-            knn_tr, knn_dev, knn_te = knn_price_feature(
-                train_x[:, ll], np.log(train_y), [dev_x[:, ll], tx[:, ll]], KNN_PRICE_K
+            others = [dev_x[:, ll], tx[:, ll]] + ([val_x[:, ll]] if val_x is not None else [])
+            knn_tr, knn_dev, knn_te, *knn_val = knn_price_feature(
+                train_x[:, ll], np.log(train_y), others, KNN_PRICE_K
             )
             train_x = np.column_stack([train_x, knn_tr]).astype(np.float32)
             dev_x = np.column_stack([dev_x, knn_dev]).astype(np.float32)
             tx = np.column_stack([tx, knn_te]).astype(np.float32)
+            if val_x is not None:
+                val_x = np.column_stack([val_x, knn_val[0]]).astype(np.float32)
             names = names + [f"knnLogPrice{KNN_PRICE_K}"]
 
         # train_preprocessing normalizes orientation + sanity-checks shapes
         train_x, train_y = train_preprocessing(train_x, train_y, names)
         dev_x, dev_y = train_preprocessing(dev_x, dev_y, names)
         tx, ty = train_preprocessing(tx, ty, names)
+        if val_x is not None:
+            val_x, val_y = train_preprocessing(val_x, val_y, names)
 
         # Prediction bounds in raw $100k units, from the training rows only.
         y_lo, y_hi = float(train_y.min()), float(train_y.max())
@@ -299,6 +325,8 @@ def main(config: DictConfig) -> None:
             # the trainer never reads it, only predict() does, after exp'ing.
             train_y = np.log(train_y).astype(np.float32)
             dev_y = np.log(dev_y).astype(np.float32)
+            if val_y is not None:
+                val_y = np.log(val_y).astype(np.float32)
         # Censoring cap in the units the loss sees (see CENSOR_CAP). Set before
         # the model is built, since SONN passes it to its NormMSE.
         config.train.censor_target_at = float(train_y.max()) if CENSOR_CAP else None
@@ -320,11 +348,16 @@ def main(config: DictConfig) -> None:
         train_x = np.clip(feature_scaler.transform(train_x), -Z_CLIP, Z_CLIP)
         dev_x = np.clip(feature_scaler.transform(dev_x), -Z_CLIP, Z_CLIP)
         tx = np.clip(feature_scaler.transform(tx), -Z_CLIP, Z_CLIP)
+        if val_x is not None:
+            val_x = np.clip(feature_scaler.transform(val_x), -Z_CLIP, Z_CLIP)
 
         bs = config.train.batch_size
         train_dl = DataLoader(SONNDataset(train_x, train_y), batch_size=bs, shuffle=bool(config.train.shuffle))
         dev_dl = DataLoader(SONNDataset(dev_x, dev_y), batch_size=bs)
         test_dl = DataLoader(SONNDataset(tx, ty), batch_size=bs)
+        val_dl = DataLoader(SONNDataset(val_x, val_y), batch_size=bs) if val_x is not None else None
+        logger.info("rows: train %d, dev %d, val %s, test %d", len(train_x), len(dev_x),
+                    len(val_x) if val_x is not None else "-", len(tx))
 
         model = SONN(config, d_model=train_x.shape[1], feature_names=names)
         model = model.to(config.train.device)
@@ -333,7 +366,7 @@ def main(config: DictConfig) -> None:
 
         # --- Train ------------------------------------------------------------
         resume = bool(config.get("resume", False)) and member == 0
-        trainer.train(model, train_dl, dev_dl, test_dl, resume=resume)
+        trainer.train(model, train_dl, dev_dl, test_dl, resume=resume, val_dl=val_dl)
 
         # Regression head (Linear(num_out, 1)); built and trained only when
         # model.use_output_projection is True (the *_finetune configs). Saves
@@ -358,7 +391,7 @@ def main(config: DictConfig) -> None:
                 logger.info("Pruned to the read path before fine-tuning: %d layers", len(model.layers))
             logger.info("End-to-end fine-tune of all parameters (head %s)",
                         "removed" if model.out_proj is None else "kept and trained")
-            trainer.train_finetune(model, train_dl, dev_dl)
+            trainer.train_finetune(model, train_dl, dev_dl, val_dl=val_dl)
 
         return {
             "seed": seed, "model": model, "trainer": trainer, "test_dl": test_dl,
