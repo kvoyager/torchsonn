@@ -122,6 +122,11 @@
 #   split cost another 0.010. Val sits ~0.012 below dev at layer 0 and 0.003
 #   at the end (different random subsets, the val rows are easier); the gap
 #   narrows with depth. VAL_SPLIT is 0 by default.
+#   + end-to-end pass as a captured CUDA graph (finetune_train.cuda_graph,
+#   default since 2026-09-30), candidate stop on train, three runs:
+#     8 layers each                       MSE 0.1891-0.1894   MAE 0.2793
+#   Same numbers as the eager pass; the pass takes 10 s instead of 60-80, a
+#   whole run about 90 s on the GPU.
 #   (log target, same pipeline           MSE 0.1912   MAE 0.2719   (15 layers))
 # MSE-optimal is the conditional mean, which the raw target estimates; the log
 # target estimates the median and wins MAE. The end-to-end pass needed 10875

@@ -148,6 +148,9 @@
 #   at the end), gap narrowing with depth: no sign of the search fitting the
 #   dev split under the train stop. Stop decisions on the small split cost
 #   0.003. VAL_SPLIT is 0 by default.
+#   + end-to-end pass as a captured CUDA graph (default since 2026-09-30),
+#   8 centers, train stop, three runs:  MSE 0.1893-0.1894   MAE 0.2802
+#   Same numbers, the pass 8-9 s instead of ~60.
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
