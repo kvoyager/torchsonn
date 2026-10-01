@@ -84,7 +84,12 @@ copies. CPU, sgd, `cuda_graph: false` and a capture failure take the eager
 loop, which has lost its per-step host sync. The loss is accumulated on the
 device. California, three runs each: the pass 60-80 s -> 8-11 s with the
 test numbers unchanged to 0.0001 (Legendre 0.1891-0.1894, RBF-8 0.1893-
-0.1894); a whole Legendre run takes about 90 s.
+0.1894); a whole Legendre run takes about 90 s. Before capturing, the step
+is rehearsed once under `torch.cuda.set_sync_debug_mode("error")`: a step
+that synchronizes with the host cannot be captured and a failed capture
+leaves the CUDA context unusable for the process, so such a step runs
+eagerly with the reason logged instead. The headless (best-neuron) readout
+caches its column like the head does, so it captures too.
 
 ### Changed — `SONN.infer`: the head's input columns cached on the device
 

@@ -50,6 +50,7 @@ tutorials/concrete/outputs
 tutorials/concrete/data
 tutorials/iris/outputs
 tutorials/california_housing/outputs
+tutorials/california_housing/experiments
 tutorials/otto/data
 tutorials/otto/outputs
 tutorials/ccpp/data

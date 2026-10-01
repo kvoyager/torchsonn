@@ -185,6 +185,32 @@ class _FinetuneStep:
         self.opt.step()
         return loss.detach()
 
+    def _rehearse(self, x: torch.Tensor, y: torch.Tensor) -> str | None:
+        """Run one eager step with PyTorch's synchronization debug mode set to
+        raise, as a stand-in for the capture's own restriction: a step that
+        synchronizes with the host (`.item()`, `.cpu()`, `nonzero`, ...)
+        cannot be captured, and a capture that fails leaves the CUDA context
+        unusable for the rest of the process (no API call recovers it), so
+        the check has to happen before. Returns the reason the step is not
+        capturable, or None. The debug mode does not flag every
+        synchronizing operation, so the capture itself stays guarded too.
+        The rehearsal is a real, counted step. One plain forward first warms
+        the model's lazy caches (the head's column index is computed from
+        host-side tensors on its first use after a checkpoint load), which
+        would otherwise be flagged as a sync of the step itself."""
+        with torch.no_grad():
+            self.pred_fn(self.model, x)
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            self.loss_sum += self._eager(x, y).to(torch.float64)
+            self.n_steps += 1
+            self.eager_steps += 1
+        except RuntimeError as e:
+            return f"{type(e).__name__}: {e}"
+        finally:
+            torch.cuda.set_sync_debug_mode("default")
+        return None
+
     def _capture(self, x: torch.Tensor, y: torch.Tensor) -> None:
         self.x_s = x.detach().clone()
         self.y_s = y.detach().clone()
@@ -212,16 +238,27 @@ class _FinetuneStep:
         """Train on one batch (already on the device)."""
         if self.use_graph and (self.x_s is None or x.shape == self.x_s.shape):
             if self.graph is None:
-                try:
-                    self._capture(x, y)
-                except Exception as e:  # noqa: BLE001 - any capture failure falls back
-                    self.capture_error = f"{type(e).__name__}: {e}"
+                reason = self._rehearse(x, y)
+                if reason is not None:
+                    # The flagged rehearsal stopped mid-step: redo this batch
+                    # eagerly from clean gradients and stay eager from here on.
+                    self.capture_error = reason
                     self.use_graph = False
                     self.graph = None
+                    self.opt.zero_grad(set_to_none=False)
                     self.loss_sum += self._eager(x, y).to(torch.float64)
                     self.n_steps += 1
                     self.eager_steps += 1
                     return
+                try:
+                    self._capture(x, y)
+                except Exception as e:  # noqa: BLE001
+                    # Not recoverable: after a failed capture every CUDA call
+                    # in this process fails. Say so instead of cascading.
+                    raise RuntimeError(
+                        "end-to-end pass: CUDA graph capture failed after a clean rehearsal "
+                        f"({type(e).__name__}: {e}); the CUDA context is now unusable for this "
+                        "process. Re-run with finetune_train.cuda_graph=false.") from e
             else:
                 self.x_s.copy_(x, non_blocking=True)
                 self.y_s.copy_(y, non_blocking=True)

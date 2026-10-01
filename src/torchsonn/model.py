@@ -603,6 +603,20 @@ class SONN(SONNModule):
             col += m.num_neurons
         return col
 
+    def _best_column_cached(self, layer: SONNLayer) -> int:
+        """`_best_neuron_column(layer)` as a plain int, cached under the same
+        key as `_head_columns` (the headless readout). Computing it reads
+        `err_values` and `module_idxs` on the host, a sync that is not
+        permitted while a CUDA graph is being captured."""
+        err = layer.err_values
+        key = ("best", id(layer), err.data_ptr(), int(err.shape[0]),
+               tuple(int(m.num_neurons) for m in layer.neuron_models))
+        cached = getattr(self, "_best_column_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, int(self._best_neuron_column(layer)))
+            self._best_column_cache = cached
+        return cached[1]
+
     def _head_columns(self, layer: SONNLayer, k: int) -> torch.Tensor:
         """`_best_neuron_columns(layer, k)` as a long tensor on the model's
         device, cached. Recomputing the list on every `infer` call cost a
@@ -779,7 +793,7 @@ class SONN(SONNModule):
             # the best-error neuron's output — the column the layer error
             # was scored on and the one `prune()` keeps — so return it as
             # (N,), matching the raw-target shape like the out_proj path.
-            return out[:, self._best_neuron_column(self.layers[-1])]
+            return out[:, self._best_column_cached(self.layers[-1])]
 
         if self.param.model.use_neuron_proj:
             # Collect per-neuron proj_weight / proj_bias from the pruned final

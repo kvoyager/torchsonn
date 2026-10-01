@@ -1086,15 +1086,15 @@ def test_finetune_graph_matches_eager_and_handles_the_tail(tmp_path):
     opt_e = torch.optim.AdamW(twin.parameters(), lr=1e-3)
     g = _FinetuneStep(model, opt_g, model.loss_fn, Trainer._finetune_prediction, use_graph=True)
     e = _FinetuneStep(twin, opt_e, twin.loss_fn, Trainer._finetune_prediction, use_graph=False)
-    # the graph path warms up with 3 extra steps on the first batch: do the same eagerly
-    for _ in range(3):
+    # the graph path runs 1 rehearsal + 3 warm-up steps on the first batch: do the same eagerly
+    for _ in range(4):
         e.step(*batches[0])
     for epoch in range(4):
         for bx, by in batches:
             g.step(bx, by); e.step(bx, by)
         assert abs(g.drain() - e.drain()) < 1e-4, epoch
     assert g.graph is not None and g.capture_error is None
-    assert g.graph_steps == 4 * 6 and g.eager_steps == 3 + 4 * 1          # tails ran eagerly
+    assert g.graph_steps == 4 * 6 and g.eager_steps == 4 + 4 * 1          # rehearsal, warm-ups, tails
     for pg, pe in zip(model.parameters(), twin.parameters()):
         assert torch.allclose(pg, pe, atol=1e-4)
     # an lr change in place reaches the captured step
@@ -1129,3 +1129,53 @@ def test_train_finetune_uses_the_graph_on_cuda_and_falls_back_when_told(tmp_path
         trainer.train_finetune(model, dl, dl, cfg=cfg_e.train.finetune_train)
     assert any("eager steps" in r.message for r in caplog.records)
     assert not any("CUDA graph captured" in r.message for r in caplog.records)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+def test_finetune_graph_falls_back_when_the_capture_fails(tmp_path, caplog):
+    """A prediction that syncs with the host cannot be captured; the
+    rehearsal under the sync debug mode flags it before any capture is
+    attempted (a failed capture would poison the CUDA context for the rest
+    of the process), and the stepper keeps training eagerly."""
+    cfg, model, trainer, dl = _trained_head_model(tmp_path, n=64, bs=16)
+    model.to("cuda")
+    for layer in model.layers:
+        for nm in layer.neuron_models:
+            nm.to("cuda")
+
+    def syncing_pred(m, x):
+        out = Trainer._finetune_prediction(m, x)
+        float(out.sum().item())        # host sync: not permitted during capture
+        return out
+
+    opt = torch.optim.AdamW(model.parameters(), lr=torch.tensor(1e-3, device="cuda"), capturable=True)
+    stepper = _FinetuneStep(model, opt, model.loss_fn, syncing_pred, use_graph=True)
+    x = torch.randn(16, 4, device="cuda"); y = torch.randn(16, device="cuda")
+    for _ in range(5):
+        stepper.step(x, y)
+    assert stepper.capture_error and "synchroniz" in stepper.capture_error.lower()
+    assert stepper.graph is None and stepper.graph_steps == 0 and stepper.eager_steps == 5
+    assert math.isfinite(stepper.drain())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+def test_headless_model_captures(tmp_path):
+    """The best-neuron readout (no head) used a host-side lookup per call;
+    cached, it captures like the head path."""
+    cfg = _cfg(tmp_path, max_layer_count=1, batch_size=16)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    trainer.train(model, dl, dl, dl, verbose=False)
+    assert model.out_proj is None
+    model.to("cuda")
+    for layer in model.layers:
+        for nm in layer.neuron_models:
+            nm.to("cuda")
+    opt = torch.optim.AdamW(model.parameters(), lr=torch.tensor(1e-3, device="cuda"), capturable=True)
+    stepper = _FinetuneStep(model, opt, model.loss_fn, Trainer._finetune_prediction, use_graph=True)
+    x = torch.randn(16, 4, device="cuda"); y = torch.randn(16, device="cuda")
+    for _ in range(5):
+        stepper.step(x, y)
+    assert stepper.capture_error is None and stepper.graph is not None and stepper.graph_steps >= 2
+
