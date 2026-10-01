@@ -151,6 +151,12 @@
 #   + end-to-end pass as a captured CUDA graph (default since 2026-09-30),
 #   8 centers, train stop, three runs:  MSE 0.1893-0.1894   MAE 0.2802
 #   Same numbers, the pass 8-9 s instead of ~60.
+# 24 survivors / 24-wide head (this file since 2026-10-01), 8 centers,
+# candidate stop on train, seeds 10-13:
+#   16 survivors                         MSE 0.1909 +- 0.0016   MAE 0.2793
+#   24 survivors                         MSE 0.1853 +- 0.0014   MAE 0.2772 <- current
+#   (seed 10 alone: 0.1867 / 0.2786; 19, 13, 21, 16 layers)
+# -0.006 over the seeds; the family now ties the Legendre file (0.1852).
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
@@ -220,11 +226,14 @@ model:
   # makes that pass worth running. report() reads the head.
   use_output_projection: True
   # Keep equal to nbest_neurons so the head spans every survivor.
-  num_out_neurons: 16
+  num_out_neurons: 24
   # Survivors kept per layer = the basis the head combines, and (under
   # `shortcut`) part of the next layer's input. 16 vs 8 measured on this file:
   # MSE 0.2102 vs 0.2160 alone, 0.1986 vs 0.2048 with layer_finetune off.
-  nbest_neurons: 16
+  # 24 since 2026-10-01: the overnight sweep found a wider pool to be the one
+  # robust gain (24 and 32 survivors beat 16 on four seeds each, by ~0.004
+  # MSE; 48 does not), see experiments/overnight_2026-09-30.md.
+  nbest_neurons: 24
   # Per-family cap on the candidate neurons built per layer. A family with more
   # input combinations than the cap gets a seeded random subset of them, so the
   # cap decides how exhaustive each layer is. The script feeds the model 16

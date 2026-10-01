@@ -118,11 +118,14 @@ model:
   # makes that pass worth running. report() reads the head.
   use_output_projection: True
   # Keep equal to nbest_neurons so the head spans every survivor.
-  num_out_neurons: 16
+  num_out_neurons: 24
   # Survivors kept per layer = the basis the head combines, and (under
   # `shortcut`) part of the next layer's input. 16 vs 8 measured on this file:
   # MSE 0.2102 vs 0.2160 alone, 0.1986 vs 0.2048 with layer_finetune off.
-  nbest_neurons: 16
+  # 24 since 2026-10-01: the overnight sweep found a wider pool to be the one
+  # robust gain (24 and 32 survivors beat 16 on four seeds each, by ~0.004
+  # MSE; 48 does not), see experiments/overnight_2026-09-30.md.
+  nbest_neurons: 24
   # Per-family cap on the candidate neurons built per layer. A family with more
   # input combinations than the cap gets a seeded random subset of them, so the
   # cap decides how exhaustive each layer is. The script feeds the model 16

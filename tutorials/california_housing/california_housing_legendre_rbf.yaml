@@ -27,6 +27,19 @@
 #     single-family run (20-68% of centers at their radius, 24-65% of widths
 #     at the band). Layer time 95-130 s. End-to-end pass early-stopped at 1500.
 #
+#   8 centers (model.ref_functions.1.rbf.centers=8), current rules (growth
+#   margin 0.002 / width 3, candidate stop on train, deterministic RBF start,
+#   guarded batched LBFGS, captured end-to-end pass), 2026-09-30 / 10-01,
+#   seeds 10-13 (the seed changes which candidate pairs are sampled):
+#     16 survivors                       MSE 0.1898 +- 0.0022   MAE 0.2797
+#     24 survivors (this file since 2026-10-01)
+#                                        MSE 0.1890 +- 0.0028   MAE 0.2784 <- current
+#     (13, 14, 15, 9 layers). Within noise of each other; at 24 survivors the
+#     mix no longer beats either single family (Legendre 0.1852, RBF-8 0.1853).
+#     With cap 500 and 32 survivors it reached 0.1860 +- 0.0021 and the best
+#     MAE measured in the project, 0.2753 (overnight sweep, run K2; see
+#     experiments/overnight_2026-09-30.md).
+#
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
 # `src/config/schemas.py` and exposed under the name `default`.
@@ -97,11 +110,14 @@ model:
   # makes that pass worth running. report() reads the head.
   use_output_projection: True
   # Keep equal to nbest_neurons so the head spans every survivor.
-  num_out_neurons: 16
+  num_out_neurons: 24
   # Survivors kept per layer = the basis the head combines, and (under
   # `shortcut`) part of the next layer's input. 16 vs 8 measured on this file:
   # MSE 0.2102 vs 0.2160 alone, 0.1986 vs 0.2048 with layer_finetune off.
-  nbest_neurons: 16
+  # 24 since 2026-10-01: the overnight sweep found a wider pool to be the one
+  # robust gain (24 and 32 survivors beat 16 on four seeds each, by ~0.004
+  # MSE; 48 does not), see experiments/overnight_2026-09-30.md.
+  nbest_neurons: 24
   # Per-family cap on the candidate neurons built per layer. A family with more
   # input combinations than the cap gets a seeded random subset of them, so the
   # cap decides how exhaustive each layer is. The script feeds the model 16
