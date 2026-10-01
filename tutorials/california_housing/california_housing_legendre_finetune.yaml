@@ -18,19 +18,19 @@
 #   test MSE 0.3484   MAE 0.4184   (random 50/50 split, seed 42, 9 layers)
 #
 # Results of this file, end-to-end lr 1e-4, by the script's input / target
-# switches (LOG_FEATURES / LOG_TARGET / CLIP_PREDICTIONS; single split, so
+# switches (log_features / log_target / clip_predictions; single split, so
 # differences under ~0.01 are within seed noise):
 #   raw feats, raw target, no clip     MSE 0.3027   MAE 0.3789
 #   raw feats, raw target, clip        MSE 0.3002   MAE 0.3758
 #   raw feats, log target, clip        MSE 0.3164   MAE 0.3789
 #   log feats, raw target, clip        MSE 0.3191   MAE 0.3872
 #   log feats, log target, clip        MSE 0.3013   MAE 0.3626
-# + LOCATION_FEATURES (rotated coords, city distances, kNN price), cuda:
+# + location_features (rotated coords, city distances, kNN price), cuda:
 #   cap 70                             MSE 0.2630   MAE 0.3344
 #   cap 140                            MSE 0.2605   MAE 0.3307
 # The kNN price feature carries most of it: layer-0 error 0.185 vs 0.42
 # without it, and the search now keeps 1-3 layers.
-# Split 60/20/20 (TEST_SIZE 0.2, sqMode4_1; 12384 train rows), batch 16384:
+# Split 60/20/20 (test_size 0.2, sqMode4_1; 12384 train rows), batch 16384:
 #   cap 140, cuda                      MSE 0.2160   MAE 0.2975   (5 layers trained)
 # Fair comparison on the same 4128 test rows: the 25/25/50 model above scores
 # MSE 0.2650 / MAE 0.3334 there, so ~0.05 MSE of the gain is the extra data.
@@ -49,7 +49,7 @@
 #   pairs + dim-3 family                 MSE 0.1945   MAE 0.2798   (16 layers, 1.7x layer time)
 #   same, cap 700 (all 680 triplets)     MSE 0.1944   MAE 0.2795   (12 layers, 7x layer time,
 #                                        best layer error 0.148 vs 0.151 pairs-only)
-# Ensemble of this file (script N_ENSEMBLE 5: seeds 10-14, members 2-5 on
+# Ensemble of this file (tutorial.n_ensemble=5: seeds 10-14, members 2-5 on
 # reshuffled train/dev rows, same 4128 test rows):
 #   single members                       MSE 0.2010 +- 0.0021   MAE 0.2825 +- 0.0019
 #   mean of the 5 predictions            MSE 0.1901             MAE 0.2740
@@ -72,7 +72,7 @@
 # log bedrooms-per-room, which is the same information at skew 0.5 instead of 6;
 # rows clipped at +-5 sigma on that column 95 -> 5), omp_mixed, single model:
 #   fixed features                        MSE 0.1920   MAE 0.2740   (7 layers)
-# Censored loss (train.censor_target_at = log cap; script CENSOR_CAP), single model:
+# Censored loss (train.censor_target_at = log cap; tutorial.censor_cap), single model:
 #   + censoring                           MSE 0.1912   MAE 0.2719   (15 layers) <- current
 #   No real effect: the model predicts BELOW the cap on most capped rows (mean 4.23,
 #   45 of 184 at the cap), and censoring only changes rows predicted above it. The
@@ -88,7 +88,7 @@
 #   mean of 5 seeds, log target           MSE 0.1727   MAE 0.2589
 # vs SONN single 0.1912 / ensemble 0.1901: ~0.02 MSE (10%) of headroom remains
 # with this feature set, and the trees prefer the raw target for MSE.
-# Raw target (script LOG_TARGET False, cap in price units), single model:
+# Raw target (tutorial.log_target=false, cap in price units), single model:
 #   raw target                            MSE 0.1877   MAE 0.2791   (9 layers) <- current
 #   same, LBFGS with the curvature condition and step cap (optimizer defaults
 #   since 2026-09-30; 0.1% of updates capped, no pair rejected, same 81-step
@@ -114,14 +114,14 @@
 #   Same 81-step fits, a curve 0.001 off the dev-stopped one at layers 3-6,
 #   two layers shallower, 0.001 above it on test (inside noise): the dev
 #   split was not doing anything for an 8-parameter convex fit.
-#   + a 10% validation split (script VAL_SPLIT 0.1; 11145 training rows), same
+#   + a 10% validation split (tutorial.val_split=0.1; 11145 training rows), same
 #   candidate stop, three runs each:
 #     reported only                       MSE 0.1949-0.1950   MAE 0.2844   (6 layers)
 #     train.stop_source=val               MSE 0.2054-0.2055   MAE 0.2943   (7 layers)
 #   The rows taken from the fits cost 0.006; stop decisions on the 1239-row
 #   split cost another 0.010. Val sits ~0.012 below dev at layer 0 and 0.003
 #   at the end (different random subsets, the val rows are easier); the gap
-#   narrows with depth. VAL_SPLIT is 0 by default.
+#   narrows with depth. tutorial.val_split is 0 by default.
 #   + end-to-end pass as a captured CUDA graph (finetune_train.cuda_graph,
 #   default since 2026-09-30), candidate stop on train, three runs:
 #     8 layers each                       MSE 0.1891-0.1894   MAE 0.2793
@@ -171,6 +171,22 @@ defaults:
 
 # Top-level script knobs (overridable via Hydra CLI).
 resume: false
+
+# Tutorial-script knobs; tutorial_params() in california_housing.py documents
+# every key; override on the CLI, e.g. tutorial.n_ensemble=5.
+tutorial:
+  test_size: 0.2
+  dev_split: sqMode4_1
+  val_split: 0.0
+  n_ensemble: 1
+  z_clip: 5.0
+  feature_engineering: true
+  log_features: true
+  location_features: true
+  knn_price_k: 20
+  log_target: false
+  clip_predictions: true
+  censor_cap: true
 
 # Final stage: after the structural search and the head fit, fine-tune every
 # parameter in the network at once with Trainer.train_finetune, tuned by

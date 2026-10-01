@@ -489,6 +489,11 @@ class SONNConfig:
     # chain; with `out_proj` the last layer keeps the `num_out_neurons` columns
     # the head consumes, so the saving is smaller. (CCPP only.)
     finetune_prune_first: bool = False
+    # Free-form tutorial knobs (data split, feature engineering, target
+    # transforms, ...). Untyped on purpose: each tutorial script reads and
+    # validates its own keys, with its own defaults, so they need no schema
+    # entry here. (CA: see tutorial_params in california_housing.py.)
+    tutorial: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

@@ -60,6 +60,22 @@ defaults:
 # Top-level script knobs (overridable via Hydra CLI).
 resume: false
 
+# Tutorial-script knobs; tutorial_params() in california_housing.py documents
+# every key; override on the CLI, e.g. tutorial.n_ensemble=5.
+tutorial:
+  test_size: 0.2
+  dev_split: sqMode4_1
+  val_split: 0.0
+  n_ensemble: 1
+  z_clip: 5.0
+  feature_engineering: true
+  log_features: true
+  location_features: true
+  knn_price_k: 20
+  log_target: false
+  clip_predictions: true
+  censor_cap: true
+
 # Final stage: after the structural search and the head fit, fine-tune every
 # parameter in the network at once with Trainer.train_finetune, tuned by
 # `train.finetune_train` at the bottom of this file. The head is kept and
