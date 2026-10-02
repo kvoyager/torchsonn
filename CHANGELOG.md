@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.4
+## 0.1.5
 
 ### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs
 
@@ -21,6 +21,8 @@ and re-encodes every layer's inputs after deleting the unread ones.
 housing (Legendre fine-tune config, seeds 10-13) it does not pay: test MSE
 0.1866 ± 0.0014 with `null`, 0.1858 ± 0.0017 with `1` (within noise),
 0.1884 with `2` and 0.1891 with `"all"`.
+
+## 0.1.4
 
 ### Added — `rbf`: Gaussian RBF neuron family with learnable, k-means-initialized centers
 
