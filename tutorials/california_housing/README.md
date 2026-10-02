@@ -342,7 +342,7 @@ to 52,000 split thresholds and leaf values. The RBF-8 family reaches the
 same accuracy, but with 6,500 parameters it is only 3–8× smaller than the
 trees, so the saving belongs to the Legendre model.
 
-The result is also *explainable* and *trainable* in ways the tree
+The result is also *interpretable* and *trainable* in ways the tree
 ensembles are not:
 
 - every neuron is an explicit degree-3 polynomial of two named inputs;
