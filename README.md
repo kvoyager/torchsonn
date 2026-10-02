@@ -1,12 +1,20 @@
 # TorchSONN
 
-TorchSONN is a Python library implementing a self-organizing polynomial
-neural network built on PyTorch. Layers of polynomial neurons are grown one
-at a time; each layer tries every pair of the previous layer's outputs
-against a small set of reference polynomials (`linear`, `linear_cov`,
-`quadratic`, `cubic`, multi-input `polyquad`) and keeps the top-k that
-minimize a validation criterion. Training stops automatically when adding a
-layer no longer reduces the criterion error.
+TorchSONN is a Python library implementing a self-organizing neural
+network built on PyTorch. Layers of small neurons are grown one at a time;
+each layer tries every pair (or tuple) of the previous layer's outputs
+against a set of reference functions and keeps the top-k that minimize a
+validation criterion. Training stops automatically when adding a layer no
+longer reduces the criterion error. Three families of reference functions
+are available:
+
+- **power-basis polynomials**: `linear`, `linear_cov`, `quadratic`,
+  `cubic` and multi-input `polyquad`;
+- **orthogonal polynomials**: `legendre` and `chebyshev`, with a
+  configurable degree and number of inputs. They stay well conditioned at
+  higher degrees, where the raw power basis breaks down;
+- **Gaussian radial basis functions**: `rbf`, local bumps whose centres and
+  widths are initialized by k-means and then learned.
 
 It is a GPU-accelerated extension of
 [GmdhPy](https://github.com/kvoyager/GmdhPy), an earlier scikit-learn-style
@@ -14,10 +22,43 @@ library implementing the iterative Group Method of Data Handling (GMDH).
 TorchSONN reimplements the same self-organizing algorithm on PyTorch,
 bringing GPU acceleration to model training and inference.
 
+## Plotting a model
+
+A trained network can be drawn as a diagram with `torchsonn.plot_model`.
+Each box is a neuron, and its incoming edges are the inputs it reads:
+
+```python
+from torchsonn.plot_model import PlotModel
+
+PlotModel(model, filename="model", plot_neuron_name=True).plot()  # writes model.svg
+```
+
+This example is the pruned network from the
+[CCPP tutorial](tutorials/ccpp/README.md), cut down to the neurons that
+reach the output:
+
+<details open>
+<summary>Pruned CCPP network (click to collapse; click the image for full size)</summary>
+
+<a href="img/ccpp_pruned_model.svg"><img src="img/ccpp_pruned_model.svg" alt="Pruned network from the CCPP tutorial" width="60%"></a>
+
+</details>
+
+Plotting needs the `viz` extra and the system Graphviz binaries (see
+below).
+
 ## Install
+
+The latest released version is on PyPI:
 
 ```bash
 pip install torchsonn
+```
+
+The latest development version, from the `main` branch on GitHub:
+
+```bash
+pip install "git+https://github.com/kvoyager/torchsonn.git"
 ```
 
 Plotting is opt-in via the `viz` extra, which adds `graphviz` (for the
@@ -26,6 +67,8 @@ Plotting is opt-in via the `viz` extra, which adds `graphviz` (for the
 
 ```bash
 pip install "torchsonn[viz]"
+# or, from GitHub
+pip install "torchsonn[viz] @ git+https://github.com/kvoyager/torchsonn.git"
 ```
 
 `graphviz` additionally requires the system Graphviz binaries — `dot` must be
