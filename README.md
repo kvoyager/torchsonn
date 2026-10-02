@@ -40,6 +40,8 @@ reach the output:
 <details open>
 <summary>Pruned CCPP network (click to collapse; click the image for full size)</summary>
 
+<br>
+
 <a href="img/ccpp_pruned_model.svg"><img src="img/ccpp_pruned_model.svg" alt="Pruned network from the CCPP tutorial" width="80%"></a>
 
 </details>
