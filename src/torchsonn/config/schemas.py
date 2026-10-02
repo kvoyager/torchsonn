@@ -15,6 +15,8 @@ or `Optional[Dict[str, Any]]`:
     carrying options); see `_parse_ref_function_entry` in model.py for the
     parser. Schema-typing it stricter would force every entry into the
     dict form, which would uglify the common `- linear_cov` case.
+  • `ModelConfig.shortcut` — a bool shorthand or a mapping; parsed by
+    `_parse_shortcut` in model.py.
   • `SchedulerConfig.scheduler_params` — varies per scheduler family.
   • `TrainConfig.criterion_type` — string here (e.g. `"validate"`); coerced
     to `CriterionType` enum inside `SONN.__init__` via `CriterionType.get`.
@@ -141,7 +143,16 @@ class ModelConfig:
     # Heterogeneous polymorphic list — see _parse_ref_function_entry.
     ref_functions: List[Any] = field(default_factory=lambda: ["linear_cov"])
 
-    shortcut: bool = True
+    # Which tensors feed every layer after the first, besides the outputs of
+    # the layer right before it (always fed). Polymorphic like ref_functions,
+    # see `_parse_shortcut` in model.py:
+    #   raw_features: bool        — re-feed the (preprocessed) model inputs.
+    #   prev_layers: int | 'all' | null — also feed the outputs of that many
+    #       layers *before* the last one; null (= 0) feeds the last layer only,
+    #       'all' every earlier layer.
+    # The bool shorthand `shortcut: true|false` means
+    # `{raw_features: true|false, prev_layers: null}`.
+    shortcut: Any = field(default_factory=lambda: {"raw_features": True, "prev_layers": None})
     normalize: bool = True
 
     # How the orthogonal-polynomial families (legendre / chebyshev) map their

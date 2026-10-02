@@ -83,6 +83,47 @@ def _parse_ref_function_entry(entry: Any) -> tuple[RefFunctionType, Optional[dic
     return RefFunctionType.get(entry), None
 
 
+def _parse_shortcut(value: Any) -> tuple[bool, int]:
+    """Parse `model.shortcut` into (raw_features, prev_layers).
+
+    Two shapes are accepted:
+
+      • the bool shorthand `shortcut: true|false`, meaning
+        `{raw_features: true|false, prev_layers: null}`;
+      • a mapping with the keys `raw_features` (bool, default true) and
+        `prev_layers` (int >= 0 | 'all' | null, default null).
+
+    `prev_layers` counts the layers *before* the last one whose outputs also
+    feed a new layer; the last layer always feeds it. null is returned as 0
+    and 'all' as sys.maxsize, so callers clip it to the layers that exist.
+    """
+    if isinstance(value, bool):
+        return value, 0
+    if not isinstance(value, (Mapping, DictConfig)):
+        raise ValueError(
+            f"model.shortcut must be a bool or a mapping, got {type(value).__name__} {value!r}"
+        )
+    unknown = set(value.keys()) - {"raw_features", "prev_layers"}
+    if unknown:
+        raise ValueError(
+            f"model.shortcut has unknown key(s) {sorted(unknown)}; "
+            "expected 'raw_features' and 'prev_layers'"
+        )
+    raw = value.get("raw_features", True)
+    if not isinstance(raw, bool):
+        raise ValueError(f"model.shortcut.raw_features must be a bool, got {raw!r}")
+    prev = value.get("prev_layers", None)
+    if prev is None:
+        prev = 0
+    elif prev == "all":
+        prev = sys.maxsize
+    elif isinstance(prev, bool) or not isinstance(prev, int) or prev < 0:
+        raise ValueError(
+            f"model.shortcut.prev_layers must be null, a non-negative int or 'all', got {prev!r}"
+        )
+    return raw, prev
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,6 +160,11 @@ class SONN(SONNModule):
         for entry in self.param.model.ref_functions:
             ref_type, options = _parse_ref_function_entry(entry)
             self.ref_functions.append((ref_type, options))
+
+        # What feeds every layer after the first besides the last layer's
+        # outputs: the raw inputs and/or the outputs of `shortcut_prev` older
+        # layers. See `_parse_shortcut` and `create_layer`.
+        self.shortcut_raw, self.shortcut_prev = _parse_shortcut(self.param.model.shortcut)
 
         # Cache the parsed enum next to the (string-typed) config field. Don't
         # overwrite `self.param.train.criterion_type` — under structured-config
@@ -277,8 +323,13 @@ class SONN(SONNModule):
     def default_config(cls) -> Any:
         """Parameters of self-organizing deep learning polynomial neural network
         ----------------------------
-        shortcut - if set to true the original features will be added to the list of features of each layer
-            default value is true
+        shortcut - what feeds every layer after the first, besides the outputs of the previous layer
+            (always fed):
+            raw_features - if true the original features are added to the inputs of each layer,
+                default value is true
+            prev_layers - the outputs of that many layers before the previous one are added too;
+                null (the default) adds none, 'all' adds every earlier layer
+            shortcut: true / false is shorthand for {raw_features: true / false, prev_layers: null}
 
         criterion_type - criterion for selecting the best neurons
         the following criteria are possible:
@@ -404,18 +455,19 @@ class SONN(SONNModule):
         for neuron in self.layers[0]:
             selected_features_set.update(neuron.src_idxs.view(-1).tolist())
 
-        if self.param.model.shortcut and len(self.layers) > 1:
-            for layer_pos, layer in enumerate(self.layers[1:], start=1):
-                # Use the *actual* prev-layer output count, not its static
-                # nbest_neurons cap. Post-train_layer they coincide, but after
-                # trainer.prune drops modules the cap is stale and would let
-                # shortcut indices (which start at len(prev_layer)) slip past
-                # the filter — silently under-reporting the used features.
-                prev_layer = self.layers[layer_pos - 1]
-                shortcut_offset = len(prev_layer)
-                for neuron in layer:
-                    src_idxs = [x for x in (neuron.src_idxs.view(-1) - shortcut_offset).tolist() if x >= 0]
-                    selected_features_set.update(src_idxs)
+        for layer_pos, layer in enumerate(self.layers[1:], start=1):
+            if not self.layer_sources(layer_pos)[1]:
+                continue
+            # The block widths are the *actual* output counts of the source
+            # layers, not their static nbest_neurons cap. Post-train_layer
+            # they coincide, but after trainer.prune drops modules the cap is
+            # stale and would misplace the raw block — silently
+            # under-reporting the used features.
+            for neuron in layer:
+                for idx in neuron.src_idxs.view(-1).tolist():
+                    source, local = self.locate(layer_pos, idx)
+                    if source is None:
+                        selected_features_set.add(local)
         return list(selected_features_set)
 
     def get_unselected_features_indices(self) -> list[int]:
@@ -557,35 +609,123 @@ class SONN(SONNModule):
         else:
             raise NotImplementedError
 
+    # -- input layout -------------------------------------------------------
+    #
+    # The input of layer j >= 1 is the concatenation
+    #     [h_{j-1} | h_{j-2} | ... | h_{j-1-k} | x_raw]
+    # of the clamped outputs of the layers listed in its `input_layers`
+    # (nearest first; the last layer always, plus `shortcut_prev` = k older
+    # ones) followed by the raw model inputs when `input_raw`. Layer 0 reads
+    # x_raw alone. With k = 0 this is the original [h_{j-1} | x_raw] layout.
+
+    @property
+    def concat_inputs(self) -> bool:
+        """True when a layer's input is more than the previous layer's output.
+
+        False only for `shortcut: false` (no raw features, no older layers),
+        the configuration in which the last layer's LayerNorm also applies to
+        its own output at inference — see `forward`.
+        """
+        return self.shortcut_raw or self.shortcut_prev > 0
+
+    def new_layer_sources(self, position: int) -> tuple[list[int], bool]:
+        """(input_layers, input_raw) the config gives a layer created at `position`."""
+        if position == 0:
+            return [], True
+        oldest = max(0, position - 1 - self.shortcut_prev)
+        return list(range(position - 1, oldest - 1, -1)), self.shortcut_raw
+
+    def layer_sources(self, position: int) -> tuple[list[int], bool]:
+        """(input_layers, input_raw) of the layer at `position`, as stored on it.
+
+        Layers from a checkpoint that predates the stored layout fall back to
+        the layout of that time: the previous layer, plus the raw inputs when
+        shortcut is on.
+        """
+        layer = self.layers[position]
+        if layer.input_layers is None:
+            if position == 0:
+                return [], True
+            return [position - 1], self.shortcut_raw
+        return list(layer.input_layers), bool(layer.input_raw)
+
+    def input_blocks(self, position: int) -> list[tuple[Optional[int], int]]:
+        """(source, width) per block of the input of the layer at `position`,
+        in concatenation order. `source` is a layer position, or None for the
+        raw model inputs."""
+        input_layers, input_raw = self.layer_sources(position)
+        blocks: list[tuple[Optional[int], int]] = [(s, len(self.layers[s])) for s in input_layers]
+        if input_raw:
+            blocks.append((None, self.d_model))
+        return blocks
+
+    def locate(self, position: int, flat_idx: int) -> tuple[Optional[int], int]:
+        """Map an index into the input of the layer at `position` to
+        (source, index inside that source's block); source None = raw inputs."""
+        offset = 0
+        for source, width in self.input_blocks(position):
+            if flat_idx < offset + width:
+                return source, flat_idx - offset
+            offset += width
+        raise IndexError(f"input index {flat_idx} out of range for layer at position {position} (width {offset})")
+
+    def next_input_width(self) -> int:
+        """Input width of a layer created next, at position len(self.layers)."""
+        input_layers, input_raw = self.new_layer_sources(len(self.layers))
+        return sum(len(self.layers[s]) for s in input_layers) + (self.d_model if input_raw else 0)
+
     def forward(self, x: torch.Tensor, skip_last_layer: bool = False) -> torch.Tensor:
         if self.preprocessing is not None:
             x = self.preprocessing(x)
         x_inp = x
+        clamp = self.param.model.output_clamp_value
+        n_layers = len(self.layers)
 
         # During train_layer the last layer is the one being fitted, so we
-        # stop the SONN forward before it and let the candidate-neuron
-        # ensemble (vmap'd over its own params) consume the resulting feature
-        # map directly. `skip_last_layer=True` is what the trainer passes in
-        # that context; inference / .infer() leaves it False.
-        layers = self.layers[: -1] if skip_last_layer else self.layers
+        # stop the SONN forward at its input and let the candidate-neuron
+        # ensemble (vmap'd over its own params) consume that feature map
+        # directly. `skip_last_layer=True` is what the trainer passes in that
+        # context; inference / .infer() leaves it False.
+        sources = [self.layer_sources(j) for j in range(n_layers)]
+        # Each output is kept until the last layer that reads it has its input.
+        last_reader: dict[int, int] = {}
+        for j, (input_layers, _) in enumerate(sources):
+            for s in input_layers:
+                last_reader[s] = j
 
-        for idx, layer in enumerate(layers):
-            x = layer(x)
-            x = torch.clamp(x, -self.param.model.output_clamp_value, self.param.model.output_clamp_value)
-            apply_shortcut = self.param.model.shortcut and (skip_last_layer or idx < len(self.layers) - 1)
-            # if self.param.model.shortcut and idx < len(self.layers) - 1:
-            if apply_shortcut:
-                # if the model has shortcut the input for the layer will be [prev_layer_output, model_input]
-                x = torch.cat([x, x_inp], dim=-1)
-            # Per-layer LayerNorm (if enabled) standardizes the feature
-            # tensor that feeds the next layer — explicitly AFTER the
-            # shortcut concat so the raw input features get folded into
-            # the normalization. Skipped on the inference-time last layer
-            # (no shortcut applied there, so x has the un-cat'd width which
-            # wouldn't match the LayerNorm's `normalized_shape`); out_proj
-            # consumes the raw clamped output, matching how it trained.
-            if layer.layer_norm is not None and (apply_shortcut or not self.param.model.shortcut):
-                x = layer.layer_norm(x)
+        outs: dict[int, torch.Tensor] = {}
+        for j, layer in enumerate(self.layers):
+            if j > 0:
+                input_layers, input_raw = sources[j]
+                parts = [outs[s] for s in input_layers]
+                if input_raw:
+                    parts.append(x_inp)
+                x = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
+                # Per-layer LayerNorm (if enabled) standardizes the feature
+                # tensor that feeds the next layer — explicitly AFTER the
+                # shortcut concat so the raw inputs and older layers' outputs
+                # get folded into the normalization.
+                prev = self.layers[j - 1]
+                if prev.layer_norm is not None:
+                    x = prev.layer_norm(x)
+                for s in input_layers:
+                    if last_reader[s] == j:
+                        del outs[s]
+            if skip_last_layer and j == n_layers - 1:
+                return x
+            outs[j] = torch.clamp(layer(x), -clamp, clamp)
+
+        if n_layers == 0:
+            return x
+        x = outs[n_layers - 1]
+        # The inference-time last layer feeds no further layer. Its LayerNorm
+        # is sized for a next layer's input, which only equals its own output
+        # when nothing is concatenated (`shortcut: false`); then it applies
+        # here too, as it did in training. Otherwise out_proj consumes the raw
+        # clamped output, matching how it trained.
+        last = self.layers[-1]
+        if last.layer_norm is not None and not self.concat_inputs:
+            x = last.layer_norm(x)
         return x
 
     def get_best_neuron_model(self, layer: SONNLayer) -> tuple[torch.Tensor, torch.Tensor]:
@@ -665,16 +805,12 @@ class SONN(SONNModule):
             use_layer_norm=self.param.model.use_layer_norm,
         )
 
-        if layers_count == 0:
-            # the first layer, number of inputs equals to the number of the original features
-            n = self.d_model
-        else:
-            # all other layers: number of inputs equals to the number of selected
-            # neurons from the previous layer plus number of the original
-            # features if param.shortcut is True
-            n = self.layers[-1].d_model
-            if self.param.model.shortcut:
-                n += self.d_model
+        # The first layer reads the original features. Every other layer reads
+        # the selected neurons of the previous layer, of `shortcut.prev_layers`
+        # older layers and, with `shortcut.raw_features`, the original
+        # features again (see the input layout above `forward`).
+        layer.input_layers, layer.input_raw = self.new_layer_sources(layers_count)
+        n = self.next_input_width()
 
         # number of all possible combination of input pairs is N = (n * (n-1)) / 2
         # add all neurons to the layer

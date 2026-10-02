@@ -62,16 +62,27 @@ class SONNLayer(SONNModule):
         self.neuron_idxs = None  # map, absolute_neuron_idx <=> neuron_module idx, relative_neuron_idx
         self.neuron_models_names = []  # filled during state_dict() call
 
-        # Optional per-layer LayerNorm, applied AFTER the optional shortcut
-        # concat in SONN.forward so the raw input features (cat'd in by the
-        # shortcut path) are folded into the normalization. Built lazily by
-        # setup_layer_norm(dim) once we know the final concatenated width —
-        # the caller passes d_model + d_orig when shortcut is on, d_model
-        # alone otherwise. Stored explicitly so from_checkpoint_metadata can
-        # reconstruct without re-deriving it from model config.
+        # Optional per-layer LayerNorm over the input of the *next* layer,
+        # applied AFTER the shortcut concat in SONN.forward so the raw input
+        # features and older layers' outputs cat'd in by the shortcut are
+        # folded into the normalization. Built lazily by setup_layer_norm(dim)
+        # once we know the final concatenated width (SONN.next_input_width).
+        # Stored explicitly so from_checkpoint_metadata can reconstruct
+        # without re-deriving it from model config.
         self.use_layer_norm = use_layer_norm
         self.layer_norm_dim: int | None = None
         self.layer_norm: nn.LayerNorm | None = None
+
+        # What this layer's input is made of, in concatenation order: the
+        # outputs of the layers at `input_layers` (model positions, nearest
+        # first), then the raw model inputs when `input_raw`. Set by
+        # SONN.create_layer and kept here rather than re-derived from
+        # `model.shortcut` because pruning can delete a layer, after which
+        # "the last k layers" would name different ones. None on layers from
+        # a checkpoint that predates the fields; SONN.layer_sources then falls
+        # back to the old layout (previous layer, plus raw when shortcut).
+        self.input_layers: list[int] | None = None
+        self.input_raw: bool | None = None
 
         self.params_metadata_names.extend([
             "layer_index",
@@ -84,6 +95,8 @@ class SONNLayer(SONNModule):
             "neuron_models_names",
             "use_layer_norm",
             "layer_norm_dim",
+            "input_layers",
+            "input_raw",
         ])
 
     def setup_layer_norm(self, dim: int) -> None:
@@ -91,7 +104,7 @@ class SONNLayer(SONNModule):
         `normalized_shape`. Idempotent and a no-op when the flag is off.
 
         Called from `Trainer.neuron_selection` after pruning (passing
-        `d_model + d_orig` when shortcut is on, `d_model` otherwise) and
+        the width of the next layer's input, `SONN.next_input_width`) and
         from `from_checkpoint_metadata` when restoring a model.
         """
         if not self.use_layer_norm or self.layer_norm is not None:
@@ -136,6 +149,8 @@ class SONNLayer(SONNModule):
         # was off and setup_layer_norm will be a no-op anyway.
         ln_dim = metadata.get("layer_norm_dim") or metadata["d_model"]
         layer.setup_layer_norm(ln_dim)
+        layer.input_layers = metadata.get("input_layers")
+        layer.input_raw = metadata.get("input_raw")
         return layer
 
     def to(self, *args: Any, **kwargs: Any) -> "SONNLayer":

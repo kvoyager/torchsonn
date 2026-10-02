@@ -796,9 +796,12 @@ def test_forward_with_shortcut_and_layer_norm():
         }
     )
     m = SONN(cfg, d_model=4)
+    # Append each layer before creating the next: create_layer stores the
+    # input layout of the position it is created for.
     l0 = m.create_layer(0)
+    m.layers.append(l0)
     l1 = m.create_layer(1)
-    m.layers.extend([l0, l1])
+    m.layers.append(l1)
     # Configure LayerNorm widths post-creation: l0 outputs C(4,2)=6 + 4 shortcut = 10
     l0.setup_layer_norm(10)
     # l1's input is l0.d_model + d_model when shortcut on

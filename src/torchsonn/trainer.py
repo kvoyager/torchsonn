@@ -1166,11 +1166,13 @@ class Trainer:
         # Keep d_model in sync with the actual post-prune output count so the
         # next create_layer call uses the right number of inputs.
         layer.d_model = len(layer)
-        # Build the per-layer LayerNorm with the post-shortcut-cat width so
-        # SONN.forward can fold the raw input features into the normalization
-        # alongside the layer's own outputs. No-op when use_layer_norm is off.
-        ln_dim = layer.d_model + (model.d_model if model.param.model.shortcut else 0)
-        layer.setup_layer_norm(ln_dim)
+        # Build the per-layer LayerNorm with the width of the next layer's
+        # input (post-shortcut-cat) so SONN.forward can fold the raw input
+        # features and older layers' outputs into the normalization alongside
+        # this layer's own. `layer` is the last of model.layers here, so the
+        # next layer would be created right after it. No-op when
+        # use_layer_norm is off.
+        layer.setup_layer_norm(model.next_input_width())
 
         # Restore the shared_proj that was co-trained with the selected neurons.
         # write_back_params only updates neuron_model.weight; shared_proj params
@@ -2657,9 +2659,10 @@ class Trainer:
             head will see this layer's output at inference."""
             z = layer(features)
             z = torch.clamp(z, -clamp, clamp)
-            # LayerNorm only fires here when shortcut is globally disabled —
-            # mirrors SONN.forward's `apply_shortcut or not shortcut` guard.
-            if layer.layer_norm is not None and not model.param.model.shortcut:
+            # LayerNorm only fires here when nothing is concatenated to a
+            # layer's output (`shortcut: false`) — mirrors SONN.forward's
+            # last-layer guard.
+            if layer.layer_norm is not None and not model.concat_inputs:
                 z = layer.layer_norm(z)
             proj = head(z)
             # Regression: return raw scalar (N,); the configured loss_fn
@@ -2822,7 +2825,7 @@ class Trainer:
             the closure stays self-contained."""
             z = layer(features)
             z = torch.clamp(z, -clamp, clamp)
-            if layer.layer_norm is not None and not model.param.model.shortcut:
+            if layer.layer_norm is not None and not model.concat_inputs:
                 z = layer.layer_norm(z)
             proj = head(z)
             if is_regressor:
@@ -2945,6 +2948,16 @@ class Trainer:
         re-derives the same neurons in the same ascending-error order, which is
         the order the head's inputs were fitted in.
         """
+        # The remapping below assumes every layer reads only its predecessor
+        # (plus the raw inputs), i.e. `shortcut.prev_layers: null`.
+        for j in range(1, len(model.layers)):
+            if model.layer_sources(j)[0] != [j - 1]:
+                raise NotImplementedError(
+                    "prune does not support layers fed by older layers' outputs "
+                    f"(layer at position {j} reads {model.layer_sources(j)[0]}); "
+                    "use shortcut.prev_layers: null"
+                )
+
         last_layer = model.layers[-1]
         dev_last = last_layer.module_idxs.device
         n_keep = 1 if model.out_proj is None else int(model.out_proj.in_features)
@@ -3037,6 +3050,10 @@ class Trainer:
                     L.layer_index = j
                     for nm in L.neuron_models:
                         nm.layer_index = j
+                    # Each layer reads only its predecessor (the guard at the
+                    # top), so the stored layout follows the renumbering.
+                    if j >= i and L.input_layers is not None:
+                        L.input_layers = [j - 1] if j > 0 else []
 
                 logger.info(
                     f"prune: removed layer at position {i} "
