@@ -2933,7 +2933,9 @@ class Trainer:
         """Strip the network down to the neurons that actually reach the output.
 
         The last layer is cut to the columns the model reads, and every earlier
-        layer is then cut to whatever its successor still references.
+        layer is then cut to whatever the layers reading it still reference —
+        its successor, and with `shortcut.prev_layers` later layers too. A
+        layer nobody reads any more is deleted.
 
         How many columns the model reads depends on the head. Without one,
         `SONN.infer` returns the best-error column and a single neuron suffices.
@@ -2948,15 +2950,33 @@ class Trainer:
         re-derives the same neurons in the same ascending-error order, which is
         the order the head's inputs were fitted in.
         """
-        # The remapping below assumes every layer reads only its predecessor
-        # (plus the raw inputs), i.e. `shortcut.prev_layers: null`.
-        for j in range(1, len(model.layers)):
-            if model.layer_sources(j)[0] != [j - 1]:
-                raise NotImplementedError(
-                    "prune does not support layers fed by older layers' outputs "
-                    f"(layer at position {j} reads {model.layer_sources(j)[0]}); "
-                    "use shortcut.prev_layers: null"
-                )
+        # Every layer's input is a concatenation of blocks — the outputs of
+        # the layers in its `input_layers`, then the raw inputs (see the
+        # layout note above SONN.forward) — and a layer can be read by several
+        # later ones under `shortcut.prev_layers`. A flat src index is only
+        # meaningful against the block widths it was built for, so each layer's
+        # src_idxs are decoded into (source, index inside the source's block)
+        # right after the layer itself is pruned — its sources, all earlier,
+        # still have their pre-prune widths then — and re-encoded against the
+        # final widths at the end. Source -1 is the raw-input block.
+        n_layers = len(model.layers)
+        sources = [model.layer_sources(j) for j in range(n_layers)]
+        decoded: dict[int, list[tuple[torch.Tensor, torch.Tensor]]] = {}
+
+        def decode(j: int) -> None:
+            if j == 0:
+                return
+            blocks = model.input_blocks(j)
+            codes = torch.tensor([-1 if s is None else s for s, _ in blocks], dtype=torch.long)
+            widths = torch.tensor([w for _, w in blocks], dtype=torch.long)
+            ends = widths.cumsum(0)
+            starts = ends - widths
+            per_module = []
+            for module in model.layers[j].neuron_models:
+                src = module.src_idxs.detach().cpu().long()
+                block = torch.searchsorted(ends, src, right=True)
+                per_module.append((codes[block], src - starts[block]))
+            decoded[j] = per_module
 
         last_layer = model.layers[-1]
         dev_last = last_layer.module_idxs.device
@@ -2991,91 +3011,38 @@ class Trainer:
         # doesn't index the modules with stale rows.
         last_layer.err_values = last_layer.err_values[used]
         last_layer.module_idxs = torch.cat(renumbered_rows)
+        decode(n_layers - 1)
 
-        # Walk layers from second-to-last down to 0 with an index, because we
-        # may delete entries from model.layers mid-iteration when a layer
-        # contributes nothing to its downstream neighbor.
-        i = len(model.layers) - 2
-        while i >= 0:
+        # Walk layers from second-to-last down to 0. By the time layer i is
+        # reached every layer that reads it is final, so the columns of i
+        # still referenced are known. Layers read by nobody are only marked
+        # here and dropped after the walk, so positions stay put meanwhile.
+        deleted: set[int] = set()
+        for i in range(n_layers - 2, -1, -1):
             cur_layer = model.layers[i]
-            next_layer = model.layers[i + 1]
-            cur_num_neuron_models = cur_layer.module_idxs.shape[0]
-
-            # Indices in next_layer's src_idxs that point at cur_layer outputs
-            # vs. at the original-feature shortcut block. The split point is
-            # cur_num_neuron_models — see SONN.forward's `cat([x, x_inp])`.
-            #
-            # Flatten each module's src_idxs to 1-D before cat so neuron
-            # families with different arities (pair-based LinearCov /
-            # Quadratic / Cubic at dim=2 vs PolyQuadratic at dim=k) can
-            # coexist in the same layer. We only need the set of unique
-            # *index values* here, not the per-neuron tuple shape — every
-            # downstream use of `uniq_src_idxs` is `< cur_num_neuron_models`,
-            # which treats it as a flat index pool.
-            uniq_src_idxs = torch.unique(
-                torch.cat([m.src_idxs.reshape(-1) for m in next_layer.neuron_models])
-            )
-            used = uniq_src_idxs[uniq_src_idxs < cur_num_neuron_models]
+            readers = [j for j in range(i + 1, n_layers) if j not in deleted and i in sources[j][0]]
+            refs = [local[source == i] for j in readers for source, local in decoded[j]]
+            used = torch.unique(torch.cat(refs)) if refs else torch.empty(0, dtype=torch.long)
 
             if used.numel() == 0:
-                # cur_layer's outputs aren't referenced by next_layer (the
-                # surviving best path uses original features through the
+                # No surviving layer reads cur_layer's outputs (the best path
+                # uses other layers or the original features through the
                 # shortcut only). The layer is dead weight — delete it.
-                #
-                # next_layer's input layout was:
-                #   [cur_layer_output (cur_num), x_inp (d_model)]
-                # After deleting cur_layer it becomes:
-                #   [prev_layer_output (prev_cur_num), x_inp (d_model)]  if a prev layer exists
-                #   x_inp (d_model)                                       otherwise
-                # so the shortcut block shifts by (prev_cur_num - cur_num).
-                prev_cur_num = (
-                    model.layers[i - 1].module_idxs.shape[0] if i > 0 else 0
-                )
-                shift = prev_cur_num - cur_num_neuron_models
-                if shift != 0:
-                    for module in next_layer.neuron_models:
-                        module.src_idxs = (module.src_idxs + shift).to(
-                            device=module.src_idxs.device
-                        )
-
-                # Drop cur_layer from the ModuleList and renumber the rest.
-                # Each BasePolynomNeuron caches its own .layer_index (set at
-                # construction, also persisted via params_metadata) and
-                # plot_model + checkpoint metadata read it directly, so the
-                # renumber has to propagate down into the neurons too.
-                model.layers = nn.ModuleList(
-                    [L for j, L in enumerate(model.layers) if j != i]
-                )
-                for j, L in enumerate(model.layers):
-                    L.layer_index = j
-                    for nm in L.neuron_models:
-                        nm.layer_index = j
-                    # Each layer reads only its predecessor (the guard at the
-                    # top), so the stored layout follows the renumbering.
-                    if j >= i and L.input_layers is not None:
-                        L.input_layers = [j - 1] if j > 0 else []
-
-                logger.info(
-                    f"prune: removed layer at position {i} "
-                    f"({cur_num_neuron_models} unreferenced modules); "
-                    f"shifted downstream src_idxs by {shift}."
-                )
-                i -= 1
+                deleted.add(i)
                 continue
 
-            new_module_idxs = cur_layer.module_idxs[used]
-            new_num_neuron_models = new_module_idxs.shape[0]
-            new_modules = []
             # Build the post-prune module_idxs with renumbered (new_module_idx,
             # arange(K)) rows — same shape contract as train_layer's output —
             # so a second prune() call sees consistent (module_idxs ↔ modules)
             # state. `used` is sorted (torch.unique returns sorted) and
             # train_layer lays module_idxs out module-by-module, so the loop's
             # iteration order matches the new layer's concatenated output
-            # order; cur_layer.err_values[used] is therefore already correctly
-            # ordered for the new layer.
-            renumbered_idxs_rows = []
+            # order: kept column used[r] becomes column r, and
+            # cur_layer.err_values[used] is already correctly ordered.
             dev = cur_layer.module_idxs.device
+            new_module_idxs = cur_layer.module_idxs[used.to(dev)]
+            new_modules = []
+            renumbered_idxs_rows = []
             new_idx = 0
             for module_idx in torch.unique(new_module_idxs[:, 0]):
                 cur_module_idx = new_module_idxs[new_module_idxs[:, 0] == module_idx]
@@ -3089,30 +3056,59 @@ class Trainer:
                 ], dim=1))
                 new_idx += 1
             cur_layer.neuron_models = NeuronModuleList(new_modules)
-            back_map = {k: v for k, v in enumerate(["-".join([str(x) for x in item.tolist()]) for item in cur_layer.module_idxs])}
-            forw_map = {v: k for k, v in enumerate(["-".join([str(x) for x in item.tolist()]) for item in new_module_idxs])}
-
-            def remap_func(x):
-                try:
-                    # x is an index of the prev layer output
-                    res = forw_map[back_map[x]]
-                except KeyError:
-                    # x is an index of the model inputs
-                    diff = cur_num_neuron_models - new_num_neuron_models
-                    res = x - diff
-                return res
-
-            for module in next_layer.neuron_models:
-                src_idx = module.src_idxs.cpu()
-                src_idx.apply_(remap_func)
-                module.src_idxs = src_idx.to(device=model.device)
-
-            # Swap the per-layer metadata in AFTER back_map / forw_map
-            # snapshotted the pre-prune state, so a subsequent prune() call
-            # sees module_idxs whose within-indices match the now-smaller
-            # modules.
             if cur_layer.err_values is not None:
-                cur_layer.err_values = cur_layer.err_values[used]
+                cur_layer.err_values = cur_layer.err_values[used.to(cur_layer.err_values.device)]
             cur_layer.module_idxs = torch.cat(renumbered_idxs_rows)
-            i -= 1
+
+            for j in readers:
+                for source, local in decoded[j]:
+                    mask = source == i
+                    local[mask] = torch.searchsorted(used, local[mask])
+            decode(i)
+
+        # Re-encode every surviving layer's src_idxs against the final block
+        # widths, without the deleted layers' blocks, and store the layout
+        # under the new positions.
+        keep = [j for j in range(n_layers) if j not in deleted]
+        new_pos = {old: new for new, old in enumerate(keep)}
+        for j in keep:
+            layer = model.layers[j]
+            if j > 0:
+                input_layers = [s for s in sources[j][0] if s not in deleted]
+                input_raw = sources[j][1]
+                starts: dict[int, int] = {}
+                offset = 0
+                for s in input_layers:
+                    starts[s] = offset
+                    offset += len(model.layers[s])
+                if input_raw:
+                    starts[-1] = offset
+                for (source, local), module in zip(decoded[j], layer.neuron_models):
+                    src = torch.empty_like(local)
+                    for code, start in starts.items():
+                        mask = source == code
+                        src[mask] = local[mask] + start
+                    assert bool(torch.isin(source, torch.tensor(list(starts))).all()), \
+                        "prune: a kept neuron reads a deleted layer"
+                    module.src_idxs = src.to(device=module.src_idxs.device, dtype=module.src_idxs.dtype)
+                layer.input_layers = [new_pos[s] for s in input_layers]
+                layer.input_raw = input_raw
+            else:
+                layer.input_layers, layer.input_raw = [], True
+
+        if deleted:
+            # Drop the deleted layers and renumber the rest. Each
+            # BasePolynomNeuron caches its own .layer_index (set at
+            # construction, also persisted via params_metadata) and
+            # plot_model + checkpoint metadata read it directly, so the
+            # renumber has to propagate down into the neurons too.
+            model.layers = nn.ModuleList([model.layers[j] for j in keep])
+            for j, L in enumerate(model.layers):
+                L.layer_index = j
+                for nm in L.neuron_models:
+                    nm.layer_index = j
+            logger.info(
+                f"prune: removed layer(s) at position(s) {sorted(deleted)} "
+                "(outputs read by no surviving layer)."
+            )
 

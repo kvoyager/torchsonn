@@ -49,6 +49,9 @@ def _grow(m: SONN, n_layers: int, width: int = WIDTH) -> SONN:
         layer.neuron_models = layer.neuron_models[:1]
         layer.neuron_models[0].prune(torch.arange(width))
         layer.d_model = len(layer)
+        # selection bookkeeping prune reads: neuron r is the r-th best
+        layer.module_idxs = torch.stack([torch.zeros(width, dtype=torch.long), torch.arange(width)], dim=1)
+        layer.err_values = torch.arange(width, dtype=torch.float32)
         layer.setup_layer_norm(m.next_input_width())
     return m
 
@@ -231,11 +234,91 @@ class TestCheckpoint:
         assert torch.equal(m(x), expected)
 
 
-def test_prune_refuses_older_layer_inputs(tmp_path):
-    cfg = _cfg(tmp_path)
-    m = _grow(_model({"prev_layers": 1}), 3)
-    with pytest.raises(NotImplementedError):
-        Trainer(config=cfg).prune(m)
+def _wire(m: SONN, src: dict[int, list[list[int]]]) -> None:
+    """Set the src_idxs of the given layers' neurons (one row per neuron)."""
+    for j, rows in src.items():
+        m.layers[j].neuron_models[0].src_idxs = torch.tensor(rows)
+
+
+def _src(m: SONN) -> list[list[list[int]]]:
+    return [[row for nm in layer.neuron_models for row in nm.src_idxs.tolist()] for layer in m.layers]
+
+
+class TestPrune:
+    """Trainer.prune over the stored layouts. Every layer of `_grow` holds 3
+    neurons; the last layer's neuron 0 is the readout. Inputs are wired by
+    hand so the surviving columns are known."""
+
+    @staticmethod
+    def _prune_and_check(m: SONN, tmp_path) -> torch.Tensor:
+        x = torch.randn(6, D_MODEL)
+        before = m(x)[:, :1]
+        Trainer(config=_cfg(tmp_path)).prune(m)
+        assert torch.equal(m(x), before)
+        return x
+
+    def test_layer_read_two_layers_down_survives(self, tmp_path):
+        m = _grow(_model({"prev_layers": 1}), 4)
+        # inputs:  L1 [h0 0-2 | raw 3-5]
+        #          L2 [h1 0-2 | h0 3-5 | raw 6-8]
+        #          L3 [h2 0-2 | h1 3-5 | raw 6-8]
+        _wire(m, {
+            1: [[0, 3], [1, 4], [5, 2]],   # kept: neuron 2 -> raw 2, h0 col 2
+            2: [[0, 1], [1, 2], [2, 6]],   # kept: neuron 2 -> h1 col 2, raw 0
+            3: [[2, 7], [0, 1], [3, 4]],   # readout: h2 col 2, raw 1
+        })
+        x = self._prune_and_check(m, tmp_path)
+        # L1 is read only through L2 (its successor); L0 only by L1 -> both
+        # survive with one column each; nothing reads h1 from L3
+        assert [len(layer) for layer in m.layers] == [1, 1, 1, 1]
+        assert [layer.input_layers for layer in m.layers] == [[], [0], [1, 0], [2, 1]]
+        # layer 0's neurons are the input pairs (0,1), (0,2), (1,2)
+        assert _src(m) == [[[1, 2]], [[3, 0]], [[0, 2]], [[0, 3]]]
+
+        # a second prune changes nothing
+        src = _src(m)
+        before = m(x)
+        Trainer(config=_cfg(tmp_path)).prune(m)
+        assert _src(m) == src
+        assert torch.equal(m(x), before)
+
+    def test_older_reader_keeps_layer(self, tmp_path):
+        m = _grow(_model({"prev_layers": 1}), 4)
+        _wire(m, {
+            1: [[0, 3], [1, 4], [5, 4]],   # kept: neuron 2 -> raw only
+            2: [[0, 1], [1, 2], [2, 3]],   # kept: neuron 2 -> h1 col 2, h0 col 0
+            3: [[2, 5], [0, 1], [3, 4]],   # readout: h2 col 2, h1 col 2
+        })
+        self._prune_and_check(m, tmp_path)
+        # L0 is read by L2 only (two layers down) and survives with col 0
+        assert [len(layer) for layer in m.layers] == [1, 1, 1, 1]
+        assert _src(m) == [[[0, 1]], [[3, 2]], [[0, 1]], [[0, 1]]]
+
+    def test_unread_layer_deleted_and_layouts_renumbered(self, tmp_path):
+        m = _grow(_model({"prev_layers": 1}), 4)
+        _wire(m, {
+            2: [[0, 1], [1, 2], [3, 8]],   # kept: neuron 2 -> h0 col 0, raw 2
+            3: [[2, 6], [0, 1], [3, 4]],   # readout: h2 col 2, raw 0
+        })
+        self._prune_and_check(m, tmp_path)
+        # nothing reads L1 any more: deleted, and L2 / L3 move down
+        assert len(m.layers) == 3
+        assert [layer.layer_index for layer in m.layers] == [0, 1, 2]
+        assert [layer.input_layers for layer in m.layers] == [[], [0], [1]]
+        # L2 now [h0 0 | raw 1-3], L3 [h2 0 | raw 1-3]
+        assert _src(m) == [[[0, 1]], [[0, 3]], [[0, 1]]]
+
+    def test_previous_layer_only_matches_chain_deletion(self, tmp_path):
+        m = _grow(_model(True), 4)
+        _wire(m, {
+            2: [[0, 1], [1, 2], [3, 5]],   # kept: neuron 2 -> raw 0, raw 2
+            3: [[2, 3], [0, 1], [3, 4]],   # readout: h2 col 2, raw 0
+        })
+        self._prune_and_check(m, tmp_path)
+        # L1 unread, then L0 (read only by L1) too
+        assert len(m.layers) == 2
+        assert [layer.input_layers for layer in m.layers] == [[], [0]]
+        assert _src(m) == [[[0, 2]], [[0, 1]]]
 
 
 def test_train_with_prev_layers(tmp_path):
@@ -248,3 +331,6 @@ def test_train_with_prev_layers(tmp_path):
         assert layer.input_layers == list(range(j - 1, -1, -1))
     preds, targets = trainer.infer(trained, _make_dl(8), verbose=False)
     assert preds.shape[0] == targets.shape[0]
+    trainer.prune(trained)
+    pruned, _ = trainer.infer(trained, _make_dl(8), verbose=False)
+    assert torch.allclose(pruned, preds)
