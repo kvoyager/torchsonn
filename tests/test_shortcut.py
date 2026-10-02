@@ -334,3 +334,35 @@ def test_train_with_prev_layers(tmp_path):
     trainer.prune(trained)
     pruned, _ = trainer.infer(trained, _make_dl(8), verbose=False)
     assert torch.allclose(pruned, preds)
+
+
+class TestPlot:
+    def test_skip_edges_from_older_layers(self, tmp_path, monkeypatch):
+        pytest.importorskip("graphviz")
+        from torchsonn.plot_model import PlotModel
+
+        m = _grow(_model({"prev_layers": 1}), 3)
+        # layer 2 reads [h_1 0-2 | h_0 3-5 | raw 6-8]
+        _wire(m, {2: [[1, 3], [4, 6], [0, 8]]})
+        p = PlotModel(m, filename=str(tmp_path / "g"))
+        edges: list[tuple[str, str]] = []
+        p.add_edge = lambda a, b: edges.append((a, b))  # type: ignore[assignment]
+        nm = m.layers[2].neuron_models[0]
+        for u in (1, 3, 6, 8):
+            p.add_connection(m.layers, nm, 0, u)
+        target = "layer 2\nneuron 0"
+        assert edges == [("layer 1\nneuron 1", target), ("layer 0\nneuron 0", target),
+                         ("F0", target), ("F2", target)]
+
+    def test_plot_renders_skip_edges(self, tmp_path, monkeypatch):
+        pytest.importorskip("graphviz")
+        from torchsonn.plot_model import PlotModel
+
+        m = _grow(_model({"prev_layers": 1}), 3)
+        _wire(m, {2: [[1, 3], [4, 6], [0, 8]]})
+        p = PlotModel(m, filename=str(tmp_path / "g"))
+        monkeypatch.setattr("torchsonn.plot_model.shutil.which", lambda _: "/usr/bin/dot")
+        monkeypatch.setattr(p.g, "render", lambda **_k: None)
+        p.plot()
+        # neuron 1 of layer 2 reads h_0 col 1 directly, two layers down
+        assert '"layer 0\nneuron 1" -> "layer 2\nneuron 1"' in p.g.source

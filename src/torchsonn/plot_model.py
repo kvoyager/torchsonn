@@ -100,6 +100,9 @@ class PlotModel:
 
     @staticmethod
     def _get_feature_index(layers: "Sequence[object]", neuron: "object", u_index: int) -> tuple[bool, int]:
+        """(is an original feature, index) under the [previous layer | raw]
+        input layout — the layout of models that do not describe their own
+        (no `locate`)."""
         if neuron.layer_index == 0:
             return True, u_index
         else:
@@ -109,6 +112,19 @@ class PlotModel:
             else:
                 return True, u_index - len(prev_layer)
 
+    def _input_source(self, layers: "Sequence[object]", neuron: "object", u_index: int) -> tuple[int | None, int]:
+        """(source layer position or None for an original feature, index
+        inside the source) of input `u_index` of `neuron`.
+
+        A SONN describes each layer's input layout (`SONN.locate`), which with
+        `shortcut.prev_layers` includes the outputs of layers older than the
+        previous one; those inputs become skip edges across layers.
+        """
+        if neuron.layer_index > 0 and hasattr(self.model, "locate"):
+            return self.model.locate(neuron.layer_index, u_index)
+        is_feature, index = self._get_feature_index(layers, neuron, u_index)
+        return (None if is_feature else neuron.layer_index - 1), index
+
     def add_connection(
         self,
         layers: "Sequence[object]",
@@ -116,16 +132,15 @@ class PlotModel:
         neuron_idx: int,
         u_index: int,
     ) -> None:
-        input_is_original_feature, feature_index = self._get_feature_index(layers,  neuron, u_index)
+        source, index = self._input_source(layers, neuron, u_index)
         layer = layers[neuron.layer_index]
-        if input_is_original_feature:
-            name1 = self._get_feature_name(feature_index)
-            name2 = self._get_neuron_name(neuron_idx, neuron, layer.neuron_idxs)
+        if source is None:
+            name1 = self._get_feature_name(index)
         else:
-            prev_layer = layers[neuron.layer_index-1]
-            parent_neuron_idx, parent_neuron = prev_layer.get_parent_neron_module(feature_index)
-            name1 = self._get_neuron_name(parent_neuron_idx, parent_neuron, prev_layer.neuron_idxs)
-            name2 = self._get_neuron_name(neuron_idx, neuron, layer.neuron_idxs)
+            src_layer = layers[source]
+            parent_neuron_idx, parent_neuron = src_layer.get_parent_neron_module(index)
+            name1 = self._get_neuron_name(parent_neuron_idx, parent_neuron, src_layer.neuron_idxs)
+        name2 = self._get_neuron_name(neuron_idx, neuron, layer.neuron_idxs)
         return self.add_edge(name1, name2)
 
     def add_edge(self, a: str, b: str) -> None:
