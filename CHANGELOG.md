@@ -2,6 +2,26 @@
 
 ## 0.1.4
 
+### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs
+
+`model.shortcut` is now a mapping. `raw_features` (bool, default true) is
+the old switch, and `prev_layers` (int | `"all"` | null, default null) feeds
+every new layer the outputs of that many layers before the previous one as
+well. The input of layer `j` is `[h_{j-1} | h_{j-2} | ... | h_{j-1-k} |
+x_raw]`. The previous layer always feeds the next, and null keeps the
+original `[h_{j-1} | x_raw]`. `shortcut: true|false` is still accepted and
+means `prev_layers: null`, so existing configs and checkpoints behave as
+before (tests compare the forward bit for bit against the previous code).
+Each layer stores its input layout (`input_layers`, `input_raw`, saved in
+checkpoints; older checkpoints fall back to the previous layer plus raw)
+because pruning can delete layers. `SONN.input_blocks` / `locate` describe
+the layout. `Trainer.prune` now handles a layer read by several later layers
+and re-encodes every layer's inputs after deleting the unread ones.
+`PlotModel` draws inputs from older layers as skip edges. On California
+housing (Legendre fine-tune config, seeds 10-13) it does not pay: test MSE
+0.1866 ± 0.0014 with `null`, 0.1858 ± 0.0017 with `1` (within noise),
+0.1884 with `2` and 0.1891 with `"all"`.
+
 ### Added — `rbf`: Gaussian RBF neuron family with learnable, k-means-initialized centers
 
 A local basis next to the global polynomial families. `RBFNeuron`
