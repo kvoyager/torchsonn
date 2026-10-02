@@ -190,14 +190,16 @@ Legendre-3 and RBF-8 now tie at 0.185.
 
 ## Against gradient boosting, same data
 
-The tree models below are fitted on the tutorial's exact 16 features, the
-same train/dev/test rows and the same prediction clip. Each model is
-reported as the mean ± standard deviation over several seeds.
+The tree models and the MLP below are fitted on the tutorial's exact 16
+features, the same train/dev/test rows and the same prediction clip. Each
+model is reported as the mean ± standard deviation over several seeds.
 
 "Learned parameters" counts everything the model learned:
 
 - **Trees:** each split counts as 2 (the feature it splits on and the
   threshold), and each leaf value counts as 1.
+- **MLP:** every weight and bias. 16 inputs → 64 hidden units → 1
+  output gives 16·64 + 64 + 64 + 1 = 1,153.
 - **SONN:** each Legendre neuron has 8 coefficients (a degree-3 polynomial
   of two inputs). Each RBF-8 neuron has 66: 18 weights, 16 centre
   coordinates and 16 widths. The 24→1 head has 25 weights. SONN models
@@ -211,6 +213,7 @@ The parameter column shows the smallest model among the seeds.
 | XGBoost (hist, depth 6, lr 0.05, early stop on dev) | 0–4 | 0.1719 ± 0 ² | 0.415 | **0.2632** | 52,257 ² |
 | **torchsonn Legendre-3, 24 survivors** | 10–13 | 0.1852 ± 0.0008 | 0.430 | 0.2775 | **801** ³ |
 | torchsonn RBF-8, 24 survivors | 10–13 | 0.1853 ± 0.0014 | 0.430 | 0.2772 | 6,485 ⁴ |
+| MLP, one hidden layer of 64 units (SiLU) | 0–4 | 0.1905 ± 0.0012 | 0.436 | 0.2871 | 1,153 ⁵ |
 
 ¹ The seed changes HistGradientBoosting's internal early-stopping split.
 The five models have 247–459 trees and 22,477–41,769 parameters.
@@ -227,7 +230,11 @@ four: test MSE 0.1841.
 test MSE 0.1830. RBF-8 matches Legendre-3 on accuracy, but it saves far
 fewer parameters relative to the trees.
 
-Neither tree model was tuned beyond these settings.
+⁵ Wider single hidden layers barely help: 256 units give 0.1891 ± 0.0013
+(4,609 parameters) and 1,024 units give 0.1894 ± 0.0010 (18,433
+parameters). 16 units give 0.1918 ± 0.0032 (289 parameters).
+
+Neither tree model nor the MLP was tuned beyond these settings.
 
 **Reproducing the tree models.** The script below builds the tutorial's
 features and split with the tutorial's own functions, then fits both
@@ -289,6 +296,94 @@ report("XGBoost", booster.predict(X_test, iteration_range=(0, booster.best_itera
 
 </details>
 
+**Reproducing the MLP.** The script below builds the same features and
+split, standardizes the inputs on the training rows and fits a
+single-hidden-layer MLP with PyTorch. It trains with AdamW and plain MSE,
+halves the learning rate when the dev loss stalls, and stops early on dev,
+keeping the best epoch. Run it from the repo root. It prints the per-seed
+numbers behind the table (the numbers above came from a CUDA run).
+
+<details>
+<summary>Show the script</summary>
+
+```python
+import numpy as np
+import torch
+from omegaconf import OmegaConf
+from sklearn.datasets import fetch_california_housing
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
+
+from torchsonn.data.preprocessing import split_dataset
+from tutorials.california_housing import california_housing as ch
+
+# The tutorial's features and split: 16 inputs, 20% test, train/dev 3:1.
+p = ch.tutorial_params(OmegaConf.create({"tutorial": {"feature_engineering": True}}))
+data = fetch_california_housing()
+X, names = ch.engineer_features(data.data.astype(np.float32), list(data.feature_names), p)
+y = data.target.astype(np.float32)
+X_rest, X_test, y_rest, y_test = train_test_split(X, y, test_size=p.test_size, random_state=42)
+X_train, y_train, X_dev, y_dev = split_dataset(X_rest, y_rest, p.dev_split)
+
+# kNN price feature, fitted on the training rows only.
+ll = [names.index("Latitude"), names.index("Longitude")]
+knn_train, knn_dev, knn_test = ch.knn_price_feature(
+    X_train[:, ll], np.log(y_train), [X_dev[:, ll], X_test[:, ll]], p.knn_price_k)
+X_train = np.column_stack([X_train, knn_train])
+X_dev = np.column_stack([X_dev, knn_dev])
+X_test = np.column_stack([X_test, knn_test])
+
+# Standardize the inputs on the training rows.
+device = "cuda" if torch.cuda.is_available() else "cpu"
+mu, sd = X_train.mean(0), X_train.std(0) + 1e-8
+Xtr, Xdv, Xte = (torch.tensor((a - mu) / sd, device=device) for a in (X_train, X_dev, X_test))
+ytr, ydv = torch.tensor(y_train, device=device), torch.tensor(y_dev, device=device)
+
+
+def report(name, y_pred):
+    y_pred = np.clip(y_pred, y_train.min(), y_train.max())  # same clip as the tutorial
+    print(f"{name}: test MSE {mean_squared_error(y_test, y_pred):.4f}  "
+          f"MAE {mean_absolute_error(y_test, y_pred):.4f}")
+
+
+def fit_mlp(hidden, seed, epochs=2000, patience=100, batch_size=256):
+    torch.manual_seed(seed)
+    model = torch.nn.Sequential(
+        torch.nn.Linear(Xtr.shape[1], hidden), torch.nn.SiLU(), torch.nn.Linear(hidden, 1)).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5, patience=30)
+    best, best_state, bad = float("inf"), None, 0
+    for _ in range(epochs):
+        model.train()
+        perm = torch.randperm(len(Xtr), device=device)
+        for i in range(0, len(Xtr), batch_size):
+            idx = perm[i:i + batch_size]
+            loss = ((model(Xtr[idx]).squeeze(1) - ytr[idx]) ** 2).mean()
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        model.eval()
+        with torch.no_grad():
+            dev_mse = ((model(Xdv).squeeze(1) - ydv) ** 2).mean().item()
+        sched.step(dev_mse)
+        if dev_mse < best - 1e-6:  # early stop on dev, keep the best epoch
+            best, bad = dev_mse, 0
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+        else:
+            bad += 1
+            if bad > patience:
+                break
+    model.load_state_dict(best_state)
+    with torch.no_grad():
+        return model(Xte).squeeze(1).cpu().numpy()
+
+
+for seed in range(5):
+    report(f"MLP (64 hidden units), seed {seed}", fit_mlp(64, seed))
+```
+
+</details>
+
 ## The models
 
 These are the pruned networks of two of the seed runs above, cut down to
@@ -326,7 +421,8 @@ torchsonn does not outperform gradient boosting on California housing.
 On identical features and splits:
 
 - the best tree model reaches a mean test MSE of **0.170**;
-- torchsonn reaches **0.185**.
+- torchsonn reaches **0.185**;
+- a single-hidden-layer MLP reaches **0.191**.
 
 That is a gap of 0.015 MSE, or about 0.018 RMSE (0.412 vs 0.430). No
 seed of either torchsonn model reaches the trees' worst seed.
