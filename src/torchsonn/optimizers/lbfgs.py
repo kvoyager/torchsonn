@@ -383,37 +383,31 @@ class BatchedLBFGS(BaseOptimizer):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore the state written by `state_dict`, including checkpoints from the older per-member deque layout."""
+        """Restore the state written by `state_dict`; every field must be present.
+
+        Shared parameters get their single deque history back; batched ones
+        their `(B, history_size, P)` correction tensors and per-member fill
+        counts.
+        """
         self.lr = state_dict["lr"]
         self.history_size = state_dict["history_size"]
         self.batch_size = state_dict["batch_size"]
         self.shared_param_names = set(state_dict["shared_param_names"])
-        self.clip_value = state_dict.get("clip_value")
-        self.clip_norm = state_dict.get("clip_norm")
-        self.max_step = state_dict.get("max_step", self.max_step)
-        self.curvature_eps = state_dict.get("curvature_eps", self.curvature_eps)
-        self.shared_param_lr_multiplier = state_dict.get("shared_param_lr_multiplier", 1.0)
+        self.clip_value = state_dict["clip_value"]
+        self.clip_norm = state_dict["clip_norm"]
+        self.max_step = state_dict["max_step"]
+        self.curvature_eps = state_dict["curvature_eps"]
+        self.shared_param_lr_multiplier = state_dict["shared_param_lr_multiplier"]
         self.prev_params = {k: v.clone() for k, v in state_dict["prev_params"].items()}
         self.prev_grads = {k: v.clone() for k, v in state_dict["prev_grads"].items()}
 
-        counts = state_dict.get("hist_count", {})
         self.s_hist, self.y_hist, self.hist_count = {}, {}, {}
         for k, v in state_dict["s_hist"].items():
             yv = state_dict["y_hist"][k]
             if k in self.shared_param_names:
                 self.s_hist[k] = deque((t.clone() for t in v), maxlen=self.history_size)
                 self.y_hist[k] = deque((t.clone() for t in yv), maxlen=self.history_size)
-            elif isinstance(v, torch.Tensor):
+            else:
                 self.s_hist[k] = v.clone()
                 self.y_hist[k] = yv.clone()
-                self.hist_count[k] = counts[k].clone()
-            else:
-                # A checkpoint written by the per-member deque version: rebuild
-                # the right-aligned tensors from the lists.
-                self._init_batched_history(k, self.prev_params[k])
-                for i, lst in enumerate(v):
-                    n = min(len(lst), self.history_size)
-                    for j, (st, yt) in enumerate(zip(lst[-n:], yv[i][-n:])):
-                        self.s_hist[k][i, self.history_size - n + j] = st
-                        self.y_hist[k][i, self.history_size - n + j] = yt
-                    self.hist_count[k][i] = n
+                self.hist_count[k] = state_dict["hist_count"][k].clone()

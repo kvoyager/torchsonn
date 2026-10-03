@@ -94,6 +94,24 @@ class TestBatchedAdam:
         assert opt2.t == opt.t
         assert torch.allclose(opt2.m["weight"], opt.m["weight"])
 
+    def test_state_roundtrip_keeps_shared_lr_multiplier(self):
+        p = _make_params()
+        opt = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1,
+                    shared_param_lr_multiplier=0.25)
+        opt.step(p, _make_grads())
+        opt2 = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1)
+        opt2.load_state_dict(opt.state_dict())
+        assert opt2.shared_param_lr_multiplier == 0.25
+
+    def test_load_state_dict_requires_shared_lr_multiplier(self):
+        p = _make_params()
+        opt = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1)
+        opt.step(p, _make_grads())
+        sd = opt.state_dict()
+        del sd["shared_param_lr_multiplier"]
+        with pytest.raises(KeyError):
+            BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1).load_state_dict(sd)
+
 
 class TestBatchedSGD:
     def test_step_changes_params(self):
@@ -144,6 +162,24 @@ class TestBatchedSGD:
         opt2.load_state_dict(sd)
         assert opt2.momentum == opt.momentum
         assert torch.allclose(opt2.v["weight"], opt.v["weight"])
+
+    def test_state_roundtrip_keeps_shared_lr_multiplier(self):
+        p = _make_params()
+        opt = BatchedSGD(p, shared_param_names=[], lr=torch.ones(3) * 0.1,
+                    shared_param_lr_multiplier=0.25)
+        opt.step(p, _make_grads())
+        opt2 = BatchedSGD(p, shared_param_names=[], lr=torch.ones(3) * 0.1)
+        opt2.load_state_dict(opt.state_dict())
+        assert opt2.shared_param_lr_multiplier == 0.25
+
+    def test_load_state_dict_requires_shared_lr_multiplier(self):
+        p = _make_params()
+        opt = BatchedSGD(p, shared_param_names=[], lr=torch.ones(3) * 0.1)
+        opt.step(p, _make_grads())
+        sd = opt.state_dict()
+        del sd["shared_param_lr_multiplier"]
+        with pytest.raises(KeyError):
+            BatchedSGD(p, shared_param_names=[], lr=torch.ones(3) * 0.1).load_state_dict(sd)
 
 
 class TestBatchedLBFGS:
@@ -509,7 +545,7 @@ class TestLBFGSBatchedRecursion:
         assert torch.equal(opt.s_hist["w"][1], frozen_s) and int(opt.hist_count["w"][1]) == frozen_n
         assert int(opt.hist_count["w"][0]) > frozen_n or frozen_n == opt.history_size
 
-    def test_state_roundtrip_and_legacy_checkpoint(self):
+    def test_state_roundtrip(self):
         from collections import deque
         torch.manual_seed(1)
         p = {"w": torch.randn(3, 4), "shared": torch.randn(2)}
@@ -525,16 +561,20 @@ class TestLBFGSBatchedRecursion:
         a = opt.step({k: v.clone() for k, v in p.items()}, {k: v.clone() for k, v in g.items()})
         b = again.step({k: v.clone() for k, v in p.items()}, {k: v.clone() for k, v in g.items()})
         assert torch.equal(a["w"], b["w"]) and torch.equal(a["shared"], b["shared"])
-        # a checkpoint written by the deque-per-member version loads too
-        legacy = dict(sd)
-        legacy["s_hist"] = {"w": [[opt.s_hist["w"][i, j] for j in range(3 - int(opt.hist_count["w"][i]), 3)] for i in range(3)],
-                            "shared": sd["s_hist"]["shared"]}
-        legacy["y_hist"] = {"w": [[opt.y_hist["w"][i, j] for j in range(3 - int(opt.hist_count["w"][i]), 3)] for i in range(3)],
-                            "shared": sd["y_hist"]["shared"]}
-        legacy.pop("hist_count")
-        old = BatchedLBFGS(p, ["shared"], lr=torch.ones(3) * 0.1, history_size=3)
-        old.load_state_dict(legacy)
-        assert torch.equal(old.s_hist["w"], opt.s_hist["w"]) and torch.equal(old.hist_count["w"], opt.hist_count["w"])
+
+    @pytest.mark.parametrize("missing", [
+        "clip_value", "clip_norm", "max_step", "curvature_eps",
+        "shared_param_lr_multiplier", "hist_count",
+    ])
+    def test_load_state_dict_requires_every_field(self, missing):
+        torch.manual_seed(1)
+        p = {"w": torch.randn(3, 4)}
+        opt = BatchedLBFGS(p, [], lr=torch.ones(3) * 0.1, history_size=3)
+        for _ in range(2):
+            p = opt.step(p, {"w": torch.randn(3, 4)})
+        partial = {k: v for k, v in opt.state_dict().items() if k != missing}
+        with pytest.raises(KeyError):
+            BatchedLBFGS(p, [], lr=torch.ones(3) * 0.1, history_size=3).load_state_dict(partial)
 
     def test_step_time_is_independent_of_the_ensemble_size(self):
         import time

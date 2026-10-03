@@ -75,12 +75,12 @@ class SONNLayer(SONNModule):
 
         # What this layer's input is made of, in concatenation order: the
         # outputs of the layers at `input_layers` (model positions, nearest
-        # first), then the raw model inputs when `input_raw`. Set by
-        # SONN.create_layer and kept here rather than re-derived from
-        # `model.shortcut` because pruning can delete a layer, after which
-        # "the last k layers" would name different ones. None on layers from
-        # a checkpoint that predates the fields; SONN.layer_sources then falls
-        # back to the old layout (previous layer, plus raw when shortcut).
+        # first), then the raw model inputs when `input_raw`. Kept here rather
+        # than re-derived from `model.shortcut` because pruning can delete a
+        # layer, after which "the last k layers" would name different ones.
+        # Both start as None and are set right after construction: by
+        # SONN.create_layer for a new layer, or from the saved metadata on
+        # restore. Trainer.prune re-encodes them; SONN.layer_sources reads them.
         self.input_layers: list[int] | None = None
         self.input_raw: bool | None = None
 

@@ -19,6 +19,11 @@
   metadata field and raises `KeyError` when one is missing, instead of
   filling in a default. Checkpoints written by 0.1.5 load as before;
   older ones (for example 0.1.1, the release on PyPI) may not.
+- **Optimizer state.** `BatchedLBFGS`, `BatchedAdam` and `BatchedSGD`
+  restore their state (on `resume`) from the current format only and raise
+  `KeyError` when a field is missing. LBFGS no longer converts the
+  per-member history layout written before the batched recursion of 0.1.4.
+  State saved by 0.1.5 loads as before.
 
 ### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`
 

@@ -117,11 +117,11 @@ class BatchedSGD(BaseOptimizer):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore the state written by `state_dict`."""
+        """Restore the state written by `state_dict`; every field must be present."""
         self.lr = state_dict["lr"]
         self.weight_decay = state_dict["weight_decay"]
         self.momentum = state_dict["momentum"]
         self.nesterov = state_dict["nesterov"]
         self.v = {k: v.clone() for k, v in state_dict["v"].items()}
         self.shared_param_names = set(state_dict["shared_param_names"])
-        self.shared_param_lr_multiplier = state_dict.get("shared_param_lr_multiplier", 1.0)
+        self.shared_param_lr_multiplier = state_dict["shared_param_lr_multiplier"]

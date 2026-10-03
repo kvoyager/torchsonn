@@ -29,9 +29,9 @@ model:
 #    - cubic:
 #        activation: ""
 #    - polyquad:
-#        - squares: True
-#        - dim: 3
-#        - activation: ""
+#        squares: True
+#        dim: 3
+#        activation: ""
   shortcut: False
   nbest_neurons: 4
   max_neuron_models: 8
