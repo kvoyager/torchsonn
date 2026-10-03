@@ -15,7 +15,7 @@ Two tables at the end list what the schema leaves open: the options of a
 |---|---|---|---|
 | `model.type` | str | `multi-class` | `regressor`, `binary` or `multi-class`. Sets the training loss, the criterion and what `infer` returns. |
 | `model.num_classes` | int | 3 | Number of classes. Must be 2 for `binary` and more than 2 for `multi-class`. |
-| `model.use_output_projection` | bool | false | Add a linear head over the last layer's survivors; fit it with `Trainer.train_out_proj`. See [Heads and fine-tuning](../concepts/heads-and-finetune.md). |
+| `model.use_output_projection` | bool | false | Add a linear head over the last layer's survivors; fit it with `Trainer.train_out_proj`. Regression and multi-class only: a binary model ignores it. See [Heads and fine-tuning](../concepts/heads-and-finetune.md). |
 | `model.num_out_neurons` | int | null | How many of the last layer's survivors the head reads, best first. Null takes the value of `model.max_neuron_models`, and building the model fails with `TypeError` when that is null too. Set it to `model.nbest_neurons`: a head that reads more columns than the layer has gets zeros for the rest. |
 | `model.output_clamp_value` | float | 1000.0 | Every layer's outputs are clamped to ±this value before the next layer reads them. |
 | `model.use_layer_norm` | bool | false | Apply a LayerNorm without learned parameters to each layer's input, after the outputs and features are concatenated. |
@@ -65,7 +65,7 @@ See [Criteria](../concepts/criteria.md).
 | `train.bias_ce_type` | str | `js` | Multi-class bias error: `js` (Jensen-Shannon divergence) or `l2` (squared difference of the class scores). |
 | `train.error_normalization` | str | `variance` | Denominator of the regression criteria and training loss: `variance` (spread around the mean) or `energy` (sum of squared targets). |
 | `train.layer_err_criterion` | str | `top` | A layer's error: the best survivor's criterion value (`top`) or the survivors' mean (`avg`). |
-| `train.layer_err_source` | str | `neuron` | `neuron`: the survivors' own criterion values. `readout`: the dev loss of a linear head over all survivors; needs `model.use_output_projection: true`, regression and binary only. |
+| `train.layer_err_source` | str | `neuron` | `neuron`: the survivors' own criterion values. `readout`: the dev loss of a linear head over all survivors; needs `model.use_output_projection: true`; regression models only. |
 
 ## Growth rule
 
@@ -140,7 +140,7 @@ and the per-layer fine-tune. See
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.layer_finetune` | bool | false | After selection, train each layer's survivors jointly through a temporary linear head, on every layer. |
+| `train.layer_finetune` | bool | false | After selection, train each layer's survivors jointly through a temporary linear head, on every layer. Use it with `model.use_output_projection`: the pass turns the survivors into inputs for a head, and a model without one predicts poorly. Fails on binary models. |
 | `train.out_proj_train.optimizer` | str | `adam` | `adam`, `sgd` (momentum 0.9) or `lbfgs` (full batch, no plateau schedule). |
 | `train.out_proj_train.lr` | float | 0.001 | Learning rate. |
 | `train.out_proj_train.weight_decay` | float | 0.0 | L2 penalty; added to the loss under `lbfgs`. |
@@ -246,7 +246,7 @@ The options of a `model.ref_functions` entry, as in
 
 | Option | Default | Meaning |
 |---|---|---|
-| `dim` | 2 | Inputs per neuron. |
+| `dim` | 2 | Inputs per neuron. Above 2, `model.max_neuron_models` must be set. |
 | `squares` | true | Include the squared terms. |
 
 **`legendre` and `chebyshev`**

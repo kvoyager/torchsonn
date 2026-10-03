@@ -36,7 +36,10 @@ top of its weights.
 In every layer, each family makes one candidate neuron per pair of inputs,
 or per unordered tuple of `dim` inputs. With `model.max_neuron_models` set,
 a family draws at most that many tuples at random from the seeded random
-generator; without it, the family enumerates every tuple. A family that
+generator; without it, the family enumerates every tuple. `polyquad` is the
+exception: it enumerates only pairs, so with a `dim` above 2 it needs
+`model.max_neuron_models`, and without it building the first layer raises
+`NotImplementedError`. A family that
 needs more inputs than the layer has sits that layer out. The
 [algorithm](../algorithm.md) page counts the inputs per layer.
 

@@ -48,7 +48,9 @@ model:
 
 A layer with $n$ inputs has $\binom{n}{\text{dim}}$ tuples, which grows fast
 with `dim`: 16 inputs make 4,368 tuples of 5. `model.max_neuron_models`
-caps how many a layer tries.
+caps how many a layer tries. With a `dim` above 2, `polyquad` needs that
+cap: it cannot enumerate its tuples, and without the cap building the first
+layer raises `NotImplementedError`.
 
 ## Conditioning and heavy tails
 

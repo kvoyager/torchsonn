@@ -116,6 +116,15 @@ model trains with the binary cross-entropy on logits. With `variance`
 normalization the denominator is $N\,p(1-p)$, where $p$ is the share of
 positive labels.
 
+!!! warning "Binary models select poorly"
+    A logit far from 0 or 1 scores badly under this formula even when it is
+    confident and right, so selection favours neurons whose logits stay
+    small. On a synthetic two-class task with 4 inputs, a `binary` model's
+    layer errors stayed near 1.9, worse than the trivial prediction, and its
+    test accuracy was 0.467, chance level. A `regressor` trained on the same
+    0/1 labels and thresholded at 0.5 reached 0.943. Train two-class
+    problems as a regressor on the 0/1 labels instead.
+
 ## The layer's error
 
 After selection, each layer gets one error, which the growth rule
@@ -129,8 +138,9 @@ compares across layers:
   output head is scored on. With `train.layer_finetune` on, that is the
   fine-tune's own head; otherwise a temporary head is fitted over the
   frozen survivors only to measure the layer. `readout` requires
-  `model.use_output_projection: true` and works for regression and binary
-  models only.
+  `model.use_output_projection: true` and works for regression models
+  only: multi-class models reject it, and binary models, which have no
+  head, fail with `ValueError` at the first layer.
 
 On California housing, `readout` together with `layer_finetune` stops the
 search at 3 layers with a test MSE of 0.2099, against 0.1972 for the

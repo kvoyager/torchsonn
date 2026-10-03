@@ -28,7 +28,10 @@ trainer.set_seed(config.train.seed)
 `Trainer.set_seed` seeds Python's `random`, NumPy and PyTorch on the CPU and
 every GPU, and makes cuDNN deterministic. It fixes the sampled candidate
 tuples and the initial weights, so a run repeats exactly on the same
-machine; the quickstarts give identical numbers run after run. Runs on CUDA
+machine; the quickstarts give identical numbers run after run. The
+end-to-end pass is the exception: on a CPU it stops at a different step from
+run to run (see [Heads and fine-tuning](../concepts/heads-and-finetune.md#the-end-to-end-pass)).
+Runs on CUDA
 are not bit-for-bit reproducible, and small differences can move where the
 stop rules fire (see [Splits and stopping](../concepts/splits-and-stopping.md#choosing-the-margin)).
 `train.seed` also seeds the input pass's sampling on its own.
