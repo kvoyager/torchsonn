@@ -258,7 +258,9 @@ see [Inspecting a model](../guides/inspecting.md).
 ## What to change first
 
 - **`max_layer_count`**: this run still improves at its last layer, so a
-  higher limit lets it grow deeper.
+  higher limit lets it grow deeper. At 30, the search keeps 26 layers and
+  reaches a test MSE of 0.3994 (see
+  [Splits and stopping](../concepts/splits-and-stopping.md#a-worked-example)).
 - **`ref_functions`**: add or swap neuron families. The California housing
   tutorial's best configs use `legendre`.
 - **`nbest_neurons` and `max_neuron_models`**: more survivors and more
