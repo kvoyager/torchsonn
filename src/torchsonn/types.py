@@ -9,6 +9,7 @@ from enum import Enum
 
 
 class RefFunctionType(Enum):
+    """Neuron family (reference function) tag used in `model.ref_functions`."""
     rfUnknown = -1
     rfLinear = 0
     rfLinearCov = 1
@@ -21,6 +22,7 @@ class RefFunctionType(Enum):
 
     @classmethod
     def get_name(cls, value: "RefFunctionType") -> str:
+        """Return the display name of `value`, e.g. 'LinearCov' or 'Legendre'."""
         if value == cls.rfUnknown:
             return 'Unknown'
         elif value == cls.rfLinear:
@@ -44,6 +46,17 @@ class RefFunctionType(Enum):
 
     @classmethod
     def get(cls, arg: "RefFunctionType | str") -> "RefFunctionType":
+        """Resolve a config name or alias to a `RefFunctionType`.
+
+        Accepted names: 'linear', 'linear_cov' / 'lcov', 'quadratic' /
+        'quad', 'cubic', 'polyquad', 'legendre' / 'leg', 'chebyshev' /
+        'cheb', 'rbf' / 'gauss'. A `RefFunctionType` is returned unchanged.
+
+        Raises
+        ------
+        ValueError
+            If `arg` is not a known name.
+        """
         if isinstance(arg, RefFunctionType):
             return arg
         if arg == 'linear':
@@ -67,6 +80,7 @@ class RefFunctionType(Enum):
 
 
 class CriterionType(Enum):
+    """Layer selection criterion tag used in `train.criterion_type`."""
     cmpValidate = 1
     cmpBias = 2
     cmpComb_validate_bias = 4
@@ -74,6 +88,7 @@ class CriterionType(Enum):
 
     @classmethod
     def get_name(cls, value: "CriterionType") -> str:
+        """Return a human-readable description of `value`."""
         if value == cls.cmpValidate:
             return 'validate error comparison'
         elif value == cls.cmpBias:
@@ -87,6 +102,16 @@ class CriterionType(Enum):
 
     @classmethod
     def get(cls, arg: "CriterionType | str") -> "CriterionType":
+        """Resolve a config name to a `CriterionType`.
+
+        Accepted names: 'validate', 'bias', 'validate_bias', 'bias_retrain' /
+        'bias_refit'. A `CriterionType` is returned unchanged.
+
+        Raises
+        ------
+        ValueError
+            If `arg` is not a known name.
+        """
         if isinstance(arg, CriterionType):
             return arg
         elif arg == 'validate':

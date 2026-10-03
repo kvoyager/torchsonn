@@ -17,6 +17,7 @@ class TqdmLoggingHandler(logging.Handler):
     """
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Format `record` and write it with `tqdm.write`."""
         try:
             msg = self.format(record)
             tqdm.write(msg)
@@ -26,6 +27,22 @@ class TqdmLoggingHandler(logging.Handler):
 
 
 def setup_logger(log_path: str | None = None) -> logging.Logger:
+    """Configure the root logger for a training run.
+
+    Replaces any existing root handlers with a tqdm-aware console handler and
+    a file handler (overwritten on each call), both at INFO level.
+
+    Parameters
+    ----------
+    log_path : str or None
+        Log file path. Defaults to `sonn_train.log` in the system temp
+        directory.
+
+    Returns
+    -------
+    logging.Logger
+        The configured root logger.
+    """
     if log_path is None:
         log_path = os.path.join(tempfile.gettempdir(), "sonn_train.log")
 

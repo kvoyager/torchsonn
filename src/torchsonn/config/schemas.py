@@ -32,6 +32,12 @@ from hydra.core.config_store import ConfigStore
 # ---------------------------------------------------------------------------
 @dataclass
 class OutProjTrainConfig:
+    """Optimizer settings for a head or fine-tune pass.
+
+    Used twice in `TrainConfig`: `train.out_proj_train` (the output head fit
+    and the per-layer fine-tune) and `train.finetune_train` (the end-to-end
+    pass). The comments on the fields below document them.
+    """
     max_steps: int = 5000
     lr: float = 1.0e-3
     weight_decay: float = 0.0
@@ -102,6 +108,10 @@ def _default_optimizer_params() -> Dict[str, Any]:
 
 @dataclass
 class OptimizerConfig:
+    """The `train.optimizer:` section: the optimizer for candidate neuron fits.
+
+    The comments on the fields below document them.
+    """
     # 'adam' | 'sgd' | 'lbfgs' | 'newton' | 'newton-lm' — see optimizer_map
     # in src/optimizers/__init__.py.
     name: str = "adam"
@@ -122,6 +132,10 @@ class OptimizerConfig:
 
 @dataclass
 class SchedulerConfig:
+    """The `train.scheduler:` section: the learning-rate scheduler for candidate fits.
+
+    The comments on the fields below document them.
+    """
     # 'warmup_flat' (currently the only registered scheduler) | null to
     # disable the scheduler entirely.
     name: Optional[str] = None
@@ -134,6 +148,10 @@ class SchedulerConfig:
 # ---------------------------------------------------------------------------
 @dataclass
 class ModelConfig:
+    """The `model:` section: task type, neuron families and network structure.
+
+    The comments on the fields below document them.
+    """
     # 'regressor' | 'binary' | 'multi-class'
     type: str = "multi-class"
     soft_binner: bool = True
@@ -209,6 +227,10 @@ class ModelConfig:
 # ---------------------------------------------------------------------------
 @dataclass
 class TrainConfig:
+    """The `train:` section: fitting, selection, stopping and checkpointing.
+
+    The comments on the fields below document them.
+    """
     seed: int = 10
 
     # String form — coerced to CriterionType via CriterionType.get() in
@@ -459,6 +481,12 @@ class TrainConfig:
 # ---------------------------------------------------------------------------
 @dataclass
 class SONNConfig:
+    """Root config schema: the `model:` and `train:` sections plus top-level flags.
+
+    Registered with Hydra as `default`; `SONN` merges the user config into it,
+    so unknown keys are rejected. The comments on the fields below document
+    them.
+    """
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
 

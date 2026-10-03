@@ -17,6 +17,18 @@ class SoftBinner(nn.Module):
         self.scale = scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Turn a scalar prediction into logits over the bin centers.
+
+        Parameters
+        ----------
+        x : (B,) or (B, T) tensor
+            Prediction(s) on the scale of the centers (0.05 to 0.95).
+
+        Returns
+        -------
+        logits : (B, n_bins) or (B, n_bins, T) tensor
+            -scale*(x - center)^2, highest at the nearest center.
+        """
         # if x.dim() == 1:
         x = x.unsqueeze(-1)  # [B, 1] or [B, 1, T]
 

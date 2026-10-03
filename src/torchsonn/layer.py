@@ -132,11 +132,29 @@ class SONNLayer(SONNModule):
         self.fit_input_stats(mean, std)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record the neuron class names, then return the module state dict."""
         self.neuron_models_names = [neuron_model.__class__.__name__ for neuron_model in self.neuron_models]
         return super().state_dict(*args, **kwargs)
 
     @classmethod
     def from_checkpoint_metadata(cls, metadata: dict[str, Any]) -> "SONNLayer":
+        """
+        Rebuild an empty layer from its checkpoint metadata.
+
+        Restores the constructor arguments, the LayerNorm at its saved width
+        and the input layout (`input_layers`, `input_raw`). The neuron
+        modules are not created here; the model restores them separately.
+
+        Parameters
+        ----------
+        metadata : dict
+            The layer's entry in the checkpoint metadata.
+
+        Returns
+        -------
+        layer : SONNLayer
+            The restored layer, without neuron modules.
+        """
         layer = cls(
             d_model=metadata["d_model"],
             nbest_neurons=metadata["nbest_neurons"],
@@ -154,6 +172,7 @@ class SONNLayer(SONNModule):
         return layer
 
     def to(self, *args: Any, **kwargs: Any) -> "SONNLayer":
+        """Move the layer, including its plain tensor attributes, like `nn.Module.to`."""
         # module_idxs / neuron_idxs / err_values are plain tensor attributes (not
         # registered buffers) so nn.Module.to() doesn't move them. Mirror the
         # BasePolynomNeuron.to() pattern so model.to('cuda') is consistent.
@@ -173,6 +192,20 @@ class SONNLayer(SONNModule):
         return 'Layer {0}'.format(self.layer_index)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Run every neuron module on the layer input.
+
+        Parameters
+        ----------
+        x : (B, D_in) tensor
+            The layer input.
+
+        Returns
+        -------
+        out : (B, len(self)) tensor
+            The outputs of all neuron modules, concatenated along dim 1 in
+            module order.
+        """
 
         res = []
         for module in self.neuron_models:
@@ -181,6 +214,7 @@ class SONNLayer(SONNModule):
         return torch.cat(res, dim=1)
 
     def describe(self, features: list[str], layers: "list[SONNLayer]") -> str:
+        """Return a text description of the layer: a header and one entry per neuron module."""
 
         s = ['*' * 50,
              'Layer {0}'.format(self.layer_index),
@@ -191,6 +225,26 @@ class SONNLayer(SONNModule):
         return '\n'.join(s)
 
     def get_parent_neron_module(self, idx: int) -> tuple[int, BasePolynomNeuron]:
+        """
+        Find the neuron module that holds output column `idx`.
+
+        Parameters
+        ----------
+        idx : int
+            Absolute neuron (output column) index in the layer.
+
+        Returns
+        -------
+        idx : int
+            The same absolute index.
+        module : BasePolynomNeuron
+            The neuron module that produces that column.
+
+        Raises
+        ------
+        ValueError
+            If `idx` is not below the layer's neuron count.
+        """
         parent_neuron_idx = 0
         for parent_neuron in self.neuron_models:
             for _ in range(parent_neuron.num_neurons):
@@ -200,6 +254,13 @@ class SONNLayer(SONNModule):
         raise ValueError
 
     def set_neuron_module(self) -> None:
+        """
+        Build the column map of the layer.
+
+        Sets `neuron_idxs`, an (N, 2) tensor whose row `i` holds the module
+        index and the neuron index inside that module for output column `i`,
+        and sets `d_model` to the number of columns N.
+        """
         # set map, absolute_neuron_idx <=> neuron_module idx, relative_neuron_idx
         self.neuron_idxs = []
         neuron_idx = 0

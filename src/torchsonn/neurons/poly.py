@@ -5,6 +5,13 @@ from torchsonn.neurons.base import ActivationLike, BasePolynomNeuron, generate_u
 
 
 class PolyQuadratic(BasePolynomNeuron):
+    """Quadratic neuron over `dim` inputs (reference function 'polyquad').
+
+        y = w0 + sum_i w_i x_i + sum_{i<=j} w_ij x_i x_j
+
+    With `squares=False` the squares x_i^2 are left out, keeping only the
+    cross terms i < j. Candidates read unordered `dim`-tuples of inputs.
+    """
     def __init__(self,
                  num_feat: int,
                  num_src_feat: int,
@@ -83,15 +90,18 @@ class PolyQuadratic(BasePolynomNeuron):
         return out
 
     def get_short_name(self) -> str:
+        """Return 'poly<dim>', e.g. 'poly5'."""
         return f"poly{self.dim}"
 
     def get_name(self) -> str:
+        """Describe the polynomial: full, or cross terms only when squares are off."""
         if self.exclude_square:
             return f"polynom {self.dim} degree with covariance only"
         else:
             return f"full polynom {self.dim} degree"
 
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
+        """Not used: `forward` expands the terms itself. Raises NotImplementedError."""
         # PolyQuadratic.forward bypasses BasePolynomNeuron's get_args path —
         # it expands the polynomial inline using the variable-arity (dim)
         # cross-term mask. This abstract override exists only to satisfy
@@ -101,6 +111,17 @@ class PolyQuadratic(BasePolynomNeuron):
     def create_src_idxs(
         self, num_feat: int, max_neuron_models: int | None
     ) -> tuple[torch.Tensor, int]:
+        """Choose the unordered `dim`-tuples of inputs the candidates read.
+
+        With `max_neuron_models` set, draws that many distinct tuples at random
+        (fewer if fewer exist). Without it, enumerates all pairs; full
+        enumeration is only implemented for `dim == 2`.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, int)
+            The (num_neurons, dim) index tensor and `num_neurons`.
+        """
         if max_neuron_models is not None:
             assert max_neuron_models > 0
             # Unordered k-tuples for the same reason ordered pairs are wasteful

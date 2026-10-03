@@ -50,6 +50,23 @@ class NormMSE(nn.Module):
         self.censor_at = censor_at
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        """Normalized squared error of `y_pred` against `y_true`.
+
+        Parameters
+        ----------
+        y_pred : tensor
+            Predictions. Clipped to `censor_at` on the censored rows when it is
+            set.
+        y_true : tensor
+            Targets, same shape as `y_pred`.
+
+        Returns
+        -------
+        loss : scalar tensor
+            sum((y - y_hat)^2) divided by n*`scale` when `scale` is set,
+            otherwise by the (centered) sum of squares of `y_true`; `eps` is
+            added to the denominator.
+        """
         if self.censor_at is not None:
             # torch.minimum's gradient is 1 below the cap and 0 above it, which
             # is exactly the one-sided penalty; no soft clip is needed.

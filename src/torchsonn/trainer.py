@@ -77,6 +77,7 @@ class GrowthCriterion:
         return layer_index > 0 and self.last_since >= int(self.width)
 
     def describe(self, layer_index: int, err: float) -> str:
+        """Return a one-line log message on the last `update`: error, best layer, gain and margin, layers without improvement."""
         gain = "first layer" if self.last_gain == float("inf") else f"improved by {self.last_gain:+.4f} (margin {self.last_margin:.4f})"
         return (f"Layer #{layer_index}: error {float(err):.4f}, best {self.min_error:.4f} at layer "
                 f"{self.best_index}; {gain}; {self.last_since} of {int(self.width)} layers without improvement")
@@ -133,6 +134,7 @@ class StepCheckpoint:
     scheduler: Optional[BaseScheduler] = None
 
     def to_dict(self) -> dict:
+        """Return the snapshot as a dict, with `state_dict()` in place of any object that has one and None fields left out."""
         def safe_value(v):
             if hasattr(v, "state_dict"):
                 return v.state_dict()
@@ -329,6 +331,33 @@ def _finetune_batches(train_dl: DataLoader, device: torch.device, mode: str, bat
 
 
 class Trainer:
+    """
+    Grows and trains a SONN, layer by layer.
+
+    `train` runs the structural search: it creates a layer of candidate
+    neurons, calibrates them on the layer's inputs (`fit_layer_inputs`),
+    fits all candidates in parallel and keeps the best ones (`train_layer`),
+    and adds layers until the growth rule (`GrowthCriterion`) stops it. The
+    layers after the best one are dropped and the model is saved. After
+    that, `train_out_proj` fits the optional output head, `train_finetune`
+    trains every parameter end to end, `prune` removes the neurons that do
+    not reach the output and `infer` predicts over a loader. Checkpoints
+    are written as training goes; `load_model_checkpoint` restores the last
+    saved model.
+
+    Parameters
+    ----------
+    config : SONNConfig-like
+        The full configuration (`model` and `train` sections).
+    batch_callback : callable, optional
+        Maps a loader batch to an `(x, y)` pair. Default: batches already
+        are `(x, y)`.
+    feature_names : list of str, optional
+        Feature names, used in logs and model descriptions.
+    class_weights : tensor, optional
+        Per-class loss weights, passed to the model at the start of
+        `train`.
+    """
     def __init__(
         self,
         config: Any,
@@ -399,6 +428,7 @@ class Trainer:
 
     @classmethod
     def set_seed(cls, seed: int = 42) -> None:
+        """Seed `random`, NumPy and PyTorch (CPU and every GPU), and make cuDNN deterministic."""
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -412,6 +442,7 @@ class Trainer:
     # =======================================
     @classmethod
     def get_checkpoint_dir(cls, model: SONN) -> Path:
+        """Return the checkpoint folder (`train.checkpoint_dir`, or `<repo>/checkpoints` when empty), creating it if needed."""
         checkpoint_dir = model.param.train.checkpoint_dir
         if checkpoint_dir == "":
             # After the src-layout move this file lives at
@@ -425,6 +456,22 @@ class Trainer:
 
     @classmethod
     def parse_checkpoint_step(cls, fname: str) -> tuple[int, int, int]:
+        """
+        Parse a step checkpoint file name.
+
+        Parameters
+        ----------
+        fname : str
+            File name of the form
+            `model_layer_<L>_neuron_<N>_step_<S>[_last].ckpt`.
+
+        Returns
+        -------
+        key : tuple of int
+            `(layer, neuron_model, step)`, or `(-1, -1, -1)` when the name
+            does not match, so that such files sort below every real
+            checkpoint.
+        """
         m = re.search(r"model_layer_(\d+)_neuron_(\d+)_step_(\d+)(?:_last)?\.ckpt$", fname)
         if m:
             return int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -434,6 +481,23 @@ class Trainer:
         return -1, -1, -1
 
     def from_checkpoint(self, model: SONN) -> dict[str, Any] | None:
+        """
+        Load the latest step checkpoint, for resuming `train`.
+
+        The latest one is the highest `(layer, neuron_model, step)` among
+        the files in the checkpoint folder; `model_last.ckpt` is ignored.
+
+        Parameters
+        ----------
+        model : SONN
+            The model whose `train.checkpoint_dir` is searched.
+
+        Returns
+        -------
+        checkpoint : dict or None
+            The checkpoint contents, or None if the folder holds no step
+            checkpoint.
+        """
         checkpoint_dir = self.get_checkpoint_dir(model)
         checkpoints = os.listdir(checkpoint_dir)
 
@@ -447,6 +511,20 @@ class Trainer:
         return checkpoint_data
 
     def save_checkpoint(self, ckpt: StepCheckpoint, suffix: str = "") -> None:
+        """
+        Save a step checkpoint and delete the older ones.
+
+        Writes `model_layer_<L>_neuron_<N>_step_<S>[_<suffix>].ckpt` with the
+        snapshot and the model config, then keeps only the
+        `train.keep_last_n` most recent files per (layer, neuron model).
+
+        Parameters
+        ----------
+        ckpt : StepCheckpoint
+            The training state to save.
+        suffix : str
+            Optional suffix for the file name, such as "last". Default "".
+        """
         checkpoint_dir = self.get_checkpoint_dir(ckpt.model)
         if suffix:
             suffix = "_" + suffix
@@ -457,6 +535,19 @@ class Trainer:
         self.cleanup_checkpoints(checkpoint_dir, keep_last_n=ckpt.model.param.train.keep_last_n)
 
     def load_model_checkpoint(self, model: SONN, device: torch.device | str = "cpu") -> None:
+        """
+        Restore the final model saved by `train`.
+
+        Reads `model_last.ckpt` from the checkpoint folder, rebuilds the
+        layer stack, loads the weights and moves the model to `device`.
+
+        Parameters
+        ----------
+        model : SONN
+            The model to restore into, built with the same config.
+        device : torch.device or str
+            Device to move the restored model to. Default "cpu".
+        """
         checkpoint_filename = f"model_last.ckpt"
         checkpoint_data = torch.load(self.get_checkpoint_dir(model) / checkpoint_filename, weights_only=False)
         # restore model architecture
@@ -466,6 +557,7 @@ class Trainer:
         model.to(device=device)
 
     def save_model_checkpoint(self, model: SONN) -> None:
+        """Save the model's state dict as `model_last.ckpt` in the checkpoint folder."""
         checkpoint_filename = f"model_last.ckpt"
         torch.save({
             'model': model.state_dict(),
@@ -614,6 +706,44 @@ class Trainer:
         resume: bool = False,
         val_dl: DataLoader | None = None,
     ) -> SONN:
+        """
+        Grow and train the network, one layer at a time.
+
+        Each iteration creates a layer of candidate neurons, calibrates them
+        on the layer's inputs, trains them and keeps the best ones
+        (`train_layer`). Growth stops when `GrowthCriterion` sees no
+        improvement for `train.criterion_minimum_width` layers, or at
+        `train.max_layer_count`. The layers after the one with the smallest
+        error are then dropped, and the model is saved as
+        `model_last.ckpt`. The output head and the end-to-end fine-tune are
+        separate steps (`train_out_proj`, `train_finetune`).
+
+        Parameters
+        ----------
+        model : SONN
+            The model to train. Its existing layers are discarded.
+        train_dl : DataLoader
+            Training split: fits the neuron coefficients.
+        dev_dl : DataLoader
+            Dev split: scores and selects the neurons, and drives the growth
+            rule unless `train.stop_source` is 'val'.
+        test_dl : DataLoader
+            Not used during training.
+        verbose : bool
+            Log the time each layer takes. Default True.
+        resume : bool
+            Continue from the latest step checkpoint in the checkpoint
+            folder, if there is one. Default False.
+        val_dl : DataLoader, optional
+            Validation split that selects nothing. Its error is logged per
+            layer, and it drives the growth rule when `train.stop_source` is
+            'val'.
+
+        Returns
+        -------
+        model : SONN
+            The trained model (the same object).
+        """
         if self.class_weights is not None:
             model.set_class_weights(self.class_weights)
 
@@ -1210,6 +1340,52 @@ class Trainer:
             shared_param_names: list[str],
             features_precomputed: bool = False,
     ) -> tuple[LayerAccumulator, dict[str, torch.Tensor], "StepCheckpoint | None"]:
+        """
+        Train one neuron module's candidate ensemble in parallel.
+
+        Runs the configured batched optimizer over the stacked parameters of
+        all candidates, with per-candidate early stopping and learning-rate
+        drops (on the dev loss, or on the training loss when
+        `train.early_stop_source` is 'train'). Step checkpoints are saved
+        every `train.save_interval` steps and at the end, and the trained
+        parameters are written back to the module. Under distributed
+        training each rank trains its own slice of the ensemble.
+
+        Parameters
+        ----------
+        model : SONN
+            The model being grown.
+        neuron_model : BasePolynomNeuron
+            The neuron module whose candidates are trained.
+        neuron_model_idx : int
+            Index of that module in the layer.
+        layer_idx : int
+            Index of the layer.
+        train_dl, dev_dl : DataLoader
+            Training and dev splits.
+        checkpoint_data : dict or None
+            Step checkpoint to resume from, or None to start fresh.
+        accumulator : LayerAccumulator
+            The layer's running state, stored in the checkpoints.
+        loss_fn_vmapped, eval_loss_fn_vmapped : callable
+            Gradient and evaluation functions from `create_loss_functions`.
+        params_batch, buffers_batch : dict of str to tensor
+            Stacked candidate parameters and buffers.
+        shared_param_names : list of str
+            Parameters shared by all candidates (the shared projection).
+        features_precomputed : bool
+            The loaders already yield the layer's input features, so the
+            model forward is skipped. Default False.
+
+        Returns
+        -------
+        accumulator : LayerAccumulator
+            The accumulator passed in.
+        params_batch : dict of str to tensor
+            The trained candidate parameters.
+        last_checkpoint : StepCheckpoint
+            The snapshot of the finished ensemble, as saved.
+        """
 
         device = neuron_model.device
         ensemble_size = neuron_model.ensemble_size
@@ -1574,6 +1750,33 @@ class Trainer:
     def create_loss_functions(
         self, model: SONN, module: BasePolynomNeuron,
     ) -> tuple[Callable, Callable, Callable, dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
+        """
+        Build the vmapped loss functions for one neuron module's candidates.
+
+        Parameters
+        ----------
+        model : SONN
+            The model being grown.
+        module : BasePolynomNeuron
+            The neuron module whose candidates are trained.
+
+        Returns
+        -------
+        loss_fn_vmapped : callable
+            Per-candidate gradient of the training loss, including the
+            `train.ridge_alpha` penalty.
+        eval_loss_fn_vmapped : callable
+            Per-candidate loss without the penalty.
+        pred_fn_vmapped : callable
+            Per-candidate predictions.
+        params_batch : dict of str to tensor
+            The module's parameters, plus the shared projection for
+            multi-class models that use one.
+        buffers_batch : dict of str to tensor
+            The module's buffers and `src_idxs`.
+        shared_param_names : list of str
+            Names of the parameters shared by all candidates (not vmapped).
+        """
         # prepare params & buffers as dicts
         params = dict(module.named_parameters())
         buffers = dict(module.named_buffers())
@@ -1951,6 +2154,30 @@ class Trainer:
             dl: DataLoader,
             device: torch.device | str,
             skip_model_fwd: bool = False) -> torch.Tensor:
+        """
+        Mean evaluation loss of every candidate over a loader.
+
+        Parameters
+        ----------
+        model : SONN
+            The model being grown.
+        eval_loss_fn_vmapped : callable
+            Per-candidate loss, from `create_loss_functions`.
+        params_batch, buffers_batch : dict of str to tensor
+            Stacked candidate parameters and buffers.
+        dl : DataLoader
+            The split to evaluate on.
+        device : torch.device or str
+            Device the batches are moved to.
+        skip_model_fwd : bool
+            The loader already yields the layer's input features, so the
+            model forward is skipped. Default False.
+
+        Returns
+        -------
+        loss : (num_candidates,) tensor
+            Per-candidate loss, averaged over the batches.
+        """
         err_nom, err_denom = [], []
         for x, targets in self._iter_eval_batches(model, dl, device, skip_model_fwd):
             val_losses = eval_loss_fn_vmapped(params_batch, buffers_batch, x, targets)

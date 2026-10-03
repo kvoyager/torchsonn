@@ -7,6 +7,41 @@ from torchsonn.optimizers.base import BaseOptimizer, LRLike
 
 
 class BatchedLBFGS(BaseOptimizer):
+    """Limited-memory BFGS, batched over the candidate ensemble.
+
+    Each member keeps its own history of the last `history_size` correction
+    pairs s = delta theta, y = delta g per parameter tensor. The two-loop
+    recursion turns the clipped gradient into a quasi-Newton direction
+    d ~ H^-1 g, and the step is
+
+        theta = theta - lr*d
+
+    with no line search. A pair is stored only if it passes the curvature
+    condition (`curvature_eps`), and each member's update of a parameter
+    tensor is capped at norm `max_step`. Members with `active_mask` False in
+    `step` keep their parameters and store no pair. Shared parameters keep
+    one history, driven by the gradient averaged over the active members.
+    `stats` counts steps, pairs, rejected pairs, updates and capped updates
+    for the trainer's log.
+
+    Parameters
+    ----------
+    params : dict of str -> (B, ...) tensor
+        Initial parameters.
+    shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier
+        See `BaseOptimizer`.
+    history_size : int
+        Correction pairs kept per member. Default 10.
+    max_step : float or None
+        Cap on the norm of one member's update of one parameter tensor.
+        Default 1.0.
+    curvature_eps : float or None
+        Store a pair only if y.s > curvature_eps*|s|*|y|. Default 1e-8.
+
+    `__init__` explains why the two guards exist and how the history is
+    stored.
+    """
+
     def __init__(
         self,
         params: dict[str, torch.Tensor],
@@ -348,6 +383,7 @@ class BatchedLBFGS(BaseOptimizer):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore the state written by `state_dict`, including checkpoints from the older per-member deque layout."""
         self.lr = state_dict["lr"]
         self.history_size = state_dict["history_size"]
         self.batch_size = state_dict["batch_size"]

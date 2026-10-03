@@ -250,6 +250,10 @@ class RBFNeuron(BaseTupleNeuron):
         return (x - self.in_mean) / self.in_std
 
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
+        """Design row: the M bump activations of the standardized inputs, then
+        the inputs themselves when `linear` is on, then a constant 1 when
+        `normalize` is off.
+        """
         u = self._standardize(x)
         # (B, n, 1, dim) - (n, M, dim) -> (B, n, M, dim); under vmap
         # (B, 1, 1, dim) - (M, dim) -> (B, 1, M, dim). Same broadcasting rule
@@ -270,10 +274,17 @@ class RBFNeuron(BaseTupleNeuron):
     # ------------------------------------------------------------------
     @property
     def needs_input_stats(self) -> bool:
+        """Always True: the inputs are standardized and the width floor is in raw units."""
         # Always: the standardization, and the width / radius floor in raw units.
         return True
 
     def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Store the per-slot input mean and std used for standardization.
+
+        `mean` / `std` are per layer-input feature; indexing them with
+        `src_idxs` gives each candidate's slot statistics. A constant slot
+        (std <= 1e-8) gets std 1.
+        """
         idx = self.src_idxs.to(device=mean.device)
         slot_mean = mean[idx]
         slot_std = std[idx]
@@ -296,14 +307,23 @@ class RBFNeuron(BaseTupleNeuron):
     # ------------------------------------------------------------------
     @property
     def needs_input_sample(self) -> bool:
+        """Always True: the centers are placed on a sample of the layer input."""
         return True
 
     @property
     def needs_input_stream(self) -> bool:
+        """True for k-means placement, which can be refined by a streaming pass."""
         return self.placement == "kmeans"
 
     def fit_input_sample(self, x_sample: torch.Tensor, stream: bool = False,
                          seed: int | None = None, iters: int = 20) -> None:
+        """Place the centers on a sample of the layer input.
+
+        Grid placement builds the quantile grid. k-means placement seeds with
+        k-means++ or PCA quantiles, then runs `iters` Lloyd iterations on the
+        sample, batched over the candidates. With `stream=True` only the seeds
+        are stored, and `stream_input_batch` refines them over the whole split.
+        """
         t0 = time.perf_counter()
         u = self._slots(x_sample)                                   # (n, N, dim)
         n_rows = u.shape[1]
@@ -333,6 +353,12 @@ class RBFNeuron(BaseTupleNeuron):
         self._finish_placement(centers, u, f"k-means on {n_rows} rows, {int(iters)} Lloyd iterations", t0)
 
     def stream_input_batch(self, x_batch: torch.Tensor) -> None:
+        """Mini-batch k-means update of the centers from one batch of layer input.
+
+        Each center moves toward the mean of its assigned rows with the
+        per-center rate 1 / n_m (Sculley). No-op unless `fit_input_sample` ran
+        with `stream=True`.
+        """
         if self._stream_counts is None:
             return
         u = self._slots(x_batch)                                    # (n, b, dim)
@@ -348,6 +374,9 @@ class RBFNeuron(BaseTupleNeuron):
             self.centers0.add_(step.to(dtype=self.centers0.dtype))
 
     def finish_input_stream(self) -> None:
+        """Finish the streaming pass: fix the centers, set widths and radii, and
+        log how far the centers moved from their seeds.
+        """
         if self._stream_counts is None:
             return
         counts = self._stream_counts
@@ -537,10 +566,12 @@ class RBFNeuron(BaseTupleNeuron):
         super()._prune_extra(idxs)
 
     def get_short_name(self) -> str:
+        """Return e.g. 'RBF8', or 'RBF8x3' for 3 inputs."""
         suffix = f"x{self.dim}" if self.dim != 2 else ""
         return f"RBF{self.num_centers}{suffix}"
 
     def get_name(self) -> str:
+        """Describe the centers, their placement, what is learnable, width and inputs."""
         learn = []
         if self.learn_centers:
             learn.append("centers, unbounded" if self.center_radius is None

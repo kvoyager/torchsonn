@@ -301,10 +301,26 @@ class SONN(SONNModule):
             self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=cw, reduction="none").to(device=self.device)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record the layer class names, then return the module state dict."""
         self.layer_names = [layer.__class__.__name__ for layer in self.layers]
         return super().state_dict(*args, **kwargs)
 
     def restore_from_checkpoint_metadata(self, checkpoint_data: dict[str, Any]) -> None:
+        """
+        Rebuild the layer stack from checkpoint metadata.
+
+        Replaces `self.layers` with new layers holding neuron modules of the
+        saved classes and shapes. Only the architecture is restored: the
+        weights are loaded afterwards with `load_state_dict` (see
+        `Trainer.load_model_checkpoint`).
+
+        Parameters
+        ----------
+        checkpoint_data : dict
+            The model's state dict as saved in a checkpoint, including the
+            `params_metadata` entries of the model, its layers and their
+            neuron modules.
+        """
         prefix = ""
         self.layers = nn.ModuleList()
         layer_names = checkpoint_data["params_metadata"]["layer_names"]
@@ -421,6 +437,7 @@ class SONN(SONNModule):
 
     @property
     def device(self) -> torch.device:
+        """Device of the first neuron module, or the configured `train.device` before any layer exists."""
         # Walk the layers until we find the first non-empty module list.
         # prune() can leave intermediate layers empty (or, with the
         # `continue`-on-empty guard, untouched) and the old "layers[0]
@@ -434,6 +451,7 @@ class SONN(SONNModule):
 
     @property
     def retrain_required(self) -> bool:
+        """True for the 'bias_retrain' criterion, which `Trainer.train_layer` does not implement."""
         return self.criterion_type == CriterionType.cmpComb_bias_retrain
 
     def _get_features_names_by_index(self, features_set: list[int] | set[int]) -> str:
@@ -529,6 +547,46 @@ class SONN(SONNModule):
         x: torch.Tensor,
         y: torch.Tensor,
     ) -> torch.Tensor:
+        """
+        Loss of one candidate neuron, written for `torch.func` transforms.
+
+        Runs `neuron_model` with the given parameters and buffers through
+        `functional_call`, so the trainer can `vmap` it over a candidate
+        ensemble and take `grad` with respect to `params`. For multi-class
+        models the scalar output is turned into logits by the soft binner,
+        the shared projection or the neuron's own projection, whichever the
+        parameters provide.
+
+        Parameters
+        ----------
+        neuron_model : nn.Module
+            The neuron module whose forward is called.
+        loss_fn : nn.Module or None
+            Per-sample loss. None returns the raw predictions (logits for
+            multi-class) instead of a loss.
+        model_type : str
+            `model.type`; "multi-class" selects the logits path.
+        soft_binner : nn.Module or None
+            Maps the scalar output to class logits, if the model uses one.
+        ridge_alpha : float
+            L2 penalty on `params["weight"]`, added to the loss when > 0.
+            Projection weights are not penalized.
+        params : dict of str to tensor
+            Parameters of one candidate (one slice of the ensemble under
+            `vmap`).
+        buffers : dict of str to tensor
+            Buffers of the neuron module.
+        x : (B, D) tensor
+            Neuron input.
+        y : (B,) tensor
+            Targets (class indices for multi-class).
+
+        Returns
+        -------
+        out : tensor
+            Mean loss plus the ridge penalty as a scalar, or the predictions
+            when `loss_fn` is None.
+        """
         pred = functional_call(neuron_model, {**params, **buffers}, args=(x,))
         if model_type == "multi-class":
             if soft_binner:
@@ -574,6 +632,7 @@ class SONN(SONNModule):
 
     @property
     def need_bias_err(self) -> bool:
+        """True when the selection criterion uses the bias error ('bias', 'validate_bias', 'bias_retrain')."""
         return self.criterion_type in (
             CriterionType.cmpBias,
             CriterionType.cmpComb_validate_bias,
@@ -582,6 +641,7 @@ class SONN(SONNModule):
 
     @property
     def need_regularity_err(self) -> bool:
+        """True when the selection criterion uses the regularity (validation) error ('validate', 'validate_bias')."""
         return self.criterion_type in (
             CriterionType.cmpValidate,
             CriterionType.cmpComb_validate_bias,
@@ -673,6 +733,30 @@ class SONN(SONNModule):
         return sum(len(self.layers[s]) for s in input_layers) + (self.d_model if input_raw else 0)
 
     def forward(self, x: torch.Tensor, skip_last_layer: bool = False) -> torch.Tensor:
+        """
+        Run the input through the layer stack.
+
+        Applies the preprocessing module, if any, then each layer on the
+        input its `layer_sources` describe (outputs of earlier layers and,
+        under `shortcut.raw_features`, the raw features). Layer outputs are
+        clamped to `model.output_clamp_value`. No output head is applied:
+        `infer` does that.
+
+        Parameters
+        ----------
+        x : (B, d_model) tensor
+            Input features.
+        skip_last_layer : bool
+            Stop at the input of the last layer and return it. The trainer
+            uses this while the last layer is being fitted. Default False.
+
+        Returns
+        -------
+        out : tensor
+            The last layer's output, shape (B, number of neurons in it), or
+            its input when `skip_last_layer` is True. With no layers, the
+            preprocessed input.
+        """
         if self.preprocessing is not None:
             x = self.preprocessing(x)
         x_inp = x
@@ -727,6 +811,21 @@ class SONN(SONNModule):
         return x
 
     def get_best_neuron_model(self, layer: SONNLayer) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Locate the neuron with the smallest error in a layer.
+
+        Parameters
+        ----------
+        layer : SONNLayer
+            A trained layer, with `err_values` and `module_idxs` set.
+
+        Returns
+        -------
+        module_idx : tensor
+            Index of the neuron module that holds the best neuron.
+        neuron_idx : tensor
+            Index of the best neuron inside that module.
+        """
         smallest_err_idx = layer.err_values.topk(1, largest=False)[1]
         best_module_idx, best_neuron_idx = layer.module_idxs[smallest_err_idx][0]
         return best_module_idx, best_neuron_idx
@@ -904,6 +1003,26 @@ class SONN(SONNModule):
         return layer
 
     def infer(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Predict with the trained model.
+
+        Moves `x` to the model's device, runs `forward` and reads the
+        prediction off the last layer: through the output head
+        (`out_proj`) if the model has one, otherwise from the best-error
+        neuron (regression and binary), the per-neuron projections or the
+        shared projection / soft binner (multi-class).
+
+        Parameters
+        ----------
+        x : (B, d_model) tensor
+            Input features.
+
+        Returns
+        -------
+        pred : tensor
+            (B,) predictions for regression and binary models (logits for
+            binary), or (B, C) log-probabilities for multi-class models.
+        """
         out = self(x.to(device=self.device))
         if self.out_proj is not None:
             k = self.out_proj.in_features

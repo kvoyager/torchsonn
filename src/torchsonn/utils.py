@@ -12,11 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 class ParamNamespace(Namespace):
+    """`argparse.Namespace` with dict-style access.
+
+    Attributes can also be read and written with `ns[key]`, `get`, `set` and
+    `pop`; `from_dict` builds one from a (nested) dict.
+    """
 
     def get(self, name: str, def_value: Any = None) -> Any:
+        """Return attribute `name`, or `def_value` if it is not set."""
         return getattr(self, name, def_value)
 
     def set(self, name: str, value: Any) -> None:
+        """Set attribute `name` to `value`."""
         self.__dict__[name] = value
 
     def __getitem__(self, item: str) -> Any:
@@ -26,6 +33,11 @@ class ParamNamespace(Namespace):
         self.__dict__[item] = value
 
     def pop(self, item: str) -> Any:
+        """Remove attribute `item` and return its value.
+
+        Returns None, and removes nothing, when the attribute is missing or
+        its value is None.
+        """
         if self.__dict__.get(item) is not None:
             return self.__dict__.pop(item)
         else:
@@ -33,10 +45,16 @@ class ParamNamespace(Namespace):
 
     @property
     def dict(self) -> "dict[str, Any]":
+        """The underlying attribute dict (live, not a copy)."""
         return self.__dict__
 
     @classmethod
     def from_dict(cls, d: "dict[str, Any]") -> "ParamNamespace":
+        """Build a namespace from `d`, converting dict values one level deep.
+
+        Top-level values that are dicts become nested `ParamNamespace`
+        objects; deeper dicts are left as plain dicts.
+        """
         params = ParamNamespace(**d)
         for k, v in params.dict.items():
             if isinstance(v, dict):
@@ -46,6 +64,15 @@ class ParamNamespace(Namespace):
 
 @contextmanager
 def timed_block(name: str | None = None, verbose: bool = True) -> Iterator[None]:
+    """Context manager that logs the wall-clock time of its block.
+
+    Parameters
+    ----------
+    name : str or None
+        Label used in the log line "Executed <name> in <t> sec".
+    verbose : bool
+        Log the time when True; otherwise nothing is logged.
+    """
     t0 = time.time()
     yield
     t1 = time.time()

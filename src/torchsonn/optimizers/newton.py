@@ -8,6 +8,37 @@ from torchsonn.optimizers.base import LRLike
 
 
 class BatchedNewton:
+    """Quasi-Newton optimizer with a dense matrix per member, batched over the
+    candidate ensemble.
+
+    Each member keeps a dense (P, P) matrix H per parameter tensor, started
+    at the identity. Every step applies the BFGS inverse-Hessian update
+    formula to H from s = delta theta and y = delta g, adds `damping`*I to it
+    (the addition is kept, so it accumulates over steps), and then uses H as
+    the Hessian in the step
+
+        theta = theta - lr*delta,    H delta = g
+
+    (pseudo-inverse if the solve fails). Members are processed in a Python
+    loop and inactive members are skipped. Shared parameters use the
+    gradient, parameters and H averaged over the active members. There is no
+    gradient clipping. Memory is O(P^2) per member and tensor, so it suits
+    small neurons only.
+
+    Parameters
+    ----------
+    params : dict of str -> (B, ...) tensor
+        Initial parameters; they set the size of each H.
+    shared_param_names : iterable of str
+        Names of the parameters shared by every ensemble member.
+    lr : (B,) tensor
+        Learning rate per member.
+    damping : float
+        Added to the diagonal of H at every step. Default 1e-3.
+    shared_param_lr_multiplier : float
+        Factor on the learning rate of the shared parameters. Default 1.0.
+    """
+
     def __init__(
         self,
         params: dict[str, torch.Tensor],

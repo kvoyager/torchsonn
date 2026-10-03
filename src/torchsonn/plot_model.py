@@ -18,6 +18,12 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on install extr
 
 
 def run_dot_without_conda(args: Sequence[str]) -> subprocess.CompletedProcess:
+    """Run a Graphviz command with conda's variables and PATH entries removed.
+
+    Fallback for `PlotModel.plot` when rendering through the graphviz package
+    fails, which can happen when a conda environment shadows the system
+    Graphviz. Raises `subprocess.CalledProcessError` if the command fails.
+    """
     # Copy current environment
     env = os.environ.copy()
 
@@ -132,6 +138,11 @@ class PlotModel:
         neuron_idx: int,
         u_index: int,
     ) -> None:
+        """Add the edge into `neuron_idx` of `neuron` from its input `u_index`.
+
+        The source node is an input feature or a neuron of an earlier layer,
+        as resolved from the neuron's input layout.
+        """
         source, index = self._input_source(layers, neuron, u_index)
         layer = layers[neuron.layer_index]
         if source is None:
@@ -144,6 +155,7 @@ class PlotModel:
         return self.add_edge(name1, name2)
 
     def add_edge(self, a: str, b: str) -> None:
+        """Add a directed edge from node `a` to node `b`."""
         return self.g.edge(a, b, color=self.connection_color, fillcolor=self.connection_fill_color, weight='1')
 
     @staticmethod
@@ -202,6 +214,17 @@ class PlotModel:
         self.add_edge(label, self.output)
 
     def plot(self) -> None:
+        """Build the graph and render it to `<filename>.svg`.
+
+        Draws the input features, every neuron of every layer, their input
+        edges and the readout (best neuron or `out_proj` head). Does nothing
+        for a model with no layers.
+
+        Raises
+        ------
+        RuntimeError
+            If the Graphviz `dot` executable is not on PATH.
+        """
         if len(self.model.layers) == 0:
             return
 

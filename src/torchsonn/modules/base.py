@@ -5,6 +5,13 @@ from torch import nn
 
 
 class SONNModule(nn.Module):
+    """`nn.Module` that saves plain-Python metadata next to its tensors.
+
+    Subclasses list attribute names in `params_metadata_names`. `state_dict`
+    stores their values under a `params_metadata` key, and `load_state_dict`
+    restores them on every `SONNModule` in the tree, so settings that are not
+    tensors travel with the checkpoint.
+    """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -17,6 +24,7 @@ class SONNModule(nn.Module):
                 setattr(self, name, metadata_dict[name])
 
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Return the tensor state dict plus a `params_metadata` entry holding the attributes named in `params_metadata_names`."""
         base_dict = super().state_dict(*args, **kwargs)
         base_dict[f"{kwargs.get('prefix', '')}params_metadata"] = {
             name: getattr(self, name) for name in self.params_metadata_names

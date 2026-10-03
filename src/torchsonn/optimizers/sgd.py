@@ -7,6 +7,33 @@ from torchsonn.optimizers.base import BaseOptimizer, LRLike
 
 
 class BatchedSGD(BaseOptimizer):
+    """SGD with momentum, batched over the candidate ensemble.
+
+    Per member and parameter tensor, with g the gradient plus
+    `weight_decay`*theta, then clipped:
+
+        v = momentum*v + g
+        theta = theta - lr*(momentum*v + g)     (nesterov=True)
+        theta = theta - lr*v                    (nesterov=False)
+
+    Members with `active_mask` False in `step` keep their parameters; their
+    momentum buffer still advances.
+
+    Parameters
+    ----------
+    params : dict of str -> (B, ...) tensor
+        Initial parameters; they set the shapes of the momentum buffers.
+    shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier
+        See `BaseOptimizer`.
+    momentum : float
+        Momentum coefficient. Default 0.9.
+    weight_decay : float
+        L2 penalty added to the gradient (coupled, not decoupled).
+        Default 0.0.
+    nesterov : bool
+        Use the Nesterov form of the update. Default True.
+    """
+
     def __init__(
         self,
         params: dict[str, torch.Tensor],
@@ -78,6 +105,7 @@ class BatchedSGD(BaseOptimizer):
         return new_params
 
     def state_dict(self) -> dict[str, Any]:
+        """Return lr, weight decay, the momentum settings and buffers, and the shared-parameter settings."""
         return {
             "lr": self.lr,
             "weight_decay": self.weight_decay,
@@ -89,6 +117,7 @@ class BatchedSGD(BaseOptimizer):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore the state written by `state_dict`."""
         self.lr = state_dict["lr"]
         self.weight_decay = state_dict["weight_decay"]
         self.momentum = state_dict["momentum"]

@@ -6,6 +6,35 @@ from torchsonn.optimizers.base import LRLike
 
 
 class BatchedNewtonLM:
+    """Damped Newton step (Levenberg-Marquardt style), batched over the
+    candidate ensemble.
+
+    Per member and parameter tensor, solves H delta = g and moves
+
+        theta = theta - lr*delta
+
+    H comes from the `hessians` argument of `step` when given; otherwise it
+    is the diagonal estimate diag(g^2) + `damping`*I. Members with
+    `active_mask` False keep their parameters. Shared parameters use H and g
+    averaged over the active members. There is no gradient clipping, and the
+    damping is fixed: `max_damping` is stored but not used by `step`.
+
+    Parameters
+    ----------
+    params : dict of str -> (B, ...) tensor
+        Initial parameters (not stored; the optimizer keeps no state).
+    shared_param_names : iterable of str
+        Names of the parameters shared by every ensemble member.
+    lr : (B,) tensor
+        Learning rate per member.
+    damping : float
+        Diagonal term of the estimated H. Default 1e-2.
+    max_damping : float
+        Upper limit for the damping; currently unused. Default 1e3.
+    shared_param_lr_multiplier : float
+        Factor on the learning rate of the shared parameters. Default 1.0.
+    """
+
     def __init__(
         self,
         params: dict[str, torch.Tensor],

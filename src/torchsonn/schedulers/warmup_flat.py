@@ -18,6 +18,7 @@ class WarmupFlatScheduler(BaseScheduler):
         self.step_num = 0
 
     def step(self) -> None:
+        """Advance one step: lr = base_lr * step / warmup_steps during the warmup, base_lr after it."""
         self.step_num += 1
         if self.step_num < self.warmup_steps:
             scale = self.step_num / float(max(1, self.warmup_steps))
@@ -27,6 +28,7 @@ class WarmupFlatScheduler(BaseScheduler):
         self.opt.lr = self.base_lr * scale
 
     def state_dict(self) -> dict[str, Any]:
+        """Return warmup_steps, the base learning rate and the step count."""
         return {
             "warmup_steps": self.warmup_steps,
             "base_lr": self.base_lr,
@@ -34,6 +36,7 @@ class WarmupFlatScheduler(BaseScheduler):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore the state written by `state_dict`."""
         self.warmup_steps = state_dict["warmup_steps"]
         self.base_lr = state_dict["base_lr"]
         self.step_num = state_dict["step_num"]

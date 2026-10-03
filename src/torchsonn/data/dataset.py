@@ -11,6 +11,18 @@ ArrayLike = np.ndarray | torch.Tensor
 
 
 class SONNDataset(Dataset):
+    """Map-style dataset of `(x, target)` rows, optionally one half of them.
+
+    Parameters
+    ----------
+    x : (N, d) array or tensor
+        Input rows.
+    target : (N, ...) array or tensor, or None
+        Targets; None yields `(x, None)` items (inference).
+    split : {None, 0, 1}
+        None uses every row; 0 the even rows (0, 2, 4, ...); 1 the odd rows.
+        The trainer uses the two halves as subsets A and B of one loader.
+    """
     def __init__(
         self,
         x: ArrayLike,

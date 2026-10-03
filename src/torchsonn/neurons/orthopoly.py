@@ -181,6 +181,7 @@ class BaseOrthogonalNeuron(BaseTupleNeuron):
 
     @property
     def needs_input_stats(self) -> bool:
+        """True when the neuron squashes with the sigma method and so needs input statistics."""
         return self.squash_norm is not None
 
     def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
@@ -262,6 +263,9 @@ class BaseOrthogonalNeuron(BaseTupleNeuron):
         )
 
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
+        """Design row: 1, P_1..P_degree of every (squashed) input, then the
+        pairwise products u_i*u_j when `cross` is on.
+        """
         u = self._squash(x)
         parts = [torch.ones((*u.shape[:-1], 1), device=u.device, dtype=u.dtype)]
         parts.extend(self._orthopoly_columns(u))
@@ -280,6 +284,7 @@ class BaseOrthogonalNeuron(BaseTupleNeuron):
         raise NotImplementedError
 
     def get_short_name(self) -> str:
+        """Return e.g. 'Legendre3', or 'Legendre3x4' for 4 inputs."""
         # Append the arity only when non-default so a pair neuron stays
         # "Legendre3" (matching the historical short name) while a multi-input
         # one reads e.g. "Legendre3x4" (degree 3 over 4 inputs).
@@ -287,6 +292,7 @@ class BaseOrthogonalNeuron(BaseTupleNeuron):
         return f"{self._basis_name()}{self.degree}{suffix}"
 
     def get_name(self) -> str:
+        """Describe the basis, degree, squash, number of inputs and cross terms."""
         cross = " + pairwise cross terms" if self.cross else ""
         squash = f"{self.squash_method}-squashed " if self.squash else ""
         return (f"{self._basis_name()} basis (degree {self.degree}) over "

@@ -32,10 +32,12 @@ class SequenceTypeSet(IntEnum):
 
     @classmethod
     def is_mode1_type(cls, seq_type: "SequenceTypeSet") -> bool:
+        """True for the modes that put every k-th row in validate (sqMode1, sqMode3_1, sqMode4_1)."""
         return seq_type in (cls.sqMode1, cls.sqMode3_1, cls.sqMode4_1)
 
     @classmethod
     def is_mode2_type(cls, seq_type: "SequenceTypeSet") -> bool:
+        """True for the modes that put every k-th row in train (sqMode2, sqMode3_2, sqMode4_2)."""
         return seq_type in (cls.sqMode2, cls.sqMode3_2, cls.sqMode4_2)
 
 

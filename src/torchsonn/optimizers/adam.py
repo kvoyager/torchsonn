@@ -7,6 +7,30 @@ from torchsonn.optimizers.base import BaseOptimizer, LRLike
 
 
 class BatchedAdam(BaseOptimizer):
+    """Adam, batched over the candidate ensemble.
+
+    Per member and parameter tensor, with g the clipped gradient and t the
+    step count (shared by all members):
+
+        m = b1*m + (1 - b1)*g,      v = b2*v + (1 - b2)*g^2
+        theta = theta - lr * m_hat / (sqrt(v_hat) + eps)
+        m_hat = m / (1 - b1^t),     v_hat = v / (1 - b2^t)
+
+    Members with `active_mask` False in `step` keep their parameters; their
+    moment buffers still advance.
+
+    Parameters
+    ----------
+    params : dict of str -> (B, ...) tensor
+        Initial parameters; they set the shapes of the moment buffers.
+    shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier
+        See `BaseOptimizer`.
+    betas : (float, float)
+        Decay rates b1, b2 of the moment estimates. Default (0.9, 0.999).
+    eps : float
+        Added to sqrt(v_hat) in the denominator. Default 1e-8.
+    """
+
     def __init__(
         self,
         params: dict[str, torch.Tensor],
@@ -76,6 +100,7 @@ class BatchedAdam(BaseOptimizer):
         return new_params
 
     def state_dict(self) -> dict[str, Any]:
+        """Return lr, betas, eps, the moment buffers, the step count and the shared-parameter settings."""
         return {
             "lr": self.lr,
             "betas": self.betas,
@@ -88,6 +113,7 @@ class BatchedAdam(BaseOptimizer):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore the state written by `state_dict`."""
         self.lr = state_dict["lr"]
         self.betas = state_dict["betas"]
         self.eps = state_dict["eps"]

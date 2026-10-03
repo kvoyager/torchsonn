@@ -80,6 +80,28 @@ def generate_unique_pairs(
     allow_self: bool = False,
     ordered: bool = True,
 ) -> list[tuple[int, int]]:
+    """Draw `max_neuron_models` distinct random index pairs from `range(n)`.
+
+    Parameters
+    ----------
+    n : int
+        Number of available inputs.
+    max_neuron_models : int
+        Number of pairs to draw. Clamped, with a warning, to the number of
+        distinct pairs that exist for `n`.
+    seed : int, optional
+        Reseeds Python's global `random` module before drawing.
+    allow_self : bool
+        Allow pairs `(i, i)`.
+    ordered : bool
+        When False, `(i, j)` and `(j, i)` count as one pair, stored as
+        `(min, max)`.
+
+    Returns
+    -------
+    list of tuple of int
+        The pairs, in set iteration order.
+    """
     if seed is not None:
         random.seed(seed)
 
@@ -170,6 +192,20 @@ def generate_unique_combinations(
 #   Polynomial neuron class
 # *****************************************************************************
 class BasePolynomNeuron(SONNModule, ABC):
+    """Base class of every neuron family: an ensemble of candidate neurons of
+    one type, each reading its own tuple of layer inputs.
+
+    One module holds all `num_neurons` candidates of a family in a layer.
+    `src_idxs` (num_neurons, dim) lists the input columns each candidate
+    reads, and `weight` (num_neurons, num_w) holds their coefficients, the
+    constant term included. `forward` gathers each candidate's inputs,
+    expands them into its design row with `get_args` and returns the
+    weighted sum through `activation`.
+
+    Subclasses set `num_w` and implement `get_args`, `get_name` and
+    `get_short_name`. Every subclass is registered by class name, so
+    `from_checkpoint_metadata` can rebuild it from a checkpoint.
+    """
     num_w = -1
 
     # Class registry so from_checkpoint_metadata can look up subclasses by name
@@ -264,6 +300,13 @@ class BasePolynomNeuron(SONNModule, ABC):
 
     @classmethod
     def from_checkpoint_metadata(cls, metadata: dict[str, Any]) -> "BasePolynomNeuron":
+        """Rebuild a neuron module of the saved class from checkpoint metadata.
+
+        Looks the class up in the registry by `metadata["cls"]` and constructs
+        it with the saved shapes, including the per-neuron projection when the
+        checkpoint has one. The tensors are not copied here; `load_state_dict`
+        fills them in afterwards.
+        """
         neuron_cls = cls._registry[metadata["cls"]]
         obj = neuron_cls._construct_from_metadata(metadata)
         if "proj_num_classes" in metadata:
@@ -296,11 +339,17 @@ class BasePolynomNeuron(SONNModule, ABC):
         )
 
     def to(self, *args: Any, **kwargs: Any) -> "BasePolynomNeuron":
+        """Move or cast the module, its `src_idxs` and `created_neuron_idxs` included."""
         self.src_idxs = self.src_idxs.to(*args, **kwargs)
         self.created_neuron_idxs = self.created_neuron_idxs.to(*args, **kwargs)
         return super().to(*args, **kwargs)
 
     def reset_parameters(self) -> None:
+        """Re-initialize `weight` with the module's `init_method`.
+
+        'xavier' uses `nn.init.xavier_uniform_`; 'uniform' draws from
+        U(-0.1, 0.1). Any other method raises NotImplementedError.
+        """
         # Bias is folded into self.weight as the constant term (w0), so there is no
         # separate self.bias to initialize.
         if self.init_method == "uniform":
@@ -313,28 +362,50 @@ class BasePolynomNeuron(SONNModule, ABC):
 
     @abstractmethod
     def get_name(self) -> str:
+        """Human-readable description of the neuron's formula, for logs and plots."""
         raise NotImplementedError
 
     @abstractmethod
     def get_short_name(self) -> str:
+        """Short family name, for logs and plot labels."""
         raise NotImplementedError
 
     @property
     def device(self) -> torch.device:
+        """Device of the neuron weights."""
         return self.weight.device
 
     @property
     def num_neurons(self) -> int:
+        """Number of candidate neurons in this module (rows of `weight`)."""
         return self.weight.shape[0]
 
     @property
     def ensemble_size(self) -> int:
+        """Number of candidate neurons in this module; same as `num_neurons`."""
         return self.weight.shape[0]
 
     def need_bias_tools(self, criterion_type: CriterionType) -> bool:
+        """Whether the bias-error machinery is needed for `criterion_type`.
+
+        False only for the plain 'validate' criterion.
+        """
         return False if criterion_type == CriterionType.cmpValidate else True
 
     def forward(self, inp: torch.Tensor) -> torch.Tensor:
+        """Evaluate every candidate neuron on a batch of layer input.
+
+        Parameters
+        ----------
+        inp : torch.Tensor
+            Layer input, (batch, num_feat).
+
+        Returns
+        -------
+        torch.Tensor
+            (batch, num_neurons) neuron outputs, or (batch,) when the weights
+            are 1-D (inside the trainer's vmap over candidates).
+        """
         # Reshape the gathered inputs into per-neuron groups of `self.dim`. dim
         # is 2 for the pair ("binary") neurons and the orthogonal-polynomial
         # default, but the orthogonal-polynomial family also supports dim > 2,
@@ -354,6 +425,17 @@ class BasePolynomNeuron(SONNModule, ABC):
     def create_src_idxs(
         self, num_feat: int, max_neuron_models: int | None
     ) -> tuple[torch.Tensor, int]:
+        """Choose the input pairs the candidate neurons read.
+
+        With `max_neuron_models` set, draws that many distinct unordered pairs
+        at random (fewer if fewer exist); otherwise enumerates all
+        `num_feat * (num_feat - 1) / 2` pairs in order.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, int)
+            The (num_neurons, 2) index tensor and `num_neurons`.
+        """
         if max_neuron_models is not None:
             assert max_neuron_models > 0
             # Unordered pairs: for a polynomial neuron y = f(xi, xj), the
@@ -381,6 +463,18 @@ class BasePolynomNeuron(SONNModule, ABC):
 
     @abstractmethod
     def get_args(self, x: torch.Tensor) -> torch.Tensor:
+        """Expand gathered inputs into the design row the weights multiply.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            (batch, num_neurons, dim) inputs of each candidate.
+
+        Returns
+        -------
+        torch.Tensor
+            (batch, num_neurons, num_w) design rows.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -466,6 +560,12 @@ class BasePolynomNeuron(SONNModule, ABC):
         return None
 
     def prune(self, idxs: torch.Tensor) -> None:
+        """Keep only the candidates at positions `idxs`, dropping the rest.
+
+        Selects the matching rows of `src_idxs`, `created_neuron_idxs`,
+        `weight` and the projection parameters, then calls `_prune_extra` for
+        subclass state.
+        """
         self.src_idxs = self.src_idxs.index_select(0, idxs)
         self.created_neuron_idxs = self.created_neuron_idxs.index_select(0, idxs)
         self.weight = nn.Parameter(self.weight.index_select(0, idxs))
@@ -530,6 +630,17 @@ class BaseTupleNeuron(BasePolynomNeuron):
     def create_src_idxs(
         self, num_feat: int, max_neuron_models: int | None
     ) -> tuple[torch.Tensor, int]:
+        """Choose the unordered `dim`-tuples of inputs the candidates read.
+
+        With `max_neuron_models` set, draws that many distinct tuples at random
+        (fewer if fewer exist); otherwise enumerates every combination with
+        `itertools.combinations`, which is empty when `num_feat < dim`.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, int)
+            The (num_neurons, dim) index tensor and `num_neurons`.
+        """
         if max_neuron_models is not None:
             assert max_neuron_models > 0
             src_idxs = generate_unique_combinations(

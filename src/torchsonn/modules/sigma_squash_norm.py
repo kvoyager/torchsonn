@@ -180,6 +180,20 @@ class SigmaSquashNorm(SONNModule):
         return cls(mean=x.mean(dim=dim), std=x.std(dim=dim), **kwargs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Map `x` into (-1, 1): linear core, saturating rational tail.
+
+        Parameters
+        ----------
+        x : tensor
+            Input, broadcast against the `mean` and `std` buffers.
+
+        Returns
+        -------
+        y : tensor
+            With s = (x - mean) / (n_sigma*std): `core_range`*s where |s| <= 1,
+            and sign(s)*(1 - gap(|s| - 1)) beyond, with the gap of the module
+            docstring. Same shape as the broadcast input.
+        """
         a = self.core_range
         # Tail coefficients, recomputed per call (three scalar ops, free next
         # to the tensor work) so they can never go stale against a core_range
@@ -206,5 +220,6 @@ class SigmaSquashNorm(SONNModule):
         return torch.where(abs_s <= 1.0, a * s, tail)
 
     def extra_repr(self) -> str:
+        """Show `n_sigma`, `core_range` and the shape of the statistics in the module repr."""
         return (f"n_sigma={self.n_sigma}, core_range={self.core_range}, "
                 f"shape={tuple(self.mean.shape)}")
