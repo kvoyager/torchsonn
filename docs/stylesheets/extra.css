@@ -1,0 +1,6 @@
+/* Keep the code in a table's first column (configuration keys, option and
+   family names) on one line instead of breaking it mid-word. Material wraps
+   wide tables in a horizontal scroll container on narrow screens. */
+.md-typeset table:not([class]) td:first-child code {
+  white-space: nowrap;
+}
