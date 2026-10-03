@@ -357,17 +357,6 @@ class TrainConfig:
     #           to the candidate early stop when early_stop_source is 'dev').
     #           Requires `val_dl`.
     stop_source: str = "dev"
-    # Which split the two coarse stop decisions read when the caller hands
-    # `Trainer.train` / `train_finetune` a validation loader (`val_dl`, a split
-    # that selects nothing):
-    #   'dev' - the growth criterion and the end-to-end early stop use the
-    #           dev split, as before; `val_dl` is only reported (per layer
-    #           the best neuron's error on it next to the dev error, and the
-    #           finished model's loss).
-    #   'val' - they use the validation split, leaving dev to selection (and
-    #           to the candidate early stop when early_stop_source is 'dev').
-    #           Requires `val_dl`.
-    stop_source: str = "dev"
 
     shared_proj_lr_multiplier: float = 0.1
 
