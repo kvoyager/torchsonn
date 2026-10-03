@@ -163,6 +163,8 @@ finding.
 | Legendre-3, 32 survivors | 0.1851 ± 0.0023 | 0.2764 |
 | Legendre + RBF-8, cap 500, 32 survivors | 0.1860 ± 0.0021 | **0.2753** |
 | Legendre degree 5 | 0.1868 ± 0.0027 | 0.2788 |
+| `linear_cov` instead of Legendre, 24 survivors | 0.1990 ± 0.0021 | 0.2924 |
+| `quadratic` instead of Legendre, 24 survivors | 0.2027 ± 0.0054 | 0.2941 |
 | **Legendre-3, 24 survivors (current default)** | **0.1852 ± 0.0008** | 0.2775 |
 | **RBF-8, 24 survivors (current default)** | **0.1853 ± 0.0014** | 0.2772 |
 
@@ -176,11 +178,17 @@ What the experiments found:
 - **Everything else is inside the noise:**
   - polynomial degree 4 or 5;
   - Chebyshev instead of Legendre;
-  - the linear neuron family;
+  - adding a `linear` neuron family next to Legendre;
   - RBF centre counts of 4 to 16;
   - grid or unbounded RBF centres;
   - the stop-rule variants.
 - **Some changes are clear losses:**
+  - the power-basis families instead of Legendre: `linear_cov` (+0.014)
+    and `quadratic` (+0.018). `quadratic` has more terms but is no better
+    and is the least stable across seeds. Its searches stop after 4–5
+    layers, against 7–10 for Legendre. Unlike Legendre, these neurons do not
+    squash their inputs, and raw powers of heavy-tailed features are poorly
+    conditioned;
   - dropping the head (+0.009);
   - the per-layer fine-tune;
   - a strong ridge on RBF weights;
