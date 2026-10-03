@@ -8,9 +8,9 @@ validation criterion. Training stops automatically when adding a layer no
 longer reduces the criterion error. Three families of reference functions
 are available:
 
-- **power-basis polynomials**: `linear`, `linear_cov`, `quadratic`,
+- **Power-basis polynomials**: `linear`, `linear_cov`, `quadratic`,
   `cubic` and multi-input `polyquad`;
-- **orthogonal polynomials**: `legendre` and `chebyshev`, with a
+- **Orthogonal polynomials**: `legendre` and `chebyshev`, with a
   configurable degree and number of inputs. They stay well conditioned at
   higher degrees, where the raw power basis breaks down;
 - **Gaussian radial basis functions**: `rbf`, local bumps whose centres and
