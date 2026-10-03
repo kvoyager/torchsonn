@@ -153,7 +153,6 @@ class ModelConfig:
     # The bool shorthand `shortcut: true|false` means
     # `{raw_features: true|false, prev_layers: null}`.
     shortcut: Any = field(default_factory=lambda: {"raw_features": True, "prev_layers": None})
-    normalize: bool = True
 
     # How the orthogonal-polynomial families (legendre / chebyshev) map their
     # inputs into [-1, 1], the only interval where those bases are orthogonal
@@ -448,7 +447,6 @@ class TrainConfig:
     batch_size: int = 1
     steps: int = 1000
     shuffle: bool = False
-    normalize: bool = True
 
     train_loss_tol: float = 0.001
     train_loss_window: int = 20
@@ -469,7 +467,6 @@ class SONNConfig:
     # doesn't trip strict-mode "unknown key" errors. Each tutorial reads
     # only the flag(s) it cares about.
     resume: bool = False
-    train_on_first_half: bool = False  # gmdhpy-style split toggle (CA only)
     # After the structural search (and any out_proj head fit) completes, drop
     # the head and run `Trainer.train_finetune` over every parameter at once,
     # against the readout the model will actually be scored on. Leaves a

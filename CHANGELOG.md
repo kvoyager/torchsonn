@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`
+
+None of the three was read. `model.normalize` and `train.normalize` came
+from gmdhpy and never had an effect; `train_on_first_half` was the
+California housing script's old 50/50 split switch, and the script stopped
+reading it in 0.1.4. The schema rejects unknown keys, so a config that
+still sets one of them now fails to load: delete the key. The `rbf`
+neuron's own `normalize` option is unaffected.
+
 ## 0.1.5
 
 ### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs

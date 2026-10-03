@@ -404,8 +404,6 @@ class SONN(SONNModule):
              - Regressor(ref_functions=('linear_cov', 'quadratic', 'cubic', 'linear'))
              - Regressor(ref_functions=('quadratic', 'linear'))
 
-        normalize - scale and normalize features if set to True. Default value is True
-
         layer_err_criterion - criterion of layer error calculation: 'top' - the topmost best neuron error is chosen
             as layer error; 'avg' - the layer error is the average error of the selected best neurons
             default value is 'top'

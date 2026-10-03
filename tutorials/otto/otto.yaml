@@ -26,7 +26,6 @@ model:
       - dim: 5
       - activation: ""
   shortcut: true
-  normalize: true
   nbest_neurons: 93
   use_layer_norm: false
   max_neuron_models: 10000
@@ -101,7 +100,6 @@ train:
   layer_finetune: true
   steps: 1000
   shuffle: true
-  normalize: true
   train_loss_tol: 0.001
   train_loss_window: 20
   verbose: true
