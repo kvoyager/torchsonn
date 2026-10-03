@@ -67,7 +67,8 @@ y = y.astype(np.float32)
 
 def loader(start, stop, shuffle=False):
     dataset = SONNDataset(x[start:stop], y[start:stop])
-    return DataLoader(dataset, batch_size=8192, shuffle=shuffle)
+    # One batch holds a whole split (10,320 training rows).
+    return DataLoader(dataset, batch_size=16384, shuffle=shuffle)
 
 train_dl = loader(0, i_train, shuffle=True)
 dev_dl = loader(i_train, i_dev)
@@ -80,15 +81,20 @@ config = OmegaConf.merge(SONN.default_config(), {
         "ref_functions": ["linear_cov"],
         "nbest_neurons": 8,
         "max_neuron_models": 28,
-        "output_clamp_value": 1e6,
     },
     "train": {
         "max_layer_count": 10,
         "steps": 500,
-        "batch_size": 8192,
-        "checkpoint_dir": "checkpoints",
-        "optimizer": {"name": "lbfgs",
-                      "optimizer_params": {"lr": 0.1, "history_size": 10}},
+        "eval_step_interval": 5,
+        "early_stop_patience": 1e-4,
+        "early_stop_tolerance_steps": 3,
+        "checkpoint_dir": "checkpoints/california",
+        "optimizer": {
+            "name": "lbfgs",
+            "optimizer_params": {
+                "lr": 0.1, "min_lr": 0.01, "history_size": 10,
+            },
+        },
     },
 })
 
