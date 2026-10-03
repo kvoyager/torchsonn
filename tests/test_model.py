@@ -37,12 +37,9 @@ class TestParseRefFunctionEntry:
         assert rt == RefFunctionType.rfPolyQuadratic
         assert opts is None
 
-    def test_legacy_list_form(self):
-        rt, opts = _parse_ref_function_entry(
-            {"polyquad": [{"squares": True}, {"dim": 4}]}
-        )
-        assert rt == RefFunctionType.rfPolyQuadratic
-        assert opts == {"squares": True, "dim": 4}
+    def test_list_form_raises(self):
+        with pytest.raises(TypeError, match="must be a mapping"):
+            _parse_ref_function_entry({"polyquad": [{"squares": True}, {"dim": 4}]})
 
     def test_invalid_mapping_payload_raises(self):
         with pytest.raises(TypeError):

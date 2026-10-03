@@ -38,8 +38,8 @@ confined to [-1, 1].
 `squash_method` picks how:
   * "sigma" (default) — SigmaSquashNorm: standardize by the per-feature
     mean/std measured on the training set, pass the bulk through linearly, and
-    saturate only the tail. Needs calibrating, which `fit_squash` does once per
-    layer before that layer trains (see Trainer.fit_layer_squash).
+    saturate only the tail. Needs calibrating, which `fit_input_stats` does once per
+    layer before that layer trains (see Trainer.fit_layer_inputs).
   * "tanh" — the historical stateless squash, and the standard trick in
     Chebyshev-KAN. Needs no statistics, but spends its useful slope on the bulk
     of the data: tanh is already at 0.76 by 1 sigma, so typical samples get
@@ -169,14 +169,9 @@ class BaseOrthogonalNeuron(BaseTupleNeuron):
             cross=metadata["cross"],
             squash=metadata["squash"],
             dim=metadata["dim"],
-            # .get for the squash knobs: checkpoints written before the
-            # configurable squash landed carry neither key, and their neurons
-            # were tanh-squashed. Defaulting to the *current* default ("sigma")
-            # would restore them with a different — uncalibrated — nonlinearity
-            # and silently change what the saved model computes.
-            squash_method=metadata.get("squash_method", "tanh"),
-            squash_n_sigma=metadata.get("squash_n_sigma", 2.0),
-            squash_core_range=metadata.get("squash_core_range", 0.75),
+            squash_method=metadata["squash_method"],
+            squash_n_sigma=metadata["squash_n_sigma"],
+            squash_core_range=metadata["squash_core_range"],
         )
 
     @property

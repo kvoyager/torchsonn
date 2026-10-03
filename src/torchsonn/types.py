@@ -48,9 +48,9 @@ class RefFunctionType(Enum):
     def get(cls, arg: "RefFunctionType | str") -> "RefFunctionType":
         """Resolve a config name or alias to a `RefFunctionType`.
 
-        Accepted names: 'linear', 'linear_cov' / 'lcov', 'quadratic' /
-        'quad', 'cubic', 'polyquad', 'legendre' / 'leg', 'chebyshev' /
-        'cheb', 'rbf' / 'gauss'. A `RefFunctionType` is returned unchanged.
+        Accepted names: 'linear', 'linear_cov', 'quadratic', 'cubic',
+        'polyquad', 'legendre', 'chebyshev', 'rbf'. A `RefFunctionType` is
+        returned unchanged.
 
         Raises
         ------
@@ -61,19 +61,19 @@ class RefFunctionType(Enum):
             return arg
         if arg == 'linear':
             return RefFunctionType.rfLinear
-        elif arg in ('linear_cov', 'lcov'):
+        elif arg == 'linear_cov':
             return RefFunctionType.rfLinearCov
-        elif arg in ('quadratic', 'quad'):
+        elif arg == 'quadratic':
             return RefFunctionType.rfQuadratic
         elif arg == 'cubic':
             return RefFunctionType.rfCubic
         elif arg == 'polyquad':
             return RefFunctionType.rfPolyQuadratic
-        elif arg in ('legendre', 'leg'):
+        elif arg == 'legendre':
             return RefFunctionType.rfLegendre
-        elif arg in ('chebyshev', 'cheb'):
+        elif arg == 'chebyshev':
             return RefFunctionType.rfChebyshev
-        elif arg in ('rbf', 'gauss'):
+        elif arg == 'rbf':
             return RefFunctionType.rfRBF
         else:
             raise ValueError(arg)
@@ -104,8 +104,7 @@ class CriterionType(Enum):
     def get(cls, arg: "CriterionType | str") -> "CriterionType":
         """Resolve a config name to a `CriterionType`.
 
-        Accepted names: 'validate', 'bias', 'validate_bias', 'bias_retrain' /
-        'bias_refit'. A `CriterionType` is returned unchanged.
+        Accepted names: 'validate', 'bias', 'validate_bias', 'bias_retrain'. A `CriterionType` is returned unchanged.
 
         Raises
         ------
@@ -120,7 +119,7 @@ class CriterionType(Enum):
             return CriterionType.cmpBias
         elif arg == 'validate_bias':
             return CriterionType.cmpComb_validate_bias
-        elif arg in ('bias_retrain', 'bias_refit'):
+        elif arg == 'bias_retrain':
             return CriterionType.cmpComb_bias_retrain
         else:
             raise ValueError(arg)

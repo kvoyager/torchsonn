@@ -7,7 +7,7 @@ from torch import nn
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from omegaconf import OmegaConf, DictConfig, ListConfig
+from omegaconf import OmegaConf, DictConfig
 
 # Side-effect import: registers SONNConfig with Hydra's ConfigStore so the
 # tutorial YAMLs' `defaults: [default, _self_]` resolves to the typed schema.
@@ -39,7 +39,7 @@ def _parse_ref_function_entry(entry: Any) -> tuple[RefFunctionType, Optional[dic
 
     The list is intentionally heterogeneous (typed `List[Any]` in the config)
     because each ref-function family takes its own option set. Two shapes are
-    accepted, both routinely emitted by hand-written YAML:
+    accepted:
 
       • a bare name string  →  options = None
             - linear_cov
@@ -49,11 +49,6 @@ def _parse_ref_function_entry(entry: Any) -> tuple[RefFunctionType, Optional[dic
             - polyquad:
                 squares: true
                 dim: 3
-
-        or the legacy list-of-single-key-dicts form (still in older YAMLs):
-            - polyquad:
-                - squares: true
-                - dim: 3
 
     Returns (RefFunctionType, options_dict_or_None). The options dict is left
     untyped on purpose — each neuron class consumes its own kwargs (see
@@ -67,17 +62,12 @@ def _parse_ref_function_entry(entry: Any) -> tuple[RefFunctionType, Optional[dic
             # Treat it as the bare-name form — use the ref function's own
             # default options.
             return RefFunctionType.get(name), None
-        if isinstance(raw, (Mapping, DictConfig)):
-            # Modern nested-mapping form.
-            options = {k: v for k, v in raw.items()}
-        elif isinstance(raw, (list, ListConfig)):
-            # Legacy list-of-single-key-dicts form. Flatten into one dict.
-            options = {k: v for item in raw for k, v in dict(item).items()}
-        else:
+        if not isinstance(raw, (Mapping, DictConfig)):
             raise TypeError(
-                f"ref_functions[{name!r}] must be a mapping or a list of "
-                f"single-key mappings, got {type(raw).__name__}"
+                f"ref_functions[{name!r}] options must be a mapping, "
+                f"got {type(raw).__name__}"
             )
+        options = {k: v for k, v in raw.items()}
         return RefFunctionType.get(name), options
     # Bare-name form (string or RefFunctionType).
     return RefFunctionType.get(entry), None
@@ -694,17 +684,8 @@ class SONN(SONNModule):
         return list(range(position - 1, oldest - 1, -1)), self.shortcut_raw
 
     def layer_sources(self, position: int) -> tuple[list[int], bool]:
-        """(input_layers, input_raw) of the layer at `position`, as stored on it.
-
-        Layers from a checkpoint that predates the stored layout fall back to
-        the layout of that time: the previous layer, plus the raw inputs when
-        shortcut is on.
-        """
+        """(input_layers, input_raw) of the layer at `position`, as stored on it."""
         layer = self.layers[position]
-        if layer.input_layers is None:
-            if position == 0:
-                return [], True
-            return [position - 1], self.shortcut_raw
         return list(layer.input_layers), bool(layer.input_raw)
 
     def input_blocks(self, position: int) -> list[tuple[Optional[int], int]]:

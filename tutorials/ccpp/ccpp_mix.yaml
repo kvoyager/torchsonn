@@ -48,9 +48,9 @@ model:
     - quadratic:
         activation: ""
     - polyquad:
-        - squares: True
-        - dim: 4
-        - activation: ""
+        squares: True
+        dim: 4
+        activation: ""
     # Legendre orthogonal-polynomial neurons over each input pair (a degree-2 and
     # a degree-3 family, below). Their basis {P1, P2, ...} is a better-conditioned
     # stand-in for the raw-power terms x, x², x³ — the Legendre Gram matrix is well

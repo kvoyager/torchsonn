@@ -503,11 +503,6 @@ class BasePolynomNeuron(SONNModule, ABC):
         """
         return False
 
-    @property
-    def needs_squash_stats(self) -> bool:
-        """Historical name of `needs_input_stats`."""
-        return self.needs_input_stats
-
     def fit_input_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
         """Calibrate anything data-dependent from layer-input statistics.
 
@@ -517,10 +512,6 @@ class BasePolynomNeuron(SONNModule, ABC):
         `BaseOrthogonalNeuron.fit_input_stats` for the sigma squash.
         """
         return
-
-    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
-        """Historical name of `fit_input_stats`."""
-        self.fit_input_stats(mean, std)
 
     @property
     def needs_input_sample(self) -> bool:

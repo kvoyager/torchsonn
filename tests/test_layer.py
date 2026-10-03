@@ -77,9 +77,13 @@ class TestSONNLayer:
             "nbest_neurons": 3,
             "layer_index": 2,
             "use_layer_norm": False,
+            "layer_norm_dim": None,
+            "input_layers": [1],
+            "input_raw": True,
         }
         layer = SONNLayer.from_checkpoint_metadata(meta)
         assert layer.layer_index == 2
+        assert layer.input_layers == [1] and layer.input_raw is True
         assert layer.layer_norm is None
 
     def test_from_checkpoint_metadata_with_layer_norm_dim(self):
@@ -89,21 +93,22 @@ class TestSONNLayer:
             "layer_index": 2,
             "use_layer_norm": True,
             "layer_norm_dim": 12,
+            "input_layers": [1],
+            "input_raw": True,
         }
         layer = SONNLayer.from_checkpoint_metadata(meta)
         assert layer.layer_norm is not None
         assert layer.layer_norm_dim == 12
 
-    def test_from_checkpoint_metadata_missing_layer_norm_dim_falls_back(self):
+    def test_from_checkpoint_metadata_missing_field_raises(self):
         meta = {
             "d_model": 8,
             "nbest_neurons": 3,
             "layer_index": 2,
             "use_layer_norm": True,
         }
-        # missing layer_norm_dim → falls back to d_model
-        layer = SONNLayer.from_checkpoint_metadata(meta)
-        assert layer.layer_norm_dim == 8
+        with pytest.raises(KeyError, match="layer_norm_dim"):
+            SONNLayer.from_checkpoint_metadata(meta)
 
     def test_get_parent_neron_module_found(self):
         layer = _make_layer_with_two_neurons()

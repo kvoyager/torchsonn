@@ -127,10 +127,6 @@ class SONNLayer(SONNModule):
         for neuron_model in self.neuron_models:
             neuron_model.fit_input_stats(mean, std)
 
-    def fit_squash(self, mean: torch.Tensor, std: torch.Tensor) -> None:
-        """Historical name of `fit_input_stats`."""
-        self.fit_input_stats(mean, std)
-
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Record the neuron class names, then return the module state dict."""
         self.neuron_models_names = [neuron_model.__class__.__name__ for neuron_model in self.neuron_models]
@@ -159,16 +155,13 @@ class SONNLayer(SONNModule):
             d_model=metadata["d_model"],
             nbest_neurons=metadata["nbest_neurons"],
             layer_index=metadata["layer_index"],
-            use_layer_norm=metadata.get("use_layer_norm", False),
+            use_layer_norm=metadata["use_layer_norm"],
         )
-        # Restore the LayerNorm at its saved width. `layer_norm_dim` may be
-        # missing in pre-LayerNorm checkpoints — fall back to d_model so
-        # restore still succeeds, even though that case implies the flag
-        # was off and setup_layer_norm will be a no-op anyway.
-        ln_dim = metadata.get("layer_norm_dim") or metadata["d_model"]
-        layer.setup_layer_norm(ln_dim)
-        layer.input_layers = metadata.get("input_layers")
-        layer.input_raw = metadata.get("input_raw")
+        # Restore the LayerNorm at its saved width. `layer_norm_dim` is None
+        # when the layer has no LayerNorm; setup_layer_norm is then a no-op.
+        layer.setup_layer_norm(metadata["layer_norm_dim"] or metadata["d_model"])
+        layer.input_layers = metadata["input_layers"]
+        layer.input_raw = metadata["input_raw"]
         return layer
 
     def to(self, *args: Any, **kwargs: Any) -> "SONNLayer":

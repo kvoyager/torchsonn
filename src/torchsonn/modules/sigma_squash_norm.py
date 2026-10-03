@@ -151,7 +151,7 @@ class SigmaSquashNorm(SONNModule):
         """Refit the statistics in place, keeping the buffers' shape and device.
 
         Used to calibrate an already-constructed layer once the data that will
-        flow through it is known — see `BaseOrthogonalNeuron.fit_squash`, which
+        flow through it is known — see `BaseOrthogonalNeuron.fit_input_stats`, which
         calls this per layer during training. Copies in place rather than
         rebinding so any vmap/functional_call view of the buffers stays valid.
         """

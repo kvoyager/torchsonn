@@ -387,7 +387,7 @@ def test_train_calibrates_sigma_squash_on_training_set(tmp_path):
     assert neuron.squash_norm.mean.shape == (neuron.num_neurons, neuron.dim)
 
 
-def test_fit_layer_squash_matches_actual_layer_inputs(tmp_path):
+def test_fit_layer_inputs_matches_actual_layer_inputs(tmp_path):
     """A deeper layer's inputs are the frozen prefix's outputs concatenated
     with the shortcut originals — a different width and scale from the raw
     input, which is what the per-layer (not global) calibration exists for."""
@@ -398,7 +398,7 @@ def test_fit_layer_squash_matches_actual_layer_inputs(tmp_path):
 
     layer0 = model.create_layer(0)
     model.layers.append(layer0)
-    trainer.fit_layer_squash(model, layer0, train_dl)
+    trainer.fit_layer_inputs(model, layer0, train_dl)
     trainer.train_layer(model, layer0, train_dl, _offset_dl(24, seed=2), None)
 
     layer1 = model.create_layer(1)
@@ -407,7 +407,7 @@ def test_fit_layer_squash_matches_actual_layer_inputs(tmp_path):
     assert neuron.num_feat == layer0.d_model + model.d_model
 
     before = neuron.squash_norm.mean.clone()
-    trainer.fit_layer_squash(model, layer1, train_dl)
+    trainer.fit_layer_inputs(model, layer1, train_dl)
 
     with torch.no_grad():
         feats = torch.cat([model(b[0], skip_last_layer=True) for b in train_dl], 0)
@@ -424,7 +424,7 @@ def test_fit_layer_squash_matches_actual_layer_inputs(tmp_path):
     assert neuron._squash(x).abs().max() <= 1.0
 
 
-def test_fit_layer_squash_skipped_without_sigma_neurons(tmp_path):
+def test_fit_layer_inputs_skipped_without_sigma_neurons(tmp_path):
     """tanh needs no statistics, so the extra pass must not run at all."""
     cfg = _legendre_cfg(tmp_path, squash_method="tanh")
     model = SONN(cfg, d_model=4)
@@ -434,7 +434,7 @@ def test_fit_layer_squash_skipped_without_sigma_neurons(tmp_path):
     def _explode(*args, **kwargs):
         raise AssertionError("calibration pass ran for a tanh-squashed layer")
 
-    Trainer(config=cfg).fit_layer_squash(model, layer, _explode)
+    Trainer(config=cfg).fit_layer_inputs(model, layer, _explode)
 
 
 def test_trainer_infer_and_prune(tmp_path):
@@ -702,7 +702,7 @@ def test_input_pass_serves_stats_and_sample_in_one_pass(tmp_path):
     stub = _SamplingStub(4, 4, None, 0, 0, max_neuron_models=3, streams=False)
     layer.neuron_models.append(stub)
     dl = _offset_dl(64)
-    Trainer(config=cfg).fit_layer_squash(model, layer, dl)
+    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
     leg = layer.neuron_models[0]
     rows = _all_rows(model, dl)
     assert torch.allclose(leg.squash_norm.mean, rows.mean(0)[leg.src_idxs], atol=1e-3)

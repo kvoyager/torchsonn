@@ -320,7 +320,7 @@ class TestOrthogonalNeurons:
     def test_tanh_method_carries_no_statistics(self, cls):
         n = cls(4, 4, None, 0, 0, squash_method="tanh")
         assert n.squash_norm is None
-        assert not n.needs_squash_stats
+        assert not n.needs_input_stats
         assert "tanh-squashed" in n.get_name()
         x = torch.randn(5, 6, 2) * 50
         assert torch.allclose(n._squash(x), torch.tanh(x))
@@ -338,19 +338,19 @@ class TestOrthogonalNeurons:
             n._squash(torch.randn(3, 6, 2))
 
     @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
-    def test_fit_squash_gathers_per_input_slot_stats(self, cls):
+    def test_fit_input_stats_gathers_per_input_slot_stats(self, cls):
         n = cls(4, 4, None, 0, 0)
         mean = torch.tensor([10.0, 20.0, 30.0, 40.0])
         std = torch.tensor([1.0, 2.0, 3.0, 4.0])
-        n.fit_squash(mean, std)
+        n.fit_input_stats(mean, std)
         # neuron k's slot j must carry the stats of the feature column it reads
         for k, (i, j) in enumerate(n.src_idxs.tolist()):
             assert n.squash_norm.mean[k].tolist() == [mean[i], mean[j]]
             assert n.squash_norm.std[k].tolist() == [std[i], std[j]]
 
-    def test_fit_squash_neutralizes_a_constant_feature(self):
+    def test_fit_input_stats_neutralizes_a_constant_feature(self):
         n = LegendrePolynomNeuron(3, 3, None, 0, 0)
-        n.fit_squash(torch.tensor([0.0, 5.0, 0.0]), torch.tensor([1.0, 0.0, 1.0]))
+        n.fit_input_stats(torch.tensor([0.0, 5.0, 0.0]), torch.tensor([1.0, 0.0, 1.0]))
         # std 0 → unit scale, so the constant column maps to 0 rather than
         # dividing float noise by ~0 and saturating at random.
         assert (n.squash_norm.std > 0).all()
@@ -360,7 +360,7 @@ class TestOrthogonalNeurons:
     @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
     def test_prune_keeps_squash_stats_aligned(self, cls):
         n = cls(5, 5, None, 0, 0)
-        n.fit_squash(torch.arange(5.0), torch.ones(5))
+        n.fit_input_stats(torch.arange(5.0), torch.ones(5))
         keep = torch.tensor([2, 0, 7])
         expected = n.squash_norm.mean[keep].clone()
         n.prune(keep)
@@ -373,7 +373,7 @@ class TestOrthogonalNeurons:
     @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
     def test_sigma_squash_bounds_wildly_scaled_inputs(self, cls):
         n = cls(4, 4, None, 0, 0, degree=6)
-        n.fit_squash(torch.full((4,), 100.0), torch.full((4,), 25.0))
+        n.fit_input_stats(torch.full((4,), 100.0), torch.full((4,), 25.0))
         x = torch.randn(64, 4) * 25.0 + 100.0
         args = n.get_args(
             torch.index_select(x, 1, n.src_idxs.view(-1)).view(64, -1, n.dim)
@@ -385,7 +385,7 @@ class TestOrthogonalNeurons:
     def test_squash_knobs_survive_checkpoint_metadata(self):
         n = LegendrePolynomNeuron(4, 4, None, 0, 0, squash_n_sigma=3.0,
                                   squash_core_range=0.5)
-        n.fit_squash(torch.arange(4.0), torch.ones(4) * 2)
+        n.fit_input_stats(torch.arange(4.0), torch.ones(4) * 2)
         restored = BasePolynomNeuron.from_checkpoint_metadata(
             {name: getattr(n, name) for name in n.params_metadata_names}
         )
@@ -397,17 +397,13 @@ class TestOrthogonalNeurons:
         restored.load_state_dict(n.state_dict(), strict=False)
         assert torch.equal(restored.squash_norm.mean, n.squash_norm.mean)
 
-    def test_legacy_metadata_without_squash_keys_restores_as_tanh(self):
-        """Checkpoints predating the configurable squash were tanh-squashed;
-        defaulting them to the current 'sigma' default would restore them with
-        a different — and uncalibrated — nonlinearity."""
+    @pytest.mark.parametrize("key", ["squash_method", "squash_n_sigma", "squash_core_range"])
+    def test_metadata_without_a_squash_key_raises(self, key):
         n = LegendrePolynomNeuron(4, 4, None, 0, 0)
         meta = {name: getattr(n, name) for name in n.params_metadata_names}
-        for key in ("squash_method", "squash_n_sigma", "squash_core_range"):
-            meta.pop(key)
-        restored = BasePolynomNeuron.from_checkpoint_metadata(meta)
-        assert restored.squash_method == "tanh"
-        assert restored.squash_norm is None
+        meta.pop(key)
+        with pytest.raises(KeyError, match=key):
+            BasePolynomNeuron.from_checkpoint_metadata(meta)
 
     @pytest.mark.parametrize("cls", [LegendrePolynomNeuron, ChebyshevPolynomNeuron])
     @pytest.mark.parametrize(
@@ -505,6 +501,9 @@ class TestOrthogonalNeurons:
             "degree": 4,
             "cross": False,
             "squash": False,
+            "squash_method": "sigma",
+            "squash_n_sigma": 2.0,
+            "squash_core_range": 0.75,
             "src_idxs": n.src_idxs,
         }
         restored = BasePolynomNeuron.from_checkpoint_metadata(meta)
@@ -636,6 +635,9 @@ class TestMultiInputOrthogonalNeurons:
             "degree": 3,
             "cross": True,
             "squash": False,
+            "squash_method": "sigma",
+            "squash_n_sigma": 2.0,
+            "squash_core_range": 0.75,
             "src_idxs": n.src_idxs,
         }
         restored = BasePolynomNeuron.from_checkpoint_metadata(meta)
@@ -688,13 +690,13 @@ class TestBaseTupleNeuron:
             x = torch.randn(7, 5)
             assert torch.equal(back(x), n(x))
 
-    def test_historical_names_are_aliases(self):
+    def test_input_stats_hooks(self):
         n = LegendrePolynomNeuron(4, 4, None, 0, 0, max_neuron_models=3)
-        assert n.needs_squash_stats is n.needs_input_stats is True
-        n.fit_squash(torch.arange(4.0), torch.ones(4) * 2)
+        assert n.needs_input_stats is True
+        n.fit_input_stats(torch.arange(4.0), torch.ones(4) * 2)
         assert torch.equal(n.squash_norm.mean, torch.arange(4.0)[n.src_idxs])
         tanh = LegendrePolynomNeuron(4, 4, None, 0, 0, max_neuron_models=3, squash_method="tanh")
-        assert tanh.needs_input_stats is False and tanh.needs_squash_stats is False
+        assert tanh.needs_input_stats is False
         # The new hooks default to "nothing wanted" on every family.
         for nm in (n, LinearCovPolynomNeuron(4, 4, None, 0, 0), PolyQuadratic(4, 4, None, 0, 0, dim=3, max_neuron_models=3)):
             assert nm.needs_input_sample is False and nm.needs_input_stream is False
@@ -930,7 +932,7 @@ class TestRBFNeuron:
         rbf = _rbf(2, max_neuron_models=None)
         _calibrate(rbf, u, seed=0)
         leg = LegendrePolynomNeuron(2, 2, None, 0, 0, degree=3)
-        leg.fit_squash(u.mean(0), u.std(0, unbiased=False))
+        leg.fit_input_stats(u.mean(0), u.std(0, unbiased=False))
 
         def resid(phi):
             sol = torch.linalg.lstsq(phi, y.unsqueeze(1)).solution
@@ -1013,7 +1015,7 @@ class TestRBFNeuron:
             "model": {"type": "regressor", "num_classes": 1, "nbest_neurons": 2, "soft_binner": False,
                       "max_neuron_models": 3, "shortcut": False,
                       "ref_functions": [{"rbf": {"centers": 9, "placement": "grid", "learn_widths": False}},
-                                        "gauss"]},
+                                        "rbf"]},
             "train": {"device": "cpu"},
         }))
         model = SONN(cfg, d_model=4)
@@ -1102,8 +1104,9 @@ class TestRBFNeuron:
         assert "k-means++" in a.get_name() and "PCA" in _rbf(2, max_neuron_models=None).get_name()
         meta = {k: getattr(a, k) for k in a.params_metadata_names}
         assert BasePolynomNeuron.from_checkpoint_metadata(meta).seeding == "kmeans++"
-        legacy = dict(meta)
-        legacy.pop("seeding")
-        assert BasePolynomNeuron.from_checkpoint_metadata(legacy).seeding == "kmeans++"
+        missing = dict(meta)
+        missing.pop("seeding")
+        with pytest.raises(KeyError, match="seeding"):
+            BasePolynomNeuron.from_checkpoint_metadata(missing)
         with pytest.raises(ValueError, match="seeding"):
             _rbf(seeding="random")

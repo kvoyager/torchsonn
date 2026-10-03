@@ -1996,10 +1996,6 @@ class Trainer:
             return float("nan")
         return float((total / rows).min().item())
 
-    def fit_layer_squash(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
-        """Historical name of `fit_layer_inputs`."""
-        self.fit_layer_inputs(model, layer, train_dl)
-
     @staticmethod
     def _reservoir_add(
         reservoir: torch.Tensor | None, filled: int, seen: int, feats: torch.Tensor,

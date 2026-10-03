@@ -221,17 +221,15 @@ class TestCheckpoint:
         x = torch.randn(4, D_MODEL)
         assert torch.equal(m2(x), m(x))
 
-    @pytest.mark.parametrize("shortcut", [True, False])
-    def test_legacy_checkpoint_falls_back_to_previous_layer(self, shortcut):
-        m = _grow(_model(shortcut), 3)
-        x = torch.randn(4, D_MODEL)
-        expected = m(x)
-        for layer in m.layers:
-            layer.input_layers = None
-            layer.input_raw = None
-        assert m.layer_sources(0) == ([], True)
-        assert m.layer_sources(2) == ([1], shortcut)
-        assert torch.equal(m(x), expected)
+    def test_checkpoint_without_layout_raises(self):
+        m = _grow(_model({"prev_layers": 1}), 3)
+        sd = m.state_dict()
+        for j in range(len(m.layers)):
+            sd[f"layers.{j}.params_metadata"].pop("input_layers")
+        m2 = _model({"prev_layers": 1})
+        m2.restore_from_checkpoint_metadata(sd)
+        with pytest.raises(KeyError, match="input_layers"):
+            m2.load_state_dict(sd, strict=False)
 
 
 def _wire(m: SONN, src: dict[int, list[list[int]]]) -> None:

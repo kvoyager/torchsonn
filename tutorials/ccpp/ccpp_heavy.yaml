@@ -51,17 +51,17 @@ model:
     - cubic:
         activation: ""
     - polyquad:
-        - squares: True
-        - dim: 4
-        - activation: ""
+        squares: True
+        dim: 4
+        activation: ""
     - polyquad:
-        - squares: True
-        - dim: 5
-        - activation: ""
+        squares: True
+        dim: 5
+        activation: ""
     - polyquad:
-        - squares: True
-        - dim: 10
-        - activation: ""
+        squares: True
+        dim: 10
+        activation: ""
   # Shortcut keeps the raw 4 inputs available to every layer — useful because
   # layer 0 already discovers the bulk of the (linear) signal, and later layers
   # should be able to add residual interaction terms over the raw variables

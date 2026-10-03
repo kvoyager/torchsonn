@@ -18,10 +18,9 @@ class SONNModule(nn.Module):
         self.params_metadata_names: list[str] = []
 
     def _set_metadata_dict(self, metadata_dict: Mapping[str, Any]) -> None:
-        """Restore metadata fields from dict."""
+        """Restore metadata fields from dict; every field must be present."""
         for name in self.params_metadata_names:
-            if name in metadata_dict:
-                setattr(self, name, metadata_dict[name])
+            setattr(self, name, metadata_dict[name])
 
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Return the tensor state dict plus a `params_metadata` entry holding the attributes named in `params_metadata_names`."""

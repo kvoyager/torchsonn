@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Removed — compatibility code for older names, entry forms and checkpoints
+
+- **Old method names.** `Trainer.fit_layer_squash`,
+  `BasePolynomNeuron.needs_squash_stats` / `fit_squash` and
+  `SONNLayer.fit_squash` are gone. Call `fit_layer_inputs`,
+  `needs_input_stats` and `fit_input_stats`.
+- **List form of a `ref_functions` entry.** Options are a mapping only:
+  `- polyquad: {squares: true, dim: 5}` (or the same as an indented
+  mapping). The list form `- polyquad: [- squares: true, - dim: 5]` now
+  raises `TypeError`. The six tutorial YAMLs that used it are converted.
+- **Short name aliases.** `lcov`, `quad`, `leg`, `cheb`, `gauss` and the
+  criterion `bias_refit` are no longer accepted. Use `linear_cov`,
+  `quadratic`, `legendre`, `chebyshev`, `rbf` and `bias_retrain`.
+- **Checkpoint fallbacks.** Restoring a checkpoint reads every saved
+  metadata field and raises `KeyError` when one is missing, instead of
+  filling in a default. Checkpoints written by 0.1.5 load as before;
+  older ones (for example 0.1.1, the release on PyPI) may not.
+
 ### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`
 
 None of the three was read. `model.normalize` and `train.normalize` came

@@ -32,15 +32,12 @@ class TestRefFunctionType:
         [
             ("linear", RefFunctionType.rfLinear),
             ("linear_cov", RefFunctionType.rfLinearCov),
-            ("lcov", RefFunctionType.rfLinearCov),
             ("quadratic", RefFunctionType.rfQuadratic),
-            ("quad", RefFunctionType.rfQuadratic),
             ("cubic", RefFunctionType.rfCubic),
             ("polyquad", RefFunctionType.rfPolyQuadratic),
             ("legendre", RefFunctionType.rfLegendre),
-            ("leg", RefFunctionType.rfLegendre),
             ("chebyshev", RefFunctionType.rfChebyshev),
-            ("cheb", RefFunctionType.rfChebyshev),
+            ("rbf", RefFunctionType.rfRBF),
         ],
     )
     def test_get_from_string(self, arg, expected):
@@ -49,9 +46,10 @@ class TestRefFunctionType:
     def test_get_passthrough(self):
         assert RefFunctionType.get(RefFunctionType.rfLinear) is RefFunctionType.rfLinear
 
-    def test_get_invalid_raises(self):
+    @pytest.mark.parametrize("arg", ["not-a-name", "lcov", "quad", "leg", "cheb", "gauss"])
+    def test_get_invalid_raises(self, arg):
         with pytest.raises(ValueError):
-            RefFunctionType.get("not-a-name")
+            RefFunctionType.get(arg)
 
 
 class TestCriterionType:
@@ -80,7 +78,6 @@ class TestCriterionType:
             ("bias", CriterionType.cmpBias),
             ("validate_bias", CriterionType.cmpComb_validate_bias),
             ("bias_retrain", CriterionType.cmpComb_bias_retrain),
-            ("bias_refit", CriterionType.cmpComb_bias_retrain),
         ],
     )
     def test_get_from_string(self, arg, expected):
@@ -90,9 +87,10 @@ class TestCriterionType:
         c = CriterionType.cmpBias
         assert CriterionType.get(c) is c
 
-    def test_get_invalid_raises(self):
+    @pytest.mark.parametrize("arg", ["nope", "bias_refit"])
+    def test_get_invalid_raises(self, arg):
         with pytest.raises(ValueError):
-            CriterionType.get("nope")
+            CriterionType.get(arg)
 
 
 def test_layer_creation_error_carries_index():

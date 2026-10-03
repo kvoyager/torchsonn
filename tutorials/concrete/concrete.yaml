@@ -36,9 +36,9 @@ model:
     - cubic:
         activation: ""
     - polyquad:
-        - squares: True
-        - dim: 5
-        - activation: ""
+        squares: True
+        dim: 5
+        activation: ""
   # Shortcut keeps the raw 8 inputs available to every layer — useful on a
   # small dataset where layer 0 might already discover the bulk of the
   # signal and layer 1 should be able to add residual terms over raw vars.

@@ -22,9 +22,9 @@ model:
 #    - linear_cov:
 #        activation: ""
     - polyquad:
-      - squares: True
-      - dim: 5
-      - activation: ""
+        squares: True
+        dim: 5
+        activation: ""
   shortcut: true
   nbest_neurons: 93
   use_layer_norm: false

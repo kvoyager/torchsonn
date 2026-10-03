@@ -42,9 +42,9 @@ model:
     - quadratic:
         activation: ""
     - polyquad:
-        - squares: True
-        - dim: 5
-        - activation: ""
+        squares: True
+        dim: 5
+        activation: ""
   # No shortcut keeps the architecture comparable to the gmdhpy example.
   shortcut: True
   # nbest_neurons survive layer pruning; max_neuron_models caps the candidate

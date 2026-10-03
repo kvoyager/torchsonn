@@ -115,7 +115,7 @@ model:
     # has 1 + 2·3 + 1 = 8 coefficients.
     #
     # Note the ordering with the fine-tune below: each layer's squash is
-    # calibrated in create_layer → fit_layer_squash, i.e. *after* the previous
+    # calibrated in create_layer → fit_layer_inputs, i.e. *after* the previous
     # layer has already been fine-tuned. So the statistics describe the
     # post-fine-tune activations the layer will actually see, not the
     # pre-fine-tune ones. Nothing to configure — just the reason the two
