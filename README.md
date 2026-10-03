@@ -205,39 +205,11 @@ a base install.
 
 ## Configuration
 
-Defaults are defined as a typed dataclass at
-`torchsonn.config.SONNConfig` (registered with Hydra's `ConfigStore`
-under the name `default`). Tutorial YAMLs use the
-`defaults: [default, _self_]` pattern, so each tutorial's YAML is just
-the diff against the schema. Override hierarchy at compose time:
-
-```
-SONNConfig defaults  →  tutorial YAML  →  CLI overrides
-```
-
-Type-checked at compose time: unknown keys and wrong-typed values are
-rejected before any training starts.
-
-### Layer inputs (`model.shortcut`)
-
-Every layer after the first always reads the outputs of the layer before
-it. `model.shortcut` sets what else it reads:
-
-```yaml
-model:
-  shortcut:
-    raw_features: true   # re-feed the original features (default true)
-    prev_layers: null    # also feed the outputs of this many layers
-                         # before the previous one: null (default) = none,
-                         # an int k, or "all"
-```
-
-With five layers built, the sixth reads layer 5 alone with
-`prev_layers: null`, layers 5 and 4 with `1`, layers 5, 4 and 3 with `2`,
-and every layer with `"all"`. The candidate count grows with the input
-width, so `"all"` gets expensive deep in the network. `shortcut: true` /
-`false` is shorthand for `{raw_features: true / false, prev_layers: null}`.
-On the command line: `model.shortcut.prev_layers=2`.
+Every setting has a typed default in `torchsonn.config.SONNConfig`, and a
+configuration lists only what it changes, from Python or from a Hydra YAML
+file with command-line overrides. The
+[configuration guide](docs/guides/configuration.md) shows both, and the
+[configuration reference](docs/reference/config.md) lists every key.
 
 ## License
 

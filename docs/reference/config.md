@@ -308,7 +308,7 @@ The keys of `train.optimizer.optimizer_params`.
 | `max_step` | `lbfgs` | 1.0 | The largest update norm per candidate and parameter; null for no cap. |
 | `curvature_eps` | `lbfgs` | 1e-8 | Keep a correction pair only when its curvature passes this test; null keeps every pair. |
 | `damping` | `newton`, `newton-lm` | 0.001, 0.01 | Damping added to the Hessian. |
-| `max_damping` | `newton-lm` | 1000.0 | The largest damping. |
+| `max_damping` | `newton-lm` | 1000.0 | Accepted and stored, but not used: the damping stays fixed. |
 
 The trainer sets two more arguments itself: `lr`, from the key above, and
 `shared_param_lr_multiplier`, from `train.shared_proj_lr_multiplier`. Do not
