@@ -290,13 +290,14 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     # configs, which document the stage and its hyperparameters).
     #
     # Runs after load_model_checkpoint so it starts from the best checkpointed
-    # weights rather than whatever the last training step left behind. Removing
-    # out_proj first is the point of the pass, not a detail: with the head gone
-    # `_predict_mw` reads the best-error neuron's column directly, so the
-    # fine-tune optimizes exactly the quantity this fold is scored on, and what
-    # is left at the end is a pure polynomial network with nothing bolted on
-    # top. The refined weights are deliberately not checkpointed — the metrics
-    # below are computed from the in-memory model.
+    # weights rather than whatever the last training step left behind. With
+    # `finetune_drop_head` the head is removed first: `_predict_mw` then reads
+    # the best-error neuron's column directly, so the fine-tune optimizes that
+    # readout and leaves a pure polynomial network with nothing bolted on top
+    # (off in every shipped config; ccpp_legendre_finetune.yaml records why).
+    # The pass saves the model it ends with to the fold's run folder
+    # (model_last.ckpt); the metrics below are computed from the in-memory
+    # model, which holds the same weights.
     if bool(getattr(config, "finetune_end_to_end", False)):
         drop_head = bool(getattr(config, "finetune_drop_head", False))
         prune_first = bool(getattr(config, "finetune_prune_first", False))
@@ -316,6 +317,11 @@ def _run_fold(config: DictConfig, feature_names: list[str],
         logger.info("End-to-end fine-tune of all parameters (head %s)",
                     "removed" if model.out_proj is None else "kept and trained")
         trainer.train_finetune(model, train_dl, dev_dl)
+        if model.out_proj is None and bool(config.model.use_output_projection):
+            logger.info("The saved model has no head (finetune_drop_head): load %s into a "
+                        "model built with model.use_output_projection=false; a model with "
+                        "a head would keep an untrained one",
+                        trainer.run_dir / "model_last.ckpt")
 
     y_pred = _predict_mw(trainer, model, test_dl, y_scaler)
     mse = float(metrics.mean_squared_error(y_te_half, y_pred))

@@ -426,8 +426,10 @@ def main(config: DictConfig) -> None:
         # readout the model is scored on (config `finetune_end_to_end`; see
         # california_housing_legendre_finetune.yaml). Runs after
         # load_model_checkpoint so it starts from the best checkpointed
-        # weights. The refined weights are not checkpointed - the metrics are
-        # computed from the in-memory model. Same wiring as tutorials/ccpp.
+        # weights. The pass saves the model it ends with to the run folder's
+        # model_last.ckpt; the metrics are computed from the in-memory model,
+        # which holds the same weights.
+        # Same wiring as tutorials/ccpp.
         if bool(config.get("finetune_end_to_end", False)):
             if bool(config.get("finetune_drop_head", False)) and model.out_proj is not None:
                 logger.info("Dropping the out_proj head before end-to-end fine-tuning")
@@ -438,6 +440,11 @@ def main(config: DictConfig) -> None:
             logger.info("End-to-end fine-tune of all parameters (head %s)",
                         "removed" if model.out_proj is None else "kept and trained")
             trainer.train_finetune(model, train_dl, dev_dl, val_dl=val_dl)
+            if model.out_proj is None and bool(config.model.use_output_projection):
+                logger.info("The saved model has no head (finetune_drop_head): load %s into a "
+                            "model built with model.use_output_projection=false; a model with "
+                            "a head would keep an untrained one",
+                            trainer.run_dir / "model_last.ckpt")
 
         return {
             "seed": seed, "model": model, "trainer": trainer, "test_dl": test_dl,

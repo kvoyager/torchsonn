@@ -803,6 +803,22 @@ class SONN(SONNModule):
             self._head_columns_cache = cached
         return cached[1]
 
+    def _readout_width(self, layer: SONNLayer) -> int:
+        """How many of the last layer's columns `infer` reads.
+
+        The head's inputs (`out_proj.in_features`, at most the layer's
+        width); every column for a headless multi-class model with
+        per-neuron projections (`use_neuron_proj`), whose prediction sums
+        every neuron's projected output; otherwise the single best-error
+        column. `Trainer.prune` keeps exactly this many columns.
+        """
+        width = len(layer)
+        if self.out_proj is not None:
+            return min(int(self.out_proj.in_features), width)
+        if isinstance(self.loss_fn, nn.NLLLoss) and self.param.model.use_neuron_proj:
+            return width
+        return 1
+
     def _best_neuron_columns(self, layer: SONNLayer, k: int) -> list[int]:
         """Cumulative column indices of the top-k lowest-error neurons."""
         k = min(k, layer.err_values.shape[0])
@@ -979,8 +995,9 @@ class SONN(SONNModule):
             return out[:, self._best_column_cached(self.layers[-1])]
 
         if self.param.model.use_neuron_proj:
-            # Collect per-neuron proj_weight / proj_bias from the pruned final
-            # layer and combine: out (batch, nbest) @ W (nbest, C) + b (C,).
+            # Collect per-neuron proj_weight / proj_bias from the final layer
+            # and combine: out (batch, nbest) @ W (nbest, C) + b (C,). Every
+            # column counts, so `prune` keeps them all (`_readout_width`).
             W = torch.cat([nm.proj_weight for nm in self.layers[-1].neuron_models], dim=0)
             b = torch.cat([nm.proj_bias   for nm in self.layers[-1].neuron_models], dim=0).mean(dim=0)
             return F.log_softmax(out @ W + b, dim=-1)

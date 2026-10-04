@@ -189,12 +189,28 @@ class PlotModel:
         """Draw whatever turns the last layer into the model's prediction.
 
         Without a head that is a single edge from the best-error neuron — the
-        column `SONN.infer` returns. With `out_proj` it is a fitted
+        column `SONN.infer` returns — except for a multi-class model with
+        per-neuron projections (`use_neuron_proj`), whose prediction sums every
+        last-layer neuron's projected output: a "per-neuron projections" node
+        with an edge from each of them. With `out_proj` it is a fitted
         `Linear(in_features, out_features)` over the `in_features` lowest-error
         columns, so drawing only the best neuron would show a formula the model
-        does not compute.
+        does not compute. `SONN._readout_width` says which case applies.
         """
         out_proj = getattr(self.model, "out_proj", None)
+        readout_width = getattr(self.model, "_readout_width", None)
+        if out_proj is None and readout_width is not None and readout_width(last_layer) > 1:
+            n = len(last_layer)
+            label = f"per-neuron projections\nsum of {n} neurons"
+            num_classes = getattr(getattr(getattr(self.model, "param", None), "model", None), "num_classes", None)
+            if num_classes is not None:
+                label += f" \u2192 {int(num_classes)} classes"
+            self.g.node(label, **self.head_node_param)
+            for col in range(n):
+                module = self._module_for_column(last_layer, col)
+                self.add_edge(self._get_neuron_name(col, module, last_layer.neuron_idxs), label)
+            self.add_edge(label, self.output)
+            return
         if out_proj is None:
             module_idx, neuron_idx = self.model.get_best_neuron_model(last_layer)
             col = self._cumulative_column(last_layer, module_idx, neuron_idx)

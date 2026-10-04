@@ -212,3 +212,31 @@ class MockTensor:
 
     def tolist(self):
         return self._data
+
+
+class TestReadout:
+    """The edges into OUTPUT follow what SONN.infer reads."""
+
+    @staticmethod
+    def _edges(p, layer):
+        edges: list[tuple[str, str]] = []
+        p.add_edge = lambda a, b: edges.append((a, b))  # type: ignore[assignment]
+        p._add_readout(layer)
+        return edges
+
+    def test_headless_model_reads_the_best_neuron(self, tmp_path):
+        layer = _FakeLayer([_FakeNeuron(layer_index=1, num_neurons=3)])
+        m = _FakeModel([layer])
+        m._readout_width = lambda _layer: 1
+        edges = self._edges(PlotModel(m, filename=tmp_path / "x"), layer)
+        assert edges == [("layer 1\nneuron 0", "OUTPUT")]
+
+    def test_per_neuron_projections_read_every_neuron(self, tmp_path):
+        a, b = _FakeNeuron(layer_index=2, num_neurons=2), _FakeNeuron(layer_index=2, num_neurons=1)
+        layer = _FakeLayer([a, b])
+        m = _FakeModel([layer])
+        m._readout_width = lambda lay: len(lay)
+        m.param = types.SimpleNamespace(model=types.SimpleNamespace(num_classes=3))
+        edges = self._edges(PlotModel(m, filename=tmp_path / "x"), layer)
+        node = "per-neuron projections\nsum of 3 neurons \u2192 3 classes"
+        assert edges == [(f"layer 2\nneuron {i}", node) for i in range(3)] + [(node, "OUTPUT")]

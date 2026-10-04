@@ -830,3 +830,28 @@ def test_restore_from_checkpoint_metadata_roundtrip():
     # one layer should be reconstructed
     assert len(m2.layers) == 1
     assert isinstance(m2.layers[0], SONNLayer)
+
+
+@pytest.mark.parametrize("model_over, expected", [
+    # headless multi-class with per-neuron projections: every column
+    ({"type": "multi-class", "num_classes": 3, "soft_binner": False, "use_neuron_proj": True}, "all"),
+    # the same with a head: the head's inputs
+    ({"type": "multi-class", "num_classes": 3, "soft_binner": False, "use_neuron_proj": True,
+      "use_output_projection": True, "num_out_neurons": 2}, 2),
+    # shared projection, soft binner: the best-error column
+    ({"type": "multi-class", "num_classes": 3, "soft_binner": False}, 1),
+    ({"type": "multi-class", "num_classes": 3, "soft_binner": True}, 1),
+    # regressor: the best-error column, even with per-neuron projections set
+    ({"type": "regressor", "num_classes": 1, "soft_binner": False}, 1),
+    ({"type": "regressor", "num_classes": 1, "soft_binner": False, "use_neuron_proj": True}, 1),
+    # a head wider than the layer reads the whole layer
+    ({"type": "regressor", "num_classes": 1, "soft_binner": False,
+      "use_output_projection": True, "num_out_neurons": 50}, "all"),
+])
+def test_readout_width_is_what_infer_reads(model_over, expected):
+    cfg = _make_cfg(model={"nbest_neurons": 3, "ref_functions": ["linear_cov"], **model_over})
+    m = SONN(cfg, d_model=4)
+    layer = m.create_layer(0)
+    m.layers.append(layer)
+    assert len(layer) > 2
+    assert m._readout_width(layer) == (len(layer) if expected == "all" else expected)

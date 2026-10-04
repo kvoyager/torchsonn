@@ -52,6 +52,18 @@ class OutProjTrainConfig:
     lr_min: float = 1.0e-5
     early_stop_patience: int = 10
     early_stop_min_delta: float = 1.0e-4
+    # Off: the pass ends on its last step. On: it ends with the weights of
+    # its lowest evaluated loss (dev; for the end-to-end pass, the split its
+    # early stop reads), the last step included: the trained parameters are
+    # copied on every new best and copied back at the end. Which of the two
+    # scores better on unseen data depends on the problem, so measure both.
+    keep_best_weights: bool = False
+    # Where keep_best_weights keeps that copy:
+    #   'device' - next to the parameters: GPU memory on CUDA; the fastest
+    #   'cpu'    - host memory (pinned on CUDA); no GPU memory
+    #   'disk'   - best_<pass>.ckpt in the run folder, rewritten on every new
+    #              best and deleted when the pass ends; no memory held
+    best_weights_copy: str = "device"
 
     # LBFGS-only tuning. history_size matches PyTorch's default; max_iter is the
     # number of inner LBFGS iterations per opt.step() call. For Otto-sized
