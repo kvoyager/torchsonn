@@ -140,3 +140,9 @@ class TestSONNLayer:
         moved = layer.to(dtype=torch.float64)
         # err_values follows the dtype cast
         assert moved.err_values.dtype == torch.float64
+
+
+def test_layer_has_no_describe():
+    """`describe` was removed: it called a method no neuron class has.
+    The inspecting guide's loop over the modules prints a layer instead."""
+    assert not hasattr(SONNLayer, "describe")
