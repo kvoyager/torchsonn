@@ -2,7 +2,13 @@ import logging
 import os
 from pathlib import Path
 
-from torchsonn.logger import TqdmLoggingHandler, setup_logger
+from torchsonn.logger import (
+    RunLogHandler,
+    TqdmLoggingHandler,
+    attach_run_log,
+    detach_run_log,
+    setup_logger,
+)
 
 
 def _make_record(msg: str) -> logging.LogRecord:
@@ -47,18 +53,13 @@ class TestTqdmLoggingHandler:
 
 
 class TestSetupLogger:
-    def test_setup_default_path(self, tmp_path, monkeypatch):
-        # Force the default temp-file path into our temp directory.
-        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    def test_setup_default_is_console_only(self):
         logger = setup_logger()
         assert logger is logging.getLogger()
         assert logger.level == logging.INFO
-        # Two handlers: tqdm console + file
-        assert len(logger.handlers) == 2
-        # Log file should be created at the predicted path
-        assert (tmp_path / "sonn_train.log").exists()
-        for h in logger.handlers:
-            h.close()
+        # One handler: the tqdm console, no file
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0], TqdmLoggingHandler)
 
     def test_setup_explicit_path_and_idempotence(self, tmp_path):
         log_path = tmp_path / "my.log"
@@ -74,3 +75,37 @@ class TestSetupLogger:
         assert log_path.exists()
         for h in second_handlers:
             h.close()
+
+
+class TestRunLog:
+    def test_attach_writes_and_replaces_previous(self, tmp_path):
+        setup_logger()
+        first, second = tmp_path / "a.log", tmp_path / "b.log"
+        attach_run_log(first)
+        logging.getLogger("x").info("one")
+        attach_run_log(second)
+        logging.getLogger("x").info("two")
+        detach_run_log()
+        root = logging.getLogger()
+        assert not any(isinstance(h, RunLogHandler) for h in root.handlers)
+        # the console handler from setup_logger is still there
+        assert any(isinstance(h, TqdmLoggingHandler) for h in root.handlers)
+        assert "one" in first.read_text() and "two" not in first.read_text()
+        assert "two" in second.read_text() and "one" not in second.read_text()
+
+    def test_append_keeps_earlier_lines(self, tmp_path):
+        log = tmp_path / "train.log"
+        attach_run_log(log)
+        logging.getLogger("x").info("first part")
+        attach_run_log(log, append=True)
+        logging.getLogger("x").info("second part")
+        detach_run_log()
+        text = log.read_text()
+        assert "first part" in text and "second part" in text
+
+    def test_lowers_root_level_to_info(self, tmp_path):
+        root = logging.getLogger()
+        root.setLevel(logging.WARNING)
+        attach_run_log(tmp_path / "train.log")
+        assert root.level == logging.INFO
+        detach_run_log()

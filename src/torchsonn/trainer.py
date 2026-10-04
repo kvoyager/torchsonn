@@ -1,3 +1,4 @@
+import datetime
 import gc
 import os
 import sys
@@ -21,6 +22,7 @@ import numpy as np
 import random
 
 from torchsonn.utils import timed_block, abbrev_floats, fmt_err
+from torchsonn.logger import attach_run_log
 from torchsonn.loss import NormMSE, bias_error, bias_error_l2, bias_error_js
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,12 @@ import re
 from typing import Optional, Any, Callable
 import torch.distributed as dist
 import torch.nn.functional as F
+
+# A run folder: `YYYY-MM-DD-HH-MM-SS`, with `-<n>` for runs started in the
+# same second.
+_RUN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})(?:-(\d+))?")
+# A step checkpoint the trainer writes, with its optional `_last` copy.
+_STEP_CKPT_RE = re.compile(r"model_layer_(\d+)_neuron_(\d+)_step_(\d+)(_last)?\.ckpt")
 
 
 @dataclass
@@ -341,9 +349,12 @@ class Trainer:
     layers after the best one are dropped and the model is saved. After
     that, `train_out_proj` fits the optional output head, `train_finetune`
     trains every parameter end to end, `prune` removes the neurons that do
-    not reach the output and `infer` predicts over a loader. Checkpoints
-    are written as training goes; `load_model_checkpoint` restores the last
-    saved model.
+    not reach the output and `infer` predicts over a loader.
+
+    Every `train` call writes to a run folder of its own, `run_dir`:
+    `<train.checkpoint_dir>/<YYYY-MM-DD-HH-MM-SS>/`. It holds the step
+    checkpoints written as training goes, `model_last.ckpt` and the run's
+    `train.log`. `load_model_checkpoint` restores a saved model.
 
     Parameters
     ----------
@@ -369,6 +380,7 @@ class Trainer:
         self.batch_callback = batch_callback
         self.config = config
         self.class_weights = class_weights
+        self._run_dir: Path | None = None
         self._validate_layer_err_source(config)
 
     @staticmethod
@@ -440,19 +452,147 @@ class Trainer:
     # =======================================
     # region Checkpoints
     # =======================================
-    @classmethod
-    def get_checkpoint_dir(cls, model: SONN) -> Path:
-        """Return the checkpoint folder (`train.checkpoint_dir`, or `<repo>/checkpoints` when empty), creating it if needed."""
-        checkpoint_dir = model.param.train.checkpoint_dir
+    @property
+    def run_dir(self) -> Path | None:
+        """The current run folder, `<checkpoint_root>/<YYYY-MM-DD-HH-MM-SS>`.
+
+        `train` creates a new one at the start of every run, or reopens the
+        run it resumes, and `load_model_checkpoint` sets it to the run it
+        loads from. The run's step checkpoints, `model_last.ckpt` and
+        `train.log` live there. None before the first run or load.
+        """
+        return self._run_dir
+
+    @property
+    def checkpoint_root(self) -> Path:
+        """The folder that holds the run folders: `train.checkpoint_dir` of the trainer's configuration, or `<repo>/checkpoints` when it is empty."""
+        return self._checkpoint_root(self.config)
+
+    @staticmethod
+    def _checkpoint_root(config: Any) -> Path:
+        """`train.checkpoint_dir` of `config`, or `<repo>/checkpoints` when it is empty."""
+        checkpoint_dir = str(config.train.checkpoint_dir)
         if checkpoint_dir == "":
-            # After the src-layout move this file lives at
-            # `<repo>/src/torchsonn/trainer.py`, so three `.parent`s reach the
-            # repo root.
-            checkpoint_dir = Path(__file__).parent.parent.parent / "checkpoints"
+            # This file lives at `<repo>/src/torchsonn/trainer.py`, so three
+            # `.parent`s reach the repo root.
+            return Path(__file__).parent.parent.parent / "checkpoints"
+        return Path(checkpoint_dir)
+
+    @classmethod
+    def run_folders(cls, root: str | Path) -> list[Path]:
+        """
+        List the run folders in `root`, oldest first.
+
+        A run folder's name is its start time, `YYYY-MM-DD-HH-MM-SS`, with a
+        `-<n>` suffix for runs started in the same second. They sort by the
+        time, then by the suffix as a number. Other entries are left out.
+
+        Parameters
+        ----------
+        root : str or Path
+            The folder to look in, usually `checkpoint_root`.
+
+        Returns
+        -------
+        list of Path
+            The run folders; empty when `root` does not exist.
+        """
+        root = Path(root)
+        if not root.is_dir():
+            return []
+        runs = []
+        for path in root.iterdir():
+            m = _RUN_NAME_RE.fullmatch(path.name)
+            if m and path.is_dir():
+                runs.append(((m.group(1), int(m.group(2) or 1)), path))
+        return [path for _, path in sorted(runs)]
+
+    @staticmethod
+    def _new_run_dir(root: Path) -> Path:
+        """Create `root/<YYYY-MM-DD-HH-MM-SS>`, adding `-2`, `-3`, ... when that name is taken."""
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        n = 1
+        while True:
+            run_dir = root / (stamp if n == 1 else f"{stamp}-{n}")
+            try:
+                run_dir.mkdir()
+                return run_dir
+            except FileExistsError:
+                n += 1
+
+    @staticmethod
+    def _resolve_run(root: Path, run: str | Path) -> Path:
+        """A run folder given by its name in `root`, or by its path."""
+        for candidate in (root / str(run), Path(run)):
+            if candidate.is_dir():
+                return candidate
+        raise FileNotFoundError(f"no run folder {str(run)!r} in {root}")
+
+    def _ensure_run_dir(self, model: SONN) -> Path:
+        """The current run folder, or a new one when the trainer has none yet."""
+        if self._run_dir is None:
+            self._run_dir = self._new_run_dir(self._checkpoint_root(model.param))
+        return self._run_dir
+
+    def _start_run(self, model: SONN, resume: bool | str) -> bool:
+        """Open the run folder of a `train` call and attach its `train.log`.
+
+        Returns True when an existing run is resumed. With several processes,
+        rank 0 picks or creates the folder and sends its path to the others,
+        and only rank 0 writes `train.log`.
+        """
+        root = self._checkpoint_root(model.param)
+        rank0 = not self._is_dist() or dist.get_rank() == 0
+        choice: list[Any] = [None, False]
+        if rank0:
+            run_dir, resumed = None, False
+            if isinstance(resume, str):
+                run_dir, resumed = self._resolve_run(root, resume), True
+            elif resume:
+                runs = [r for r in self.run_folders(root) if self._step_checkpoints(r, include_last=True)]
+                if runs:
+                    run_dir, resumed = runs[-1], True
+            if run_dir is None:
+                run_dir = self._new_run_dir(root)
+            choice = [str(run_dir), resumed]
+        if self._is_dist():
+            dist.broadcast_object_list(choice, src=0)
+        self._run_dir = Path(choice[0])
+        resumed = bool(choice[1])
+        if rank0:
+            attach_run_log(self._run_dir / "train.log", append=resumed)
+        if resumed:
+            logger.info("Resuming the run in %s", self._run_dir)
         else:
-            checkpoint_dir = Path(checkpoint_dir)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        return checkpoint_dir
+            if resume:
+                logger.info("No run to resume in %s; starting a new run", root)
+            logger.info("Run folder: %s", self._run_dir)
+        return resumed
+
+    @staticmethod
+    def _step_checkpoints(folder: Path, include_last: bool = False,
+                          layer_idx: int | None = None) -> list[Path]:
+        """The step-checkpoint files directly in `folder`.
+
+        Only regular files named `model_layer_<L>_neuron_<N>_step_<S>.ckpt`
+        count, and their `_last` copies when `include_last` is set;
+        `layer_idx` keeps one layer's. Everything else in the folder, such as
+        `train.log`, `model_last.ckpt` or a subfolder, is left out.
+        """
+        if not folder.is_dir():
+            return []
+        files = []
+        for path in folder.iterdir():
+            m = _STEP_CKPT_RE.fullmatch(path.name)
+            if not m or not path.is_file():
+                continue
+            if m.group(4) and not include_last:
+                continue
+            if layer_idx is not None and int(m.group(1)) != layer_idx:
+                continue
+            files.append(path)
+        return files
 
     @classmethod
     def parse_checkpoint_step(cls, fname: str) -> tuple[int, int, int]:
@@ -480,43 +620,43 @@ class Trainer:
         # step) tuple, so stray non-matching files never get picked as "latest".
         return -1, -1, -1
 
-    def from_checkpoint(self, model: SONN) -> dict[str, Any] | None:
+    def from_checkpoint(self, run_dir: str | Path | None = None) -> dict[str, Any] | None:
         """
-        Load the latest step checkpoint, for resuming `train`.
+        Load the latest step checkpoint of a run, for resuming `train`.
 
-        The latest one is the highest `(layer, neuron_model, step)` among
-        the files in the checkpoint folder; `model_last.ckpt` is ignored.
+        The latest one is the highest `(layer, neuron_model, step)` among the
+        run folder's step checkpoints, `_last` copies included. Other files
+        in the folder, such as `train.log` and `model_last.ckpt`, are
+        ignored.
 
         Parameters
         ----------
-        model : SONN
-            The model whose `train.checkpoint_dir` is searched.
+        run_dir : str or Path, optional
+            The run folder. Default: `run_dir`.
 
         Returns
         -------
         checkpoint : dict or None
-            The checkpoint contents, or None if the folder holds no step
-            checkpoint.
+            The checkpoint contents, or None if there is no run folder or it
+            holds no step checkpoint.
         """
-        checkpoint_dir = self.get_checkpoint_dir(model)
-        checkpoints = os.listdir(checkpoint_dir)
-
-        checkpoints = [checkpoint for checkpoint in checkpoints if not checkpoint.endswith("model_last.ckpt")]
-
+        folder = Path(run_dir) if run_dir is not None else self._run_dir
+        if folder is None:
+            return None
+        checkpoints = self._step_checkpoints(folder, include_last=True)
         if not checkpoints:
-            return
-
-        latest_checkpoint = max(checkpoints, key=self.parse_checkpoint_step)
-        checkpoint_data = torch.load(checkpoint_dir / latest_checkpoint, weights_only=False)
-        return checkpoint_data
+            return None
+        latest = max(checkpoints, key=lambda path: self.parse_checkpoint_step(path.name))
+        return torch.load(latest, weights_only=False)
 
     def save_checkpoint(self, ckpt: StepCheckpoint, suffix: str = "") -> None:
         """
-        Save a step checkpoint and delete the older ones.
+        Save a step checkpoint in the run folder and delete the older ones.
 
         Writes `model_layer_<L>_neuron_<N>_step_<S>[_<suffix>].ckpt` with the
-        snapshot and the model config, then keeps only the
-        `train.keep_last_n` most recent files per (layer, neuron model).
+        snapshot and the model config, then keeps the `train.keep_last_n`
+        most recent step checkpoints of the run folder (see
+        `cleanup_checkpoints`).
 
         Parameters
         ----------
@@ -525,21 +665,23 @@ class Trainer:
         suffix : str
             Optional suffix for the file name, such as "last". Default "".
         """
-        checkpoint_dir = self.get_checkpoint_dir(ckpt.model)
+        run_dir = self._ensure_run_dir(ckpt.model)
         if suffix:
             suffix = "_" + suffix
         checkpoint_filename = f"model_layer_{ckpt.layer_idx}_neuron_{ckpt.neuron_model_idx}_step_{ckpt.global_step}{suffix}.ckpt"
         d = ckpt.to_dict()
         d["config"] = ckpt.model.param
-        torch.save(d, checkpoint_dir / checkpoint_filename)
-        self.cleanup_checkpoints(checkpoint_dir, keep_last_n=ckpt.model.param.train.keep_last_n)
+        torch.save(d, run_dir / checkpoint_filename)
+        self.cleanup_checkpoints(run_dir, keep_last_n=ckpt.model.param.train.keep_last_n)
 
-    def load_model_checkpoint(self, model: SONN, device: torch.device | str = "cpu") -> None:
+    def load_model_checkpoint(self, model: SONN, device: torch.device | str = "cpu",
+                              run: str | Path | None = None) -> None:
         """
-        Restore the final model saved by `train`.
+        Restore a model saved as `model_last.ckpt`.
 
-        Reads `model_last.ckpt` from the checkpoint folder, rebuilds the
-        layer stack, loads the weights and moves the model to `device`.
+        Reads it from a run folder, rebuilds the layer stack, loads the
+        weights and moves the model to `device`. The run folder becomes
+        `run_dir`, so a later `save_model_checkpoint` writes to the same run.
 
         Parameters
         ----------
@@ -547,59 +689,77 @@ class Trainer:
             The model to restore into, built with the same config.
         device : torch.device or str
             Device to move the restored model to. Default "cpu".
+        run : str or Path, optional
+            The run folder, by its name in `checkpoint_root` or by its path.
+            Default: the trainer's current run, or, for a trainer that has
+            none, the newest run folder in `checkpoint_root` that holds a
+            `model_last.ckpt`.
+
+        Raises
+        ------
+        FileNotFoundError
+            If there is no such run folder, or no run folder holds a
+            `model_last.ckpt`.
         """
-        checkpoint_filename = f"model_last.ckpt"
-        checkpoint_data = torch.load(self.get_checkpoint_dir(model) / checkpoint_filename, weights_only=False)
+        root = self._checkpoint_root(model.param)
+        if run is not None:
+            run_dir = self._resolve_run(root, run)
+        elif self._run_dir is not None:
+            run_dir = self._run_dir
+        else:
+            saved = [r for r in self.run_folders(root) if (r / "model_last.ckpt").is_file()]
+            if not saved:
+                raise FileNotFoundError(f"no run folder with a model_last.ckpt in {root}")
+            run_dir = saved[-1]
+        checkpoint_data = torch.load(run_dir / "model_last.ckpt", weights_only=False)
         # restore model architecture
         model.restore_from_checkpoint_metadata(checkpoint_data["model"])
         # load weights
         model.load_state_dict(checkpoint_data["model"], strict=False)
         model.to(device=device)
+        self._run_dir = run_dir
 
     def save_model_checkpoint(self, model: SONN) -> None:
-        """Save the model's state dict as `model_last.ckpt` in the checkpoint folder."""
-        checkpoint_filename = f"model_last.ckpt"
+        """Save the model's state dict as `model_last.ckpt` in the run folder (a new one if the trainer has none yet)."""
+        run_dir = self._ensure_run_dir(model)
         torch.save({
             'model': model.state_dict(),
-        }, self.get_checkpoint_dir(model) / checkpoint_filename)
+        }, run_dir / "model_last.ckpt")
 
-    def cleanup_checkpoints(self, checkpoint_dir: Path, keep_last_n: int = 10) -> None:
+    def cleanup_checkpoints(self, checkpoint_dir: str | Path, keep_last_n: int = 10) -> None:
         """
-        Deletes older checkpoints, keeping only the last `n` for each (layer_idx, neuron_model_idx).
+        Delete a run folder's oldest step checkpoints, keeping the `keep_last_n` most recent.
 
-        Args:
-            checkpoint_dir (str): Path to directory containing .ckpt files.
-            keep_last_n (int): Number of most recent checkpoints to keep per (layer, neuron).
+        Only the files named `model_layer_<L>_neuron_<N>_step_<S>.ckpt`
+        count, ordered by `parse_checkpoint_step`. Everything else in the
+        folder (`model_last.ckpt`, the `_last` copies, `train.log`, other
+        files and subfolders) is left alone.
+
+        Parameters
+        ----------
+        checkpoint_dir : str or Path
+            The run folder.
+        keep_last_n : int
+            Number of most recent step checkpoints to keep. Default 10.
         """
+        checkpoints = sorted(self._step_checkpoints(Path(checkpoint_dir)),
+                             key=lambda path: self.parse_checkpoint_step(path.name))
+        for path in checkpoints[:max(0, len(checkpoints) - keep_last_n)]:
+            path.unlink()
 
-        checkpoints = os.listdir(checkpoint_dir)
-        checkpoints = [checkpoint for checkpoint in checkpoints if not checkpoint.endswith("_last.ckpt")]
-        checkpoints = sorted(checkpoints, key=self.parse_checkpoint_step)
-
-        checkpoints_to_remove = checkpoints[:max(0, len(checkpoints) - keep_last_n)]
-
-        for checkpoint in checkpoints_to_remove:
-            os.remove(checkpoint_dir / checkpoint)
-
-    def cleanup_layer_checkpoints(self, model: SONN, layer_idx: int) -> None:
+    def cleanup_layer_checkpoints(self, layer_idx: int) -> None:
         """
-        Deletes all checkpoints for a layer
+        Delete every step checkpoint of one layer from the run folder, `_last` copies included.
 
-        Args:
-            checkpoint_dir (str): Path to directory containing .ckpt files.
-            keep_last_n (int): Number of most recent checkpoints to keep per (layer, neuron).
+        Parameters
+        ----------
+        layer_idx : int
+            The layer whose checkpoints are deleted.
         """
-
-        def filter_checkpoints_by_layer(filenames, idx):
-            pattern = re.compile(rf"model_layer_{idx}_neuron_\d+_step_\d+(?:_last)?\.ckpt$")
-            return [f for f in filenames if pattern.search(f)]
-
-        checkpoint_dir = self.get_checkpoint_dir(model)
-        checkpoints = os.listdir(checkpoint_dir)
-        checkpoints_to_remove = filter_checkpoints_by_layer(checkpoints, layer_idx)
-
-        for checkpoint in checkpoints_to_remove:
-            os.remove(checkpoint_dir / checkpoint)
+        if self._run_dir is None:
+            return
+        for path in self._step_checkpoints(self._run_dir, include_last=True, layer_idx=layer_idx):
+            path.unlink()
     # endregion
 
     # =======================================
@@ -703,19 +863,25 @@ class Trainer:
         dev_dl: DataLoader,
         test_dl: DataLoader,
         verbose: bool = True,
-        resume: bool = False,
+        resume: bool | str = False,
         val_dl: DataLoader | None = None,
     ) -> SONN:
         """
         Grow and train the network, one layer at a time.
+
+        Each call is a run with a folder of its own, `run_dir`: a new
+        `<train.checkpoint_dir>/<YYYY-MM-DD-HH-MM-SS>/`, or the folder of the
+        run it resumes. The run's step checkpoints, `model_last.ckpt` and
+        `train.log` (every record of the root logger from the start of the
+        run until the next run starts) are written there.
 
         Each iteration creates a layer of candidate neurons, calibrates them
         on the layer's inputs, trains them and keeps the best ones
         (`train_layer`). Growth stops when `GrowthCriterion` sees no
         improvement for `train.criterion_minimum_width` layers, or at
         `train.max_layer_count`. The layers after the one with the smallest
-        error are then dropped, and the model is saved as
-        `model_last.ckpt`. The output head and the end-to-end fine-tune are
+        error are then dropped, and the model is saved as `model_last.ckpt`
+        in the run folder. The output head and the end-to-end fine-tune are
         separate steps (`train_out_proj`, `train_finetune`).
 
         Parameters
@@ -731,9 +897,11 @@ class Trainer:
             Not used during training.
         verbose : bool
             Log the time each layer takes. Default True.
-        resume : bool
-            Continue from the latest step checkpoint in the checkpoint
-            folder, if there is one. Default False.
+        resume : bool or str
+            False starts a new run. True continues the newest run folder in
+            `checkpoint_root` that holds a step checkpoint, from its latest
+            one, and starts a new run when there is none. A run folder's
+            name continues that run. Default False.
         val_dl : DataLoader, optional
             Validation split that selects nothing. Its error is logged per
             layer, and it drives the growth rule when `train.stop_source` is
@@ -753,6 +921,7 @@ class Trainer:
             min_delta=float(getattr(self.config.train, "stop_train_min_delta", 0.0)),
         )
         stop_source = self._stop_source(val_dl)
+        resumed = self._start_run(model, resume)
         model.layers = nn.ModuleList()
         model.layer_val_err = []
         checkpoint_data = None
@@ -767,9 +936,9 @@ class Trainer:
         # not the checkpoint.
         self._fit_target_scale(model, train_dl)
 
-        if resume:
+        if resumed:
             # load checkpoint
-            checkpoint_data = self.from_checkpoint(model)
+            checkpoint_data = self.from_checkpoint()
             if checkpoint_data is not None:
                 # restore model architecture
                 model.restore_from_checkpoint_metadata(checkpoint_data["model"])
@@ -841,7 +1010,7 @@ class Trainer:
 
         # delete unused layers keeping only error_min_index layers
         for layer_idx in range(error_min_index + 1, len(model.layers)):
-            self.cleanup_layer_checkpoints(model, layer_idx)
+            self.cleanup_layer_checkpoints(layer_idx)
         del model.layers[error_min_index + 1:]
 
         for layer in model.layers:
