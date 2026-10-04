@@ -225,9 +225,11 @@ train:
   # Checkpointing — local to the tutorial folder so artifacts don't collide
   # with the other tutorials. Path is relative to the launch cwd; the README
   # runs tutorials from the repo root (`python -m tutorials.ccpp.ccpp`), so
-  # this resolves to <repo>/tutorials/ccpp/checkpoints. get_checkpoint_dir
-  # mkdirs only the final component (no parents=True), and tutorials/ccpp
-  # already exists, so the dir is created cleanly. `checkpoints` is gitignored.
+  # this resolves to <repo>/tutorials/ccpp/checkpoints. ccpp.py gives each fold
+  # a fold_NN/ folder under it, and the trainer gives each run of a fold a
+  # time-stamped folder inside that: fold_NN/YYYY-MM-DD-HH-MM-SS/. The
+  # cross-validation log, cv_YYYY-MM-DD-HH-MM-SS.log, sits next to the fold
+  # folders. `checkpoints` is gitignored.
   save_interval: 500
   save_last_layer: True
   keep_last_n: 5

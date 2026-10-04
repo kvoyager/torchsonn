@@ -30,12 +30,15 @@ repeat; do it for five independent shuffles → 5×2 = 10 train/test measurement
 and report the mean and standard deviation. The spread across the 10 tells you
 how stable the number actually is.
 
-Output layout — every run is self-contained and never overwrites a previous
-one. Under `train.checkpoint_dir` a per-run folder named `YYYY-MM-DD-HH-MM` is
-created; inside it each of the 10 folds gets its own `fold_NN/` checkpoint
-subfolder, and a single `train.log` for the whole run sits alongside them. All
-console output (this script's messages, the trainer's records, and each
-progress bar's final line) is routed through logging into that one log file.
+Output layout — no run overwrites a previous one. Under
+`train.checkpoint_dir` each of the 10 folds has its own `fold_NN/` folder, and
+the trainer gives every fold's training run a time-stamped folder inside it,
+`fold_NN/YYYY-MM-DD-HH-MM-SS/`, holding that run's checkpoints and its
+`train.log`; a fold folder collects that fold's runs. The whole
+cross-validation run is logged to `cv_YYYY-MM-DD-HH-MM-SS.log` next to the
+fold folders: all console output (this script's messages, the trainer's
+records, and each progress bar's final line), then the run folder of every
+fold and the summary.
 
 NOTE ON COST: this trains the model 10 times (once per fold), so it is ~10× a
 single fit. The committed config is deliberately light (small survivor pool /
@@ -219,8 +222,9 @@ def _run_fold(config: DictConfig, feature_names: list[str],
               fold_ckpt_dir: Path, tag: str) -> tuple[SONN, Trainer, dict]:
     """Train on one half, evaluate on the other. Returns (model, trainer, metrics).
 
-    Checkpoints for this fold land in its own `fold_ckpt_dir`, so folds never
-    clobber each other and there is nothing to clear between them.
+    The fold's run gets a time-stamped folder of its own inside
+    `fold_ckpt_dir` (made by the trainer), so folds and runs never clobber
+    each other and there is nothing to clear between them.
     Standardization is fit on the fold's *training* rows only — no feature or
     target statistics leak from the dev split or the held-out test half.
     """
@@ -270,7 +274,7 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     model = model.to(config.train.device)
     trainer = Trainer(config, feature_names=feature_names)
 
-    logger.info("=== %s  (train=%d  dev=%d  test=%d)  ckpt=%s ===",
+    logger.info("=== %s  (train=%d  dev=%d  test=%d)  fold folder=%s ===",
                 tag, len(X_train), len(X_dev), len(X_test), fold_ckpt_dir)
     trainer.train(model, train_dl, dev_dl, test_dl, resume=False)
 
@@ -316,6 +320,7 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     y_pred = _predict_mw(trainer, model, test_dl, y_scaler)
     mse = float(metrics.mean_squared_error(y_te_half, y_pred))
     result = {
+        "run_dir": trainer.run_dir,
         "mse":  mse,
         "rmse": float(np.sqrt(mse)),
         "mae":  float(metrics.mean_absolute_error(y_te_half, y_pred)),
@@ -349,22 +354,21 @@ def _report_5x2cv(results: list[dict]) -> None:
     logger.info("\n".join(lines))
 
 
-def _make_run_dir(config: DictConfig) -> Path:
-    """Create this run's checkpoint/log root: <checkpoint_dir>/YYYY-MM-DD-HH-MM.
+def _cv_log_path(base: Path) -> Path:
+    """This cross-validation run's log: <base>/cv_YYYY-MM-DD-HH-MM-SS.log.
 
-    A per-run timestamp folder means a new run never overwrites an earlier one
-    (checkpoints or log). If two runs somehow start in the same minute, a
-    numeric suffix keeps them distinct.
+    One file per run, next to the fold folders, so a new run never overwrites
+    an earlier run's log. If two runs start in the same second, a numeric
+    suffix keeps them distinct.
     """
-    base = Path(str(config.train.checkpoint_dir) or "checkpoints")
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
-    run_dir = base / stamp
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    log_path = base / f"cv_{stamp}.log"
     suffix = 2
-    while run_dir.exists():
-        run_dir = base / f"{stamp}-{suffix}"
+    while log_path.exists():
+        log_path = base / f"cv_{stamp}-{suffix}.log"
         suffix += 1
-    run_dir.mkdir(parents=True, exist_ok=False)
-    return run_dir
+    return log_path
 
 
 # `config_path` resolves relative to this file. `version_base="1.3"` keeps
@@ -373,17 +377,19 @@ def _make_run_dir(config: DictConfig) -> Path:
 # cwd, not from Hydra's per-run output dir.
 @hydra.main(version_base="1.3", config_path=".", config_name="ccpp")
 def main(config: DictConfig) -> None:
-    # One run folder holds this run's log + all 10 fold checkpoint subfolders,
-    # and never overwrites a previous run.
-    run_dir = _make_run_dir(config)
-    setup_logger(str(run_dir / "train.log"))
-    # Hand the run's FileHandler to the progress-bar mirror so bar lines land in
-    # the same log as the trainer's records.
+    # Each fold trains under <base>/fold_NN/, where the trainer makes one
+    # time-stamped run folder per run; the whole cross-validation run is logged
+    # to its own file next to the fold folders.
+    base = Path(str(config.train.checkpoint_dir) or "checkpoints")
+    cv_log = _cv_log_path(base)
+    setup_logger(str(cv_log))
+    # Hand the cross-validation log's FileHandler to the progress-bar mirror so
+    # bar lines land in the same log as the trainer's records.
     global _bar_file_handler
     _bar_file_handler = next(
         (h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)), None
     )
-    logger.info("Run directory (log + per-fold checkpoints): %s", run_dir)
+    logger.info("Cross-validation log: %s (fold folders next to it)", cv_log)
     logger.info("Loaded config:")
     logger.info(OmegaConf.to_yaml(config))
 
@@ -413,7 +419,7 @@ def main(config: DictConfig) -> None:
                  ("B→A", Xb, yb, Xa, ya)]
         for name, X_tr, y_tr, X_te, y_te in folds:
             fold_num += 1
-            fold_ckpt_dir = run_dir / f"fold_{fold_num:02d}"
+            fold_ckpt_dir = base / f"fold_{fold_num:02d}"
             tag = f"repeat {repeat + 1}/{N_REPEATS}  fold {name}  ({fold_num}/{N_REPEATS * N_FOLDS})"
             model, trainer, result = _run_fold(
                 config, feature_names, X_tr, y_tr, X_te, y_te, fold_ckpt_dir, tag)
@@ -421,6 +427,8 @@ def main(config: DictConfig) -> None:
             results.append(result)
             last_model, last_trainer = model, trainer
 
+    logger.info("Run folders of the %d folds:\n%s", len(results),
+                "\n".join(f"  {i:02d}  {m['run_dir']}" for i, m in enumerate(results, start=1)))
     _report_5x2cv(results)
 
     # --- Plot one representative fold -----------------------------------------
@@ -445,7 +453,7 @@ def main(config: DictConfig) -> None:
         view=False,
     ).plot()
 
-    logger.info("Done!")
+    logger.info("Done! Cross-validation log: %s", cv_log)
 
 
 if __name__ == "__main__":

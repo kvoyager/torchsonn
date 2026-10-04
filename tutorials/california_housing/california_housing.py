@@ -120,8 +120,9 @@ def tutorial_params(config: DictConfig) -> SimpleNamespace:
     # test rows are the same for all members, so the per-member metrics are
     # directly comparable: their spread is the noise floor a single-run
     # comparison has to beat, and the mean of the members' predictions is the
-    # ensemble. 1 = plain single run. Cost is n_ensemble full trainings; the
-    # checkpoint folder ends up holding the last member.
+    # ensemble. 1 = plain single run. Cost is n_ensemble full trainings; each
+    # member writes its own run folder under train.checkpoint_dir, and the
+    # network diagrams are drawn for the last member, into its run folder.
     p.n_ensemble = int(cfg.get("n_ensemble", 1))
 
     # Standardized features are clipped to +-z_clip sigma; see the comment at
@@ -450,9 +451,10 @@ def main(config: DictConfig) -> None:
         logger.info("=== ensemble member %d/%d (seed %d) ===", m + 1, p.n_ensemble, int(config.train.seed) + m)
         members.append(fit_member(m))
         mem = members[-1]
-        logger.info("    member %d: test mse %.4f  mae %.4f", m + 1,
+        logger.info("    member %d: test mse %.4f  mae %.4f  run folder %s", m + 1,
                     metrics.mean_squared_error(mem["test_y"], mem["y_pred"]),
-                    metrics.mean_absolute_error(mem["test_y"], mem["y_pred"]))
+                    metrics.mean_absolute_error(mem["test_y"], mem["y_pred"]),
+                    mem["trainer"].run_dir)
 
     y_true = members[0]["test_y"]
     preds = np.stack([mem["y_pred"] for mem in members])
@@ -487,10 +489,9 @@ def main(config: DictConfig) -> None:
     report("Full trained model" + (" (last member)" if p.n_ensemble > 1 else ""))
 
     # --- Plot -----------------------------------------------------------------
-    # Next to the checkpoints of this config, so runs of different configs do
-    # not overwrite each other's plots.
-    out_dir = Path(config.train.checkpoint_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Into the last member's run folder, next to its checkpoints and train.log,
+    # so no run overwrites another run's plots.
+    out_dir = trainer.run_dir
     PlotModel(
         model,
         filename=str(out_dir / "california_housing_model"),
@@ -508,6 +509,7 @@ def main(config: DictConfig) -> None:
         view=False,
     ).plot()
 
+    print(f"Run folder: {trainer.run_dir}")
     print("Done!")
 
 

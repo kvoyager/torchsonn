@@ -4,6 +4,10 @@ Downloads the Otto Group dataset from OpenML (ARFF format), performs a
 stratified 70/15/15 split, trains a SONN multi-class classifier followed by
 an out_proj fine-tuning pass, and reports multi-class log loss on all splits.
 
+Each run writes its checkpoints and its train.log to a time-stamped folder,
+tutorials/otto/checkpoints/YYYY-MM-DD-HH-MM-SS/. With `resume: true` in
+otto.yaml the script continues the newest run folder there instead.
+
 Run from any directory:
     python tutorials/otto/otto_classification.py
 """
@@ -45,12 +49,12 @@ from torchsonn.trainer import Trainer
 TUTORIAL_DIR = _script_dir
 DATA_DIR = TUTORIAL_DIR / "data"
 CKPT_DIR = TUTORIAL_DIR / "checkpoints"
-LOG_PATH = TUTORIAL_DIR / "otto_classification.log"
 
 DATA_DIR.mkdir(exist_ok=True)
 CKPT_DIR.mkdir(exist_ok=True)
 
-logger = setup_logger(str(LOG_PATH))
+# Console only: each run's log is the train.log in its run folder.
+logger = setup_logger()
 
 # ---------------------------------------------------------------------------
 # Download & parse dataset
@@ -195,6 +199,8 @@ def main():
     print(header)
     for i, row in enumerate(cm):
         print(f"{CLASS_NAMES[i]:<{col_w}}" + "".join(f"{v:>{col_w}}" for v in row))
+
+    print(f"\nRun folder: {trainer.run_dir}")
 
 
 if __name__ == "__main__":
