@@ -4,8 +4,6 @@ import torch
 from torchsonn.optimizers import (
     BatchedAdam,
     BatchedLBFGS,
-    BatchedNewton,
-    BatchedNewtonLM,
     BatchedSGD,
     optimizer_map,
 )
@@ -277,81 +275,11 @@ class TestBatchedLBFGS:
         assert isinstance(opt2.s_hist["shared_w"], deque)
 
 
-class TestBatchedNewton:
-    # BatchedNewton's non-shared step path mishandles the broadcast between a
-    # per-batch lr and the per-row Newton delta (lr shape (B,1) vs delta
-    # squeeze of shape (d,) → result (B,d) won't fit p_flat[i]). We exercise
-    # only the shared-param + initialization paths to avoid that pre-existing
-    # bug.
-    def test_shared_param(self):
-        p = {"shared_w": torch.randn(1, 2)}
-        opt = BatchedNewton(p, shared_param_names=["shared_w"], lr=torch.ones(1) * 0.01)
-        g = {"shared_w": torch.randn(1, 2)}
-        new = opt.step(p, g)
-        assert new["shared_w"].shape == p["shared_w"].shape
-
-    def test_one_dim_param(self):
-        # Trigger the v.dim() < 2 branch where Hessian leading dim is 1.
-        p = {"shared_b": torch.randn(2)}
-        opt = BatchedNewton(p, shared_param_names=["shared_b"], lr=torch.tensor([0.01]))
-        assert opt.H["shared_b"].shape == (1, 2, 2)
-
-    def test_pinverse_fallback(self, monkeypatch):
-        p = {"shared_w": torch.randn(1, 2)}
-        opt = BatchedNewton(p, shared_param_names=["shared_w"], lr=torch.ones(1) * 0.01)
-        # Force the linalg.solve to fail so the pinverse fallback runs.
-        orig_solve = torch.linalg.solve
-
-        def boom(*_a, **_k):
-            raise RuntimeError("forced failure")
-
-        monkeypatch.setattr("torch.linalg.solve", boom)
-        new = opt.step(p, {"shared_w": torch.randn(1, 2)})
-        assert new["shared_w"].shape == p["shared_w"].shape
-
-
-class TestBatchedNewtonLM:
-    def test_diagonal_hessian_approximation(self):
-        p = _make_params()
-        opt = BatchedNewtonLM(p, shared_param_names=[], lr=torch.ones(3) * 0.01)
-        g = _make_grads()
-        new = opt.step(p, g)
-        assert new["weight"].shape == p["weight"].shape
-
-    def test_with_provided_hessian(self):
-        p = _make_params(batch=2, d=3)
-        opt = BatchedNewtonLM(p, shared_param_names=[], lr=torch.ones(2) * 0.01)
-        g = _make_grads(batch=2, d=3)
-        h = {"weight": torch.eye(3).unsqueeze(0).repeat(2, 1, 1)}
-        new = opt.step(p, g, hessians=h)
-        assert new["weight"].shape == p["weight"].shape
-
-    def test_shared_param_branch(self):
-        p = {
-            "w": torch.randn(2, 3),
-            "shared_w": torch.randn(2, 3),
-        }
-        opt = BatchedNewtonLM(p, shared_param_names=["shared_w"], lr=torch.ones(2) * 0.01)
-        g = {k: torch.randn_like(v) for k, v in p.items()}
-        new = opt.step(p, g)
-        assert new["shared_w"].shape == p["shared_w"].shape
-
-    def test_active_mask(self):
-        p = _make_params(batch=3, d=3)
-        opt = BatchedNewtonLM(p, shared_param_names=[], lr=torch.ones(3) * 0.01)
-        g = _make_grads(batch=3, d=3)
-        mask = torch.tensor([True, False, True])
-        new = opt.step(p, g, active_mask=mask)
-        assert torch.allclose(new["weight"][1], p["weight"][1])
-
-
 def test_optimizer_map_contents():
-    assert set(optimizer_map.keys()) == {"adam", "sgd", "lbfgs", "newton", "newton-lm"}
+    assert set(optimizer_map.keys()) == {"adam", "sgd", "lbfgs"}
     assert optimizer_map["adam"] is BatchedAdam
     assert optimizer_map["sgd"] is BatchedSGD
     assert optimizer_map["lbfgs"] is BatchedLBFGS
-    assert optimizer_map["newton"] is BatchedNewton
-    assert optimizer_map["newton-lm"] is BatchedNewtonLM
 
 
 class TestLBFGSGuards:

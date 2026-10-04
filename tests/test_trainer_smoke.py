@@ -685,6 +685,18 @@ def test_layer_err_source_readout_rejects_incompatible_config(tmp_path):
         Trainer(config=cfg)
 
 
+@pytest.mark.parametrize("name", ["newton", "newton-lm", "adagrad"])
+def test_unknown_optimizer_name_is_rejected_when_the_trainer_is_built(tmp_path, name):
+    cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create({"train": {"optimizer": {"name": name}}}))
+    with pytest.raises(ValueError, match=f"train.optimizer.name='{name}'; expected 'adam', 'sgd' or 'lbfgs'"):
+        Trainer(config=cfg)
+
+
+@pytest.mark.parametrize("name", ["adam", "sgd", "lbfgs"])
+def test_known_optimizer_names_are_accepted(tmp_path, name):
+    Trainer(config=OmegaConf.merge(_cfg(tmp_path), OmegaConf.create({"train": {"optimizer": {"name": name}}})))
+
+
 @pytest.mark.parametrize("layer_finetune", [True, False])
 def test_layer_err_source_readout_scores_layers_by_head_dev_loss(tmp_path, layer_finetune):
     """Under 'readout' the layer error is a head's dev loss, not the best neuron's.

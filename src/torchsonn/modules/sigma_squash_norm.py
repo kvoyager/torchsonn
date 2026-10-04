@@ -33,9 +33,9 @@ Those three coefficients are what you get by matching the core at the junction
 to second order — g(0) = 1 - a, g'(0) = -a, g''(0) = 0 — which makes the whole
 map C2: value, slope *and* curvature are continuous at +/-n_sigma, and the map
 is odd so it is smooth through the origin too. C1 alone would be enough for
-gradient descent, but torchsonn's Newton / Newton-LM / L-BFGS optimizers
-consume curvature, and a jump in the second derivative shows up there as noise
-in the Hessian; the cubic denominator buys C2 for one extra multiply.
+gradient descent, but torchsonn's L-BFGS optimizer estimates curvature, and a
+jump in the second derivative shows up there as noise in its curvature pairs;
+the cubic denominator buys C2 for one extra multiply.
 
 The remaining properties fall out of p, q, r > 0:
   * g > 0 everywhere, so |y| < 1 and the output never leaves the orthogonality

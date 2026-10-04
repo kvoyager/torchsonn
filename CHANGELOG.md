@@ -34,6 +34,16 @@ reading it in 0.1.4. The schema rejects unknown keys, so a config that
 still sets one of them now fails to load: delete the key. The `rbf`
 neuron's own `normalize` option is unaffected.
 
+### Removed — `newton` and `newton-lm` optimizers
+
+`BatchedNewton`, `BatchedNewtonLM` and their `train.optimizer.name` values
+are gone. Neither could run: the default `optimizer_params` hold
+`clip_value` and `clip_norm`, which they did not accept, and `SONN` merges
+the defaults into every configuration, so selecting either raised
+`TypeError` at the first candidate fit. Use `lbfgs`. An unknown
+`train.optimizer.name`, these two included, now raises `ValueError` when
+the `Trainer` is built, naming `adam`, `sgd` and `lbfgs`.
+
 ## 0.1.5
 
 ### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs

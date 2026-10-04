@@ -101,8 +101,8 @@ def _default_optimizer_params() -> Dict[str, Any]:
     The trainer pops `min_lr` and `gamma` (LR-drop schedule) before handing
     the rest to the chosen optimizer class. The optimizer-specific extras
     (`betas`/`eps` for adam, `momentum`/`nesterov` for sgd, `history_size`,
-    `max_step` and `curvature_eps` for lbfgs, `damping`/`max_damping` for
-    newton-LM) are NOT enumerated here — see the note on
+    `max_step` and `curvature_eps` for lbfgs) are NOT enumerated here — see
+    the note on
     `OptimizerConfig.optimizer_params` below. lbfgs defaults: `max_step`
     1.0 (cap on one member's update norm per parameter tensor, in parameter
     units; null = uncapped) and `curvature_eps` 1e-8 (a correction pair is
@@ -124,14 +124,14 @@ class OptimizerConfig:
 
     The comments on the fields below document them.
     """
-    # 'adam' | 'sgd' | 'lbfgs' | 'newton' | 'newton-lm' — see optimizer_map
-    # in src/optimizers/__init__.py.
+    # 'adam' | 'sgd' | 'lbfgs' — see optimizer_map in
+    # src/torchsonn/optimizers/__init__.py; Trainer rejects any other name.
     name: str = "adam"
     verbose: bool = True
     # Deliberately typed `Dict[str, Any]` rather than a nested dataclass:
     # each optimizer family takes its own kwargs (lbfgs needs
     # `history_size`, adam takes `betas`/`eps`, sgd takes `momentum`/
-    # `nesterov`, newton-lm takes `damping`/`max_damping`). A strict union
+    # `nesterov`). A strict union
     # schema would force every YAML to set every field. The optimizer
     # constructor itself rejects unknown kwargs at instantiation time, so
     # validation happens at the right boundary.
