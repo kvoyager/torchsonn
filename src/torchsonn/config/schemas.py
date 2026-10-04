@@ -101,8 +101,8 @@ def _default_optimizer_params() -> Dict[str, Any]:
     The trainer pops `min_lr` and `gamma` (LR-drop schedule) before handing
     the rest to the chosen optimizer class. The optimizer-specific extras
     (`betas`/`eps` for adam, `momentum`/`nesterov` for sgd, `history_size`,
-    `max_step` and `curvature_eps` for lbfgs, `damping`/`max_damping` for
-    newton-LM) are NOT enumerated here — see the note on
+    `max_step` and `curvature_eps` for lbfgs) are NOT enumerated here — see
+    the note on
     `OptimizerConfig.optimizer_params` below. lbfgs defaults: `max_step`
     1.0 (cap on one member's update norm per parameter tensor, in parameter
     units; null = uncapped) and `curvature_eps` 1e-8 (a correction pair is
@@ -124,14 +124,14 @@ class OptimizerConfig:
 
     The comments next to the fields document them.
     """
-    # 'adam' | 'sgd' | 'lbfgs' | 'newton' | 'newton-lm' — see optimizer_map
-    # in src/optimizers/__init__.py.
+    # 'adam' | 'sgd' | 'lbfgs' — see optimizer_map in
+    # src/torchsonn/optimizers/__init__.py; Trainer rejects any other name.
     name: str = "adam"
     verbose: bool = True
     # Deliberately typed `Dict[str, Any]` rather than a nested dataclass:
     # each optimizer family takes its own kwargs (lbfgs needs
     # `history_size`, adam takes `betas`/`eps`, sgd takes `momentum`/
-    # `nesterov`, newton-lm takes `damping`/`max_damping`). A strict union
+    # `nesterov`). A strict union
     # schema would force every YAML to set every field. The optimizer
     # constructor itself rejects unknown kwargs at instantiation time, so
     # validation happens at the right boundary.
@@ -244,6 +244,13 @@ class TrainConfig:
     The comments next to the fields document them.
     """
     seed: int = 10
+    # True: the Trainer switches PyTorch to deterministic kernels
+    # (torch.use_deterministic_algorithms), process-wide, and sets
+    # CUBLAS_WORKSPACE_CONFIG=:4096:8 if it is unset, so that runs on a GPU
+    # repeat, at some cost in speed; an operation without a deterministic
+    # kernel then raises an error naming it. On a CPU the runs repeat without
+    # it. False leaves PyTorch's setting as it is.
+    use_deterministic_algorithms: bool = False
 
     # String form — coerced to CriterionType via CriterionType.get() in
     # SONN.__init__. Accepted: 'validate' | 'bias' | 'validate_bias' | 'bias_retrain'.
@@ -300,10 +307,6 @@ class TrainConfig:
     criterion_minimum_width: int = 5
     stop_train_epsilon_condition: float = 0.001
     stop_train_min_delta: float = 0.0
-
-    manual_best_neurons_selection: bool = False
-    min_best_neurons_count: int = 0
-    max_best_neurons_count: int = 0
 
     # 'top' (smallest err_value wins) | 'avg'.
     layer_err_criterion: str = "top"

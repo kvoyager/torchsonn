@@ -8,12 +8,17 @@ class SoftBinner(nn.Module):
     Produces logits (pre-softmax) — the SONN multi-class loss path applies
     log_softmax over the bin axis. Used by SONN when
     `param.model.soft_binner=True` as an alternative to a learned linear head.
+
+    The centers, evenly spaced from 0.05 to 0.95, are a buffer, not a
+    parameter: they move and are saved with the module, but no optimizer
+    sees them, so the passes that switch gradients on for every parameter
+    of the model (`Trainer.train_finetune` among them) leave them in place.
     """
 
     def __init__(self, n_bins: int = 10, scale: float = 100.0) -> None:
         super().__init__()
         self.n_bins = n_bins
-        self.centers = nn.Parameter(torch.linspace(0.05, 0.95, n_bins), requires_grad=False)
+        self.register_buffer("centers", torch.linspace(0.05, 0.95, n_bins))
         self.scale = scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

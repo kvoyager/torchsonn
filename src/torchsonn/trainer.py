@@ -481,6 +481,24 @@ class Trainer:
         self._run_dir: Path | None = None
         self._validate_layer_err_source(config)
         self._validate_best_weights_copy(config)
+        self._validate_optimizer_name(config)
+        self._apply_deterministic_algorithms(config)
+
+    @staticmethod
+    def _apply_deterministic_algorithms(config: Any) -> None:
+        """Switch PyTorch to deterministic kernels under `train.use_deterministic_algorithms`.
+
+        Process-wide, like `set_seed`. cuBLAS gives repeatable results only
+        with `CUBLAS_WORKSPACE_CONFIG` set, and raises without it once the
+        flag is on, so it is set to `:4096:8` when absent; a value already set
+        is kept. When the key is false nothing changes, so a flag the caller
+        switched on stays on.
+        """
+        train_cfg = getattr(config, "train", None) if config is not None else None
+        if not bool(getattr(train_cfg, "use_deterministic_algorithms", False)):
+            return
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True)
 
     @staticmethod
     def _validate_layer_err_source(config: Any) -> None:
@@ -530,6 +548,23 @@ class Trainer:
                 raise ValueError(
                     f"train.{block}.best_weights_copy={where!r}; expected 'device', 'cpu' or 'disk'."
                 )
+
+    @staticmethod
+    def _validate_optimizer_name(config: Any) -> None:
+        """Reject a `train.optimizer.name` that `optimizer_map` does not hold.
+
+        Checked when the Trainer is built, so a wrong name fails before any
+        data is read or a run folder made, instead of as a `KeyError` at the
+        first candidate fit.
+        """
+        train_cfg = getattr(config, "train", None) if config is not None else None
+        name = getattr(getattr(train_cfg, "optimizer", None), "name", None)
+        if name is None or str(name) in optimizer_map:
+            return
+        names = [repr(k) for k in optimizer_map]
+        raise ValueError(
+            f"train.optimizer.name={str(name)!r}; expected {', '.join(names[:-1])} or {names[-1]}."
+        )
 
     @staticmethod
     def _split_loader(dl: DataLoader, split: int) -> DataLoader:

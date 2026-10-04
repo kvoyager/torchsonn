@@ -325,6 +325,11 @@ def test_train_finetune_and_layer_finetune_multiclass(tmp_path):
     trained = trainer.train(model, dl, dl, dl, verbose=False)
     # Also run train_finetune explicitly (loss_fn=NLL is needed → multi-class works)
     trainer.train_finetune(trained, dl, dl)
+    # Neither pass moves the soft binner's class points: they are fixed.
+    centers = trained.soft_binner.centers
+    assert "soft_binner.centers" not in dict(trained.named_parameters())
+    assert torch.equal(centers.cpu(), torch.linspace(0.05, 0.95, 3))
+    assert not centers.requires_grad
 
 
 def test_train_with_omp_mixed_selection(tmp_path):
@@ -510,6 +515,74 @@ def test_train_with_out_proj(tmp_path):
     trainer.train_out_proj(model, train_dl, dev_dl)
 
 
+def test_head_fit_and_pass_repeat_when_seeded_after_building(tmp_path):
+    """Built first, seeded afterwards, from different global random states:
+    the search, the head fit and the end-to-end pass give the same model."""
+    finals = []
+    for run in range(2):
+        cfg = OmegaConf.merge(
+            _cfg(tmp_path / f"run{run}", max_layer_count=1),
+            OmegaConf.create({
+                "model": {"use_output_projection": True, "num_out_neurons": 2},
+                "train": {"out_proj_train": {"optimizer": "lbfgs", "max_steps": 10, "eval_interval": 5},
+                          "finetune_train": {"optimizer": "adamw", "max_steps": 30, "eval_interval": 10}},
+            }),
+        )
+        torch.manual_seed(1000 + run)
+        model = SONN(cfg, d_model=4)
+        trainer = Trainer(config=cfg)
+        Trainer.set_seed(cfg.train.seed)
+        dl = DataLoader(_make_dl(64).dataset, batch_size=8, shuffle=True)
+        trainer.train(model, dl, dl, dl, verbose=False)
+        trainer.train_out_proj(model, dl, dl)
+        trainer.train_finetune(model, dl, dl)
+        finals.append({k: v.clone() for k, v in model.state_dict().items() if torch.is_tensor(v)})
+    assert finals[0].keys() == finals[1].keys()
+    for k in finals[0]:
+        assert torch.equal(finals[0][k], finals[1][k]), k
+
+
+def test_use_deterministic_algorithms(tmp_path, monkeypatch):
+    """On: PyTorch's flag is switched on and cuBLAS's workspace setting is
+    supplied when missing (an existing value is kept), and a short run with
+    a head and the end-to-end pass works under it. Off: the flag is left as
+    the caller set it."""
+    import os
+    was = torch.are_deterministic_algorithms_enabled()
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    try:
+        torch.use_deterministic_algorithms(False)
+        Trainer(config=_cfg(tmp_path))
+        assert not torch.are_deterministic_algorithms_enabled()
+        assert "CUBLAS_WORKSPACE_CONFIG" not in os.environ
+        torch.use_deterministic_algorithms(True)
+        Trainer(config=_cfg(tmp_path))
+        assert torch.are_deterministic_algorithms_enabled()
+
+        torch.use_deterministic_algorithms(False)
+        cfg = OmegaConf.merge(
+            _cfg(tmp_path, max_layer_count=1, use_deterministic_algorithms=True),
+            OmegaConf.create({
+                "model": {"use_output_projection": True, "num_out_neurons": 2},
+                "train": {"finetune_train": {"optimizer": "adamw", "max_steps": 20, "eval_interval": 10}},
+            }),
+        )
+        model = SONN(cfg, d_model=4)
+        trainer = Trainer(config=cfg)
+        assert torch.are_deterministic_algorithms_enabled()
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+        dl = _make_dl(64)
+        trainer.train(model, dl, dl, dl, verbose=False)
+        trainer.train_out_proj(model, dl, dl)
+        trainer.train_finetune(model, dl, dl)
+
+        monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":16:8")
+        Trainer(config=cfg)
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
+    finally:
+        torch.use_deterministic_algorithms(was)
+
+
 def test_train_out_proj_raises_without_head(tmp_path):
     cfg = _cfg(tmp_path)
     model = SONN(cfg, d_model=4)
@@ -610,6 +683,18 @@ def test_layer_err_source_readout_rejects_incompatible_config(tmp_path):
     )
     with pytest.raises(NotImplementedError):
         Trainer(config=cfg)
+
+
+@pytest.mark.parametrize("name", ["newton", "newton-lm", "adagrad"])
+def test_unknown_optimizer_name_is_rejected_when_the_trainer_is_built(tmp_path, name):
+    cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create({"train": {"optimizer": {"name": name}}}))
+    with pytest.raises(ValueError, match=f"train.optimizer.name='{name}'; expected 'adam', 'sgd' or 'lbfgs'"):
+        Trainer(config=cfg)
+
+
+@pytest.mark.parametrize("name", ["adam", "sgd", "lbfgs"])
+def test_known_optimizer_names_are_accepted(tmp_path, name):
+    Trainer(config=OmegaConf.merge(_cfg(tmp_path), OmegaConf.create({"train": {"optimizer": {"name": name}}})))
 
 
 @pytest.mark.parametrize("layer_finetune", [True, False])

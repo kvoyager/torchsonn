@@ -206,17 +206,6 @@ class SONNLayer(SONNModule):
             res.append(out)
         return torch.cat(res, dim=1)
 
-    def describe(self, features: list[str], layers: "list[SONNLayer]") -> str:
-        """Return a text description of the layer: a header and one entry per neuron module."""
-
-        s = ['*' * 50,
-             'Layer {0}'.format(self.layer_index),
-             '*' * 50,
-        ]
-        for neuron in self:
-            s.append(neuron.describe(features, layers))
-        return '\n'.join(s)
-
     def get_parent_neron_module(self, idx: int) -> tuple[int, BasePolynomNeuron]:
         """
         Find the neuron module that holds output column `idx`.

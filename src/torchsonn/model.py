@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import sys
 
@@ -117,6 +118,25 @@ def _parse_shortcut(value: Any) -> tuple[bool, int]:
 logger = logging.getLogger(__name__)
 
 
+def _linear_from_seed(in_features: int, out_features: int, seed: int) -> nn.Linear:
+    """`nn.Linear` whose starting weights come from `seed`, not the global generator.
+
+    The same distribution as `nn.Linear`'s own initialization: Kaiming-uniform
+    weights with a = sqrt(5) and a bias uniform in +-1/sqrt(in_features), drawn
+    from a generator of their own. The global random state is left as it was,
+    so a model's head starts the same whether `Trainer.set_seed` runs before
+    or after the model is built.
+    """
+    with torch.random.fork_rng(devices=[]):
+        linear = nn.Linear(in_features, out_features)
+    generator = torch.Generator().manual_seed(int(seed))
+    with torch.no_grad():
+        nn.init.kaiming_uniform_(linear.weight, a=math.sqrt(5), generator=generator)
+        bound = 1.0 / math.sqrt(in_features) if in_features > 0 else 0.0
+        nn.init.uniform_(linear.bias, -bound, bound, generator=generator)
+    return linear
+
+
 class SONN(SONNModule):
     """Self-organizing deep learning polynomial neural network (GMDH) as a PyTorch module.
 
@@ -229,12 +249,12 @@ class SONN(SONNModule):
             # layer. Built only when `use_output_projection: true`; otherwise
             # the model falls back to "best single neuron" inference (the
             # default GMDH path), capped at whatever a single polynomial
-            # neuron can express.
+            # neuron can express. Its starting weights come from train.seed.
             if self.param.model.use_output_projection:
                 num_out = self.param.model.num_out_neurons
                 if num_out is None:
                     num_out = self.param.model.max_neuron_models
-                self.out_proj = nn.Linear(num_out, 1)
+                self.out_proj = _linear_from_seed(num_out, 1, self.param.train.seed)
             else:
                 self.out_proj = None
         elif self.param.model.type == "binary":
@@ -256,7 +276,10 @@ class SONN(SONNModule):
             _bias_init = -_scale * _centers ** 2  # (num_classes,)
 
             def _make_proj(in_features: int) -> nn.Linear:
-                proj = nn.Linear(in_features, num_classes)
+                # The values are set below; building the layer must not draw
+                # from the global generator either.
+                with torch.random.fork_rng(devices=[]):
+                    proj = nn.Linear(in_features, num_classes)
                 with torch.no_grad():
                     proj.weight.copy_(_col.unsqueeze(-1).expand(-1, in_features))
                     proj.bias.copy_(_bias_init)
@@ -281,10 +304,11 @@ class SONN(SONNModule):
             self.loss_fn = nn.NLLLoss(weight=cw, reduction="none")
 
             if self.param.model.use_output_projection:
+                # Starting weights from train.seed, as for the regression head.
                 num_out = self.param.model.num_out_neurons
                 if num_out is None:
                     num_out = self.param.model.max_neuron_models
-                self.out_proj = nn.Linear(num_out, num_classes)
+                self.out_proj = _linear_from_seed(num_out, num_classes, self.param.train.seed)
             else:
                 self.out_proj = None
         else:
