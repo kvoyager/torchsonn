@@ -426,9 +426,9 @@ def main(config: DictConfig) -> None:
         # readout the model is scored on (config `finetune_end_to_end`; see
         # california_housing_legendre_finetune.yaml). Runs after
         # load_model_checkpoint so it starts from the best checkpointed
-        # weights. The pass ends on the weights of its best evaluation and
-        # saves them to the run folder's model_last.ckpt; the metrics are
-        # computed from the in-memory model, which holds the same weights.
+        # weights. The pass saves the model it ends with to the run folder's
+        # model_last.ckpt; the metrics are computed from the in-memory model,
+        # which holds the same weights.
         # Same wiring as tutorials/ccpp.
         if bool(config.get("finetune_end_to_end", False)):
             if bool(config.get("finetune_drop_head", False)) and model.out_proj is not None:

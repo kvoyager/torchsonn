@@ -295,9 +295,9 @@ def _run_fold(config: DictConfig, feature_names: list[str],
     # the best-error neuron's column directly, so the fine-tune optimizes that
     # readout and leaves a pure polynomial network with nothing bolted on top
     # (off in every shipped config; ccpp_legendre_finetune.yaml records why).
-    # The pass ends on the weights of its best dev evaluation and saves them
-    # to the fold's run folder (model_last.ckpt); the metrics below are
-    # computed from the in-memory model, which holds the same weights.
+    # The pass saves the model it ends with to the fold's run folder
+    # (model_last.ckpt); the metrics below are computed from the in-memory
+    # model, which holds the same weights.
     if bool(getattr(config, "finetune_end_to_end", False)):
         drop_head = bool(getattr(config, "finetune_drop_head", False))
         prune_first = bool(getattr(config, "finetune_prune_first", False))

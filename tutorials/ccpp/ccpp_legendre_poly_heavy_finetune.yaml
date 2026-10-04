@@ -42,9 +42,9 @@ resume: false
 # *separate* block from `out_proj_train` precisely so this pass can use a much
 # smaller learning rate than the per-layer fine-tunes.
 #
-# The pass ends on the weights of its best dev evaluation and saves them to
-# the fold's run folder (model_last.ckpt); the fold's metrics come from the
-# in-memory model, which holds the same weights.
+# The pass saves the model it ends with to the fold's run folder
+# (model_last.ckpt); the fold's metrics come from the in-memory model, which
+# holds the same weights.
 # Set false to get ccpp_legendre_finetune.yaml back exactly.
 finetune_end_to_end: true
 

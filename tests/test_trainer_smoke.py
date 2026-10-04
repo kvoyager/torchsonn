@@ -1235,7 +1235,7 @@ def test_best_weights_keeps_the_lowest_loss_and_restores_in_place(tmp_path, wher
     """Strictly the lowest loss wins (NaN never does); the restore writes into
     the same tensor, and the disk copy is gone afterwards."""
     p = torch.nn.Parameter(torch.zeros(3))
-    best = _BestWeights([p], where, tmp_path / "best_x.ckpt", "x")
+    best = _BestWeights([p], True, where, tmp_path / "best_x.ckpt", "x")
     for step, loss in [(1, 2.0), (2, 1.0), (3, float("nan")), (4, 1.0), (5, 1.5)]:
         with torch.no_grad():
             p.fill_(step)
@@ -1244,12 +1244,32 @@ def test_best_weights_keeps_the_lowest_loss_and_restores_in_place(tmp_path, wher
     best.restore()
     assert torch.equal(p.detach(), torch.full((3,), 2.0)) and p.data_ptr() == ptr
     assert (best.best_step, best.best_loss, best.last_step) == (2, 1.0, 5)
+    assert best.final_loss == 1.0
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("where", ["device", "cpu", "disk"])
+def test_best_weights_off_copies_nothing_and_ends_on_the_last_step(tmp_path, where):
+    p = torch.nn.Parameter(torch.zeros(3))
+    best = _BestWeights([p], False, where, tmp_path / "best_x.ckpt", "x")
+    for step, loss in [(1, 2.0), (2, 1.0), (3, 1.5)]:
+        with torch.no_grad():
+            p.fill_(step)
+        best.update(step, loss)
+        assert not list(tmp_path.iterdir())
+    best.restore()
+    assert torch.equal(p.detach(), torch.full((3,), 3.0))
+    assert (best.best_loss, best.final_loss) == (1.0, 1.5)
+    # With no parameters (a head over frozen survivors) the lowest loss is final.
+    head_only = _BestWeights([], False, where, None, "x")
+    for step, loss in [(1, 2.0), (2, 1.0), (3, 1.5)]:
+        head_only.update(step, loss)
+    assert head_only.final_loss == 1.0
 
 
 def test_best_weights_rejects_an_unknown_place(tmp_path):
     with pytest.raises(ValueError, match="best_weights_copy"):
-        _BestWeights([], "gpu", None, "x")
+        _BestWeights([], True, "gpu", None, "x")
     for block in ("out_proj_train", "finetune_train"):
         cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
             {"train": {block: {"best_weights_copy": "gpu"}}}))
@@ -1260,7 +1280,7 @@ def test_best_weights_rejects_an_unknown_place(tmp_path):
 def test_best_weights_disk_file_per_rank(tmp_path, monkeypatch):
     """In a distributed run every rank writes its own file."""
     cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
-        {"train": {"finetune_train": {"best_weights_copy": "disk"}}}))
+        {"train": {"finetune_train": {"best_weights_copy": "disk", "keep_best_weights": True}}}))
     model = SONN(cfg, d_model=4)
     trainer = Trainer(config=cfg)
     p = torch.nn.Parameter(torch.zeros(2))
@@ -1296,9 +1316,11 @@ def scripted_best(monkeypatch):
     return _ScriptedBest.made
 
 
-def _pass_settings(optimizer, max_steps=6, eval_interval=1, **extra):
+def _pass_settings(optimizer, max_steps=6, eval_interval=1, keep=True, **extra):
     s = {"optimizer": optimizer, "max_steps": max_steps, "eval_interval": eval_interval,
          "early_stop_patience": 100, "lr": 0.05}
+    if keep is not None:          # None: leave keep_best_weights at its default
+        s["keep_best_weights"] = keep
     if optimizer == "lbfgs":
         # One plain iteration per outer step, so the head keeps moving.
         s.update({"lbfgs_max_iter": 1, "lbfgs_line_search": "", "lr": 0.5})
@@ -1322,6 +1344,47 @@ def _headed_model(tmp_path, out_proj_train=None, finetune_train=None):
     dl = _make_dl(64)
     trainer.train(model, dl, dl, dl, verbose=False)
     return cfg, model, trainer, dl
+
+
+def _assert_ends_on_evaluation(best, params, i):
+    assert len(best.seen) >= 3
+    kept = best.seen[i][1]
+    assert any(not torch.equal(a, b) for a, b in zip(best.seen[1][1], best.seen[-1][1])), \
+        "the parameters never moved after the second evaluation"
+    for p, s in zip(params, kept):
+        assert torch.equal(p.detach().cpu(), s)
+
+
+@pytest.mark.parametrize("which", ["out_proj_adam", "out_proj_lbfgs", "layer_finetune", "finetune"])
+def test_passes_end_on_their_last_step_by_default(tmp_path, scripted_best, which):
+    """keep_best_weights is off by default: nothing is copied, the pass ends
+    on its last evaluated step, and the readout error is that step's loss."""
+    defaults = OmegaConf.structured(SONNConfig).train
+    assert defaults.out_proj_train.keep_best_weights is False
+    assert defaults.finetune_train.keep_best_weights is False
+    settings = _pass_settings("lbfgs" if which == "out_proj_lbfgs" else "adam", keep=None,
+                              best_weights_copy="disk")
+    if which == "finetune":
+        cfg, model, trainer, dl = _headed_model(tmp_path, finetune_train=settings)
+    else:
+        cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=settings)
+    scripted_best.clear()
+    if which == "finetune":
+        trainer.train_finetune(model, dl, dl)
+        params = list(model.parameters())
+    elif which == "layer_finetune":
+        readout_err = trainer._train_layer_finetune(model, model.layers[-1], dl, dl)
+        params = None
+    else:
+        trainer.train_out_proj(model, dl, dl)
+        params = list(model.out_proj.parameters())
+    (best,) = scripted_best
+    assert not best.keep and best.path is None
+    if params is None:
+        params = best.params
+        assert readout_err == float(len(best.seen))     # the last evaluation's scripted loss
+    _assert_ends_on_evaluation(best, params, -1)
+    assert not list(trainer.run_dir.glob("best_*"))
 
 
 def _assert_ends_on_second_evaluation(best, params):

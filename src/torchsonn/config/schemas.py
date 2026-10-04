@@ -52,10 +52,13 @@ class OutProjTrainConfig:
     lr_min: float = 1.0e-5
     early_stop_patience: int = 10
     early_stop_min_delta: float = 1.0e-4
-    # The pass ends with the weights of its lowest evaluated loss (dev; for
-    # the end-to-end pass, the split its early stop reads). The last step is
-    # evaluated too, and the trained parameters are copied on every new best
-    # and copied back at the end. Where that copy is kept:
+    # Off: the pass ends on its last step. On: it ends with the weights of
+    # its lowest evaluated loss (dev; for the end-to-end pass, the split its
+    # early stop reads), the last step included: the trained parameters are
+    # copied on every new best and copied back at the end. Which of the two
+    # scores better on unseen data depends on the problem, so measure both.
+    keep_best_weights: bool = False
+    # Where keep_best_weights keeps that copy:
     #   'device' - next to the parameters: GPU memory on CUDA; the fastest
     #   'cpu'    - host memory (pinned on CUDA); no GPU memory
     #   'disk'   - best_<pass>.ckpt in the run folder, rewritten on every new

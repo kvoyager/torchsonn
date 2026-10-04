@@ -344,33 +344,37 @@ _BEST_WEIGHTS_COPIES = ("device", "cpu", "disk")
 
 
 class _BestWeights:
-    """The parameters of a pass's best evaluation, put back when it ends.
+    """A pass's evaluations, and the weights it ends with.
 
     A head fit, per-layer fine-tune or end-to-end pass calls `update` after
-    every evaluation. When the loss is the lowest so far (strictly lower,
-    without the early stop's `early_stop_min_delta`; NaN never is), the
-    parameters are copied. `restore` copies the best ones back in place, so
-    the tensors a captured CUDA graph holds stay valid, and logs which
-    step's weights the pass ends with. Where the copy is kept
-    (`OutProjTrainConfig.best_weights_copy`):
+    every evaluation, its last step included. With `keep`
+    (`OutProjTrainConfig.keep_best_weights`) the parameters are copied
+    whenever the loss is the lowest so far (strictly lower, without the
+    early stop's `early_stop_min_delta`; NaN never is), and `restore`
+    copies the best ones back in place, so the tensors a captured CUDA
+    graph holds stay valid, and logs which step's weights the pass ends
+    with. Without it nothing is copied and the pass ends on its last step.
+    Where the copy is kept (`OutProjTrainConfig.best_weights_copy`):
 
     - 'device': tensors next to the parameters (GPU memory on CUDA);
     - 'cpu': host tensors, pinned when the parameters are on CUDA;
     - 'disk': the file `path`, rewritten through a temporary name on every
       new best and deleted by `restore`.
 
+    `final_loss` is the evaluated loss of the weights the pass ends with.
     With no parameters (a head fitted over frozen survivors, which is then
-    discarded) only the best loss is tracked.
+    discarded) only the losses are tracked, and `final_loss` is the lowest.
     """
 
-    def __init__(self, params: list[torch.Tensor], where: str, path: Path | None,
-                 label: str, split: str = "dev") -> None:
+    def __init__(self, params: list[torch.Tensor], keep: bool, where: str,
+                 path: Path | None, label: str, split: str = "dev") -> None:
         if where not in _BEST_WEIGHTS_COPIES:
             raise ValueError(
                 f"best_weights_copy={where!r}; expected 'device', 'cpu' or 'disk'.")
-        if where == "disk" and params and path is None:
+        if keep and where == "disk" and params and path is None:
             raise ValueError("best_weights_copy='disk' needs a file path.")
         self.params = list(params)
+        self.keep = bool(keep)
         self.where, self.path, self.label, self.split = where, path, label, split
         self.best_loss = float("inf")
         self.best_step: int | None = None
@@ -384,7 +388,7 @@ class _BestWeights:
         if not loss < self.best_loss:
             return
         self.best_step, self.best_loss = step, loss
-        if not self.params:
+        if not self.keep or not self.params:
             return
         with torch.no_grad():
             if self.where == "disk":
@@ -402,9 +406,16 @@ class _BestWeights:
             for c, p in zip(self._copies, self.params):
                 c.copy_(p.detach())
 
+    @property
+    def final_loss(self) -> float:
+        """The evaluated loss of the weights the pass ends with (inf if there is none)."""
+        if self.keep or not self.params:
+            return self.best_loss
+        return self.last_loss if self.last_step is not None else float("inf")
+
     def restore(self) -> None:
         """Copy the best evaluation's parameters back, unless the last one is the best."""
-        if not self.params or self.best_step is None:
+        if not self.keep or not self.params or self.best_step is None:
             return
         if self.best_step == self.last_step:
             logger.info(f"{self.label}: kept the last step's weights (step {self.last_step}, "
@@ -1355,8 +1366,9 @@ class Trainer:
         # Optional per-layer joint fine-tune (surviving neurons' polynomial
         # weights + temporary (D, K) head trained end-to-end on the model's
         # loss). Runs BEFORE the layer-completed checkpoint save so the
-        # persisted state captures the fine-tuned weights. Returns the head's
-        # best dev loss, which under `layer_err_source: readout` becomes the
+        # persisted state captures the fine-tuned weights. Returns the dev
+        # loss of the weights it leaves (with frozen neurons, the temporary
+        # head's lowest), which under `layer_err_source: readout` becomes the
         # layer error the growth criterion in train() compares: it measures
         # the readout a headed model is scored on, whereas the best-neuron
         # error above describes survivors the fine-tune has just turned into a
@@ -2589,17 +2601,19 @@ class Trainer:
 
     def _best_weights(self, model: SONN, params: list[torch.Tensor], cfg: Any, name: str,
                       label: str, split: str = "dev") -> _BestWeights:
-        """The best-evaluation copy of a pass, kept where `cfg.best_weights_copy` says.
+        """A pass's evaluation record; it copies the best weights under `cfg.keep_best_weights`.
 
-        Under 'disk' the file is `best_<name>.ckpt` in the run folder (with
-        `_rank<N>` in a distributed run, where every rank keeps its own).
+        The copy is kept where `cfg.best_weights_copy` says. Under 'disk' the
+        file is `best_<name>.ckpt` in the run folder (with `_rank<N>` in a
+        distributed run, where every rank keeps its own).
         """
+        keep = bool(getattr(cfg, "keep_best_weights", False))
         where = str(getattr(cfg, "best_weights_copy", "device"))
         path = None
-        if where == "disk" and params:
+        if keep and where == "disk" and params:
             rank = f"_rank{dist.get_rank()}" if self._is_dist() else ""
             path = self._ensure_run_dir(model) / f"best_{name}{rank}.ckpt"
-        return _BestWeights(params, where, path, label, split)
+        return _BestWeights(params, keep, where, path, label, split)
 
     def train_out_proj(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader) -> None:
         """Train model.out_proj with all other parameters frozen.
@@ -2613,10 +2627,11 @@ class Trainer:
         already hit lr_min and val loss still hasn't improved for
         early_stop_patience consecutive evaluations, training halts.
 
-        The head ends with the weights of its lowest dev loss: a last step
-        between two evaluations is evaluated too, and the best weights are
-        copied back in place (`cfg.best_weights_copy` sets where the copy is
-        kept). The model is then saved to the run folder's `model_last.ckpt`.
+        The head ends on its last step, or with `cfg.keep_best_weights` on
+        the weights of its lowest dev loss (a last step between two
+        evaluations is evaluated too), copied back in place from where
+        `cfg.best_weights_copy` keeps them. The model is then saved to the
+        run folder's `model_last.ckpt`.
         """
         if model.out_proj is None:
             raise ValueError("model.out_proj is None; enable use_output_projection in the model config")
@@ -2770,8 +2785,8 @@ class Trainer:
 
         tbar.close()
 
-        # A last step between two evaluations competes too; then the head
-        # goes back to the weights of its best evaluation.
+        # Evaluate a last step that fell between two evaluations; under
+        # keep_best_weights the head then goes back to its best evaluation.
         if step > (best_weights.last_step or 0):
             best_weights.update(step, _dev_loss())
         best_weights.restore()
@@ -2898,8 +2913,8 @@ class Trainer:
 
         tbar.close()
 
-        # A last step between two evaluations competes too; then the head
-        # goes back to the weights of its best evaluation.
+        # Evaluate a last step that fell between two evaluations; under
+        # keep_best_weights the head then goes back to its best evaluation.
         if step > (best_weights.last_step or 0):
             model.out_proj.eval()
             with torch.no_grad():
@@ -2954,12 +2969,12 @@ class Trainer:
         can use a different (usually much smaller) learning rate than the
         out_proj / layer_finetune passes that share `out_proj_train`.
 
-        The model ends with the parameters of its lowest loss on the split
-        the early stop reads: a last step between two evaluations is
-        evaluated too, and the best parameters are copied back in place, so
-        a captured graph stays valid (`cfg.best_weights_copy` sets where the
-        copy is kept). The model is then saved to the run folder's
-        `model_last.ckpt`.
+        The model ends on its last step, or with `cfg.keep_best_weights` on
+        the parameters of its lowest loss on the split the early stop reads
+        (a last step between two evaluations is evaluated too), copied back
+        in place, so a captured graph stays valid, from where
+        `cfg.best_weights_copy` keeps them. The model is then saved to the
+        run folder's `model_last.ckpt`.
         """
         cfg    = cfg if cfg is not None else model.param.train.finetune_train
         device = model.device
@@ -3105,8 +3120,9 @@ class Trainer:
             logger.info("end-to-end pass: %d steps replayed, %d eager (warm-up and tail batches)",
                         stepper.graph_steps, stepper.eager_steps)
 
-        # A last step between two evaluations competes too; then every
-        # parameter goes back, in place, to the best evaluation's value.
+        # Evaluate a last step that fell between two evaluations; under
+        # keep_best_weights every parameter then goes back, in place, to its
+        # best evaluation's value.
         if step > (best_weights.last_step or 0):
             best_weights.update(step, _stop_loss())
         best_weights.restore()
@@ -3125,11 +3141,13 @@ class Trainer:
     ) -> float:
         """Per-layer joint fine-tune that runs after neuron_selection.
 
-        Returns the lowest dev loss evaluated (inf if none is finite) - the
-        layer's readout error, see `train.layer_err_source`. The survivors
-        end with the weights of that evaluation: a last step between two
-        evaluations is evaluated too, and the best weights are copied back
-        (`out_proj_train.best_weights_copy` sets where the copy is kept).
+        Returns the layer's readout error (see `train.layer_err_source`): the
+        dev loss of the weights the survivors end with, not finite when no
+        evaluation gave a finite loss. They end on the last step (a last step
+        between two evaluations is evaluated too), or with
+        `out_proj_train.keep_best_weights` on the lowest dev loss evaluated,
+        copied back from where `best_weights_copy` keeps them. With frozen
+        survivors it is the lowest dev loss the temporary head reached.
         With `freeze_neurons=True` only the temporary head is trained and the
         survivors' weights are left exactly as fitted: a pure measurement of
         the layer's readout, used by `layer_err_source: readout` when
@@ -3181,8 +3199,9 @@ class Trainer:
                     p.requires_grad_(True)
                     neuron_params.append(p)
         trainable_params: list[torch.nn.Parameter] = list(head.parameters()) + neuron_params
-        # Only the survivors' weights are put back at the end: the temporary
-        # head is discarded, and with frozen neurons there is nothing to copy.
+        # Under keep_best_weights only the survivors' weights are put back at
+        # the end: the temporary head is discarded, and with frozen neurons
+        # there is nothing to copy.
         lbfgs_tag = " (lbfgs)" if cfg.optimizer == "lbfgs" else ""
         best_weights = self._best_weights(model, neuron_params, cfg,
                                           f"layer_{layer.layer_index}_finetune",
@@ -3335,8 +3354,9 @@ class Trainer:
 
         tbar.close()
 
-        # A last step between two evaluations competes too; then the
-        # survivors go back to the weights of the best evaluation.
+        # Evaluate a last step that fell between two evaluations, so the
+        # readout error is that of the weights the layer keeps; under
+        # keep_best_weights the survivors go back to their best evaluation.
         if step > (best_weights.last_step or 0):
             best_weights.update(step, _dev_loss())
         best_weights.restore()
@@ -3347,7 +3367,7 @@ class Trainer:
         # goes out of scope here.
         for p in model.parameters():
             p.requires_grad_(True)
-        return best_weights.best_loss
+        return best_weights.final_loss
 
     def _train_layer_finetune_lbfgs(
             self,
@@ -3373,8 +3393,9 @@ class Trainer:
         `trainable_params` contains `head.weight`, `head.bias`, and each
         surviving neuron's `weight`. weight_decay (if > 0) is added inside
         the closure as a manual L2 penalty, since LBFGS doesn't accept it.
-        `best_weights` holds the copy of the survivors' best evaluation; the
-        return value is its loss, as in the Adam / SGD path.
+        `best_weights` records the evaluations (and, under keep_best_weights,
+        copies the survivors' best one); the return value is its
+        `final_loss`, as in the Adam / SGD path.
         """
         device = model.device
         clamp = model.param.model.output_clamp_value
@@ -3492,12 +3513,13 @@ class Trainer:
 
         tbar.close()
 
-        # A last step between two evaluations competes too; then the
-        # survivors go back to the weights of the best evaluation.
+        # Evaluate a last step that fell between two evaluations, so the
+        # readout error is that of the weights the layer keeps; under
+        # keep_best_weights the survivors go back to their best evaluation.
         if step > (best_weights.last_step or 0):
             best_weights.update(step, _dev_loss())
         best_weights.restore()
-        return best_weights.best_loss
+        return best_weights.final_loss
 
     def infer(
         self,
