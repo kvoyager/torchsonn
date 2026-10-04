@@ -308,10 +308,6 @@ class TrainConfig:
     stop_train_epsilon_condition: float = 0.001
     stop_train_min_delta: float = 0.0
 
-    manual_best_neurons_selection: bool = False
-    min_best_neurons_count: int = 0
-    max_best_neurons_count: int = 0
-
     # 'top' (smallest err_value wins) | 'avg'.
     layer_err_criterion: str = "top"
 

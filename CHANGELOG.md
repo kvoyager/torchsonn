@@ -25,14 +25,17 @@
   per-member history layout written before the batched recursion of 0.1.4.
   State saved by 0.1.5 loads as before.
 
-### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`
+### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`, `train.manual_best_neurons_selection`, `train.min_best_neurons_count`, `train.max_best_neurons_count`
 
-None of the three was read. `model.normalize` and `train.normalize` came
+None of the six was read. `model.normalize` and `train.normalize` came
 from gmdhpy and never had an effect; `train_on_first_half` was the
 California housing script's old 50/50 split switch, and the script stopped
-reading it in 0.1.4. The schema rejects unknown keys, so a config that
-still sets one of them now fails to load: delete the key. The `rbf`
-neuron's own `normalize` option is unaffected.
+reading it in 0.1.4. The three `*_best_neurons_*` keys were meant to set
+the number of survivors per layer; `model.nbest_neurons` does that.
+`SONN.default_config`'s docstring, which described them along with older
+behavior, now says what the method returns. The schema rejects unknown
+keys, so a config that still sets one of them now fails to load: delete
+the key. The `rbf` neuron's own `normalize` option is unaffected.
 
 ### Removed — `newton` and `newton-lm` optimizers
 

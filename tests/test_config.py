@@ -1,5 +1,7 @@
+import pytest
 from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
+from omegaconf.errors import ConfigKeyError
 
 from torchsonn.config import (
     ModelConfig,
@@ -64,3 +66,18 @@ def test_config_store_has_default():
     assert "default.yaml" in nodes or any(
         "default" in str(k) for k in nodes.keys()
     )
+
+
+_REMOVED_TRAIN_KEYS = ["manual_best_neurons_selection", "min_best_neurons_count", "max_best_neurons_count"]
+
+
+def test_removed_best_neurons_keys_are_not_in_the_schema():
+    train = OmegaConf.structured(SONNConfig).train
+    for key in _REMOVED_TRAIN_KEYS:
+        assert key not in train
+
+
+@pytest.mark.parametrize("key", _REMOVED_TRAIN_KEYS)
+def test_a_config_setting_a_removed_key_is_rejected(key):
+    with pytest.raises(ConfigKeyError):
+        OmegaConf.merge(OmegaConf.structured(SONNConfig), {"train": {key: 1}})
