@@ -243,6 +243,7 @@ def main(config: DictConfig) -> None:
         view=False,
     ).plot()
 
+    print(f"Run folder: {trainer.run_dir}")
     print("Done!")
 
 

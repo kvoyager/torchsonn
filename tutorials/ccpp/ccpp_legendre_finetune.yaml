@@ -27,7 +27,7 @@
 # through, letting every layer adjust for its contribution to the final output.
 #
 # RESULT: best config in the tutorial, on all three metrics.
-# 5x2 CV, run checkpoints/2026-08-11-10-19, ~65 min CPU:
+# 5x2 CV, run checkpoints/2026-08-11-10-19-00, ~65 min CPU:
 #   ccpp_legendre.yaml           MAE 3.3084 +/- 0.0147   RMSE 4.2518   (no FT)
 #   stages 1+2 only              MAE 3.2365 +/- 0.0386   RMSE 4.1654   (start)
 #   ccpp_heavy.yaml              MAE 3.2599 +/- 0.0356   RMSE 4.1815   (11.3 h GPU)
@@ -331,9 +331,11 @@ train:
   # Checkpointing — local to the tutorial folder so artifacts don't collide
   # with the other tutorials. Path is relative to the launch cwd; the README
   # runs tutorials from the repo root (`python -m tutorials.ccpp.ccpp`), so
-  # this resolves to <repo>/tutorials/ccpp/checkpoints. get_checkpoint_dir
-  # mkdirs only the final component (no parents=True), and tutorials/ccpp
-  # already exists, so the dir is created cleanly. `checkpoints` is gitignored.
+  # this resolves to <repo>/tutorials/ccpp/checkpoints. ccpp.py gives each fold
+  # a fold_NN/ folder under it, and the trainer gives each run of a fold a
+  # time-stamped folder inside that: fold_NN/YYYY-MM-DD-HH-MM-SS/. The
+  # cross-validation log, cv_YYYY-MM-DD-HH-MM-SS.log, sits next to the fold
+  # folders. `checkpoints` is gitignored.
   #
   # The fine-tune runs *before* the layer-completed checkpoint is written, so a
   # resumed run picks up fine-tuned weights rather than re-running the pass.

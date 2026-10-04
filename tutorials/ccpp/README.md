@@ -66,8 +66,11 @@ python -m tutorials.ccpp.ccpp model.ref_functions='[linear_cov]' train.max_layer
 python -m tutorials.ccpp.ccpp -m train.ridge_alpha=0.001,0.01,0.05   # multirun sweep
 ```
 
-Each run writes a self-contained folder `checkpoints/YYYY-MM-DD-HH-MM/` holding
-one `train.log` plus a `fold_NN/` checkpoint subfolder per fold. After the CV
+Each fold has a folder `checkpoints/fold_NN/`, and every run of that fold gets
+a time-stamped folder inside it, `fold_NN/YYYY-MM-DD-HH-MM-SS/`, with the run's
+checkpoints and its `train.log`. The whole cross-validation run is logged to
+`checkpoints/cv_YYYY-MM-DD-HH-MM-SS.log`, which ends with the run folder of
+every fold and the summary. After the CV
 loop, the discovered network from the final fold is rendered to
 [`ccpp_model.svg`](ccpp_model.svg) (the whole layer stack) and
 [`ccpp_pruned_model.svg`](ccpp_pruned_model.svg) (the same network reduced to
@@ -125,7 +128,7 @@ machine:
 ## Results
 
 Each block below is the final summary printed by `ccpp.py` (the `====` section
-at the end of that run's `train.log`), reproduced verbatim.
+at the end of the run's log, cited under each heading), reproduced verbatim.
 
 ### All configs at a glance
 
@@ -177,7 +180,7 @@ squash — though note the fine-tune trades some of that back (±0.06–0.07 aga
 ±0.01–0.02), which the fine-tuning section discusses.
 
 ### Default — `ccpp.yaml`
-<sub>run `checkpoints/2026-07-22-19-59/train.log` — light config, CPU</sub>
+<sub>run `checkpoints/2026-07-22-19-59-00/train.log` — light config, CPU</sub>
 
 ```
 ==================================================================
@@ -201,7 +204,7 @@ repeat   fold   RMSE(MW)    MAE(MW)        R²
 ```
 
 ### Heavy — `ccpp_heavy.yaml`
-<sub>run `checkpoints/2026-07-22-23-11/train.log` — heavy config, CUDA</sub>
+<sub>run `checkpoints/2026-07-22-23-11-00/train.log` — heavy config, CUDA</sub>
 
 ```
 ==================================================================
@@ -284,7 +287,7 @@ a CV mean, since the tighter spread is what makes small differences between
 configs readable at all.
 
 ### Legendre — `ccpp_legendre.yaml`
-<sub>run `checkpoints/2026-08-09-18-08/train.log` — degree-3 Legendre basis, `squash: True` (sigma), light pools, CPU</sub>
+<sub>run `checkpoints/2026-08-09-18-08-00/train.log` — degree-3 Legendre basis, `squash: True` (sigma), light pools, CPU</sub>
 
 ```
 ==================================================================
@@ -324,7 +327,7 @@ high-degree columns buying a little extra headroom on the folds that happened
 to suit them.
 
 ### Legendre (heavy) — `ccpp_legendre_heavy.yaml`
-<sub>run `checkpoints/2026-08-09-19-40/train.log` — degree-3 + degree-2 Legendre basis, `squash: True` (sigma), wide pools, CUDA</sub>
+<sub>run `checkpoints/2026-08-09-19-40-00/train.log` — degree-3 + degree-2 Legendre basis, `squash: True` (sigma), wide pools, CUDA</sub>
 
 ```
 ==================================================================
@@ -362,7 +365,7 @@ Pairwise Legendre neurons have simply run out of structure to find; adding
 *arity* rather than pool width is what moves the number (next section).
 
 ### Legendre (multi-input) — `ccpp_legendre_poly.yaml`
-<sub>run `checkpoints/2026-08-09-18-35/train.log` — degree-3 pair + four-input (dim 4) degree-3 Legendre, `squash: True` (sigma), light pools, CPU</sub>
+<sub>run `checkpoints/2026-08-09-18-35-00/train.log` — degree-3 pair + four-input (dim 4) degree-3 Legendre, `squash: True` (sigma), light pools, CPU</sub>
 
 ```
 ==================================================================
@@ -407,7 +410,7 @@ What it mainly buys on this dataset is fold-to-fold consistency rather than raw
 accuracy.
 
 ### Legendre (multi-input, heavy) — `ccpp_legendre_poly_heavy.yaml`
-<sub>run `checkpoints/2026-08-09-21-04/train.log` — linear_cov + pair and multi-input (dim 4 & 6) Legendre families, `squash: True` (sigma), wide pools, CUDA</sub>
+<sub>run `checkpoints/2026-08-09-21-04-00/train.log` — linear_cov + pair and multi-input (dim 4 & 6) Legendre families, `squash: True` (sigma), wide pools, CUDA</sub>
 
 ```
 ==================================================================
@@ -507,8 +510,8 @@ seed:
 | `ccpp_legendre_poly_finetune.yaml` | 3.2782 ± 0.0135 | **3.1495 ± 0.0696** | −0.129 | 4.0940 ± 0.0773 | 0.9424 ± 0.0021 | ≈ 51 min CPU |
 | `ccpp_legendre_finetune.yaml` | 3.3084 ± 0.0147 | **3.1748 ± 0.0520** | −0.134 | 4.1152 ± 0.0539 | 0.9418 ± 0.0014 | ≈ 65 min CPU |
 
-<sub>runs `checkpoints/2026-08-11-15-58`, `2026-08-11-13-10`, `2026-08-11-12-13`,
-`2026-08-11-10-19` — all four converged on 10/10 folds</sub>
+<sub>runs `checkpoints/2026-08-11-15-58-00`, `2026-08-11-13-10-00`, `2026-08-11-12-13-00`,
+`2026-08-11-10-19-00` — all four converged on 10/10 folds</sub>
 
 The stack is worth **0.13–0.16 MW of MAE** on all four configs, which is 6–11×
 the fold-to-fold spread of the base runs — far too large to be noise. It also

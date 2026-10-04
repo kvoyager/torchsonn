@@ -500,10 +500,52 @@ def test_train_resume_from_checkpoint(tmp_path):
     test_dl = _make_dl(8)
     # First call writes checkpoints, second resumes from them.
     trainer.train(model, train_dl, dev_dl, test_dl, verbose=False)
+    first_run = trainer.run_dir
 
     model2 = SONN(cfg, d_model=4)
     trained = trainer.train(model2, train_dl, dev_dl, test_dl, verbose=False, resume=True)
     assert len(trained.layers) >= 1
+    # Resumed in place: no new run folder, the log continues
+    assert trainer.run_dir == first_run
+    assert Trainer.run_folders(tmp_path) == [first_run]
+    assert "Resuming the run in" in (first_run / "train.log").read_text()
+
+
+def test_train_resume_by_run_name_from_a_new_trainer(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1)
+    train_dl, dev_dl, test_dl = _make_dl(48), _make_dl(16), _make_dl(8)
+    first = Trainer(config=cfg)
+    first.train(SONN(cfg, d_model=4), train_dl, dev_dl, test_dl, verbose=False)
+    other = Trainer(config=cfg)
+    other.train(SONN(cfg, d_model=4), train_dl, dev_dl, test_dl, verbose=False,
+                resume=first.run_dir.name)
+    assert other.run_dir == first.run_dir
+    assert Trainer.run_folders(tmp_path) == [first.run_dir]
+
+
+def test_train_without_checkpoints_to_resume_starts_new_run(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1)
+    trainer = Trainer(config=cfg)
+    trainer.train(SONN(cfg, d_model=4), _make_dl(48), _make_dl(16), _make_dl(8),
+                  verbose=False, resume=True)
+    assert Trainer.run_folders(tmp_path) == [trainer.run_dir]
+    assert "No run to resume" in (trainer.run_dir / "train.log").read_text()
+
+
+def test_each_train_call_gets_its_own_run_folder_and_log(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1)
+    first, second = Trainer(config=cfg), Trainer(config=cfg)
+    first.train(SONN(cfg, d_model=4), _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
+    second.train(SONN(cfg, d_model=4), _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
+    assert first.run_dir != second.run_dir
+    assert Trainer.run_folders(tmp_path) == [first.run_dir, second.run_dir]
+    for trainer in (first, second):
+        files = {p.name for p in trainer.run_dir.iterdir()}
+        assert {"train.log", "model_last.ckpt"} <= files
+        log = (trainer.run_dir / "train.log").read_text()
+        assert f"Run folder: {trainer.run_dir}" in log
+    # One run log at a time: the first run's log stops when the second starts
+    assert f"Run folder: {second.run_dir}" not in (first.run_dir / "train.log").read_text()
 
 
 def test_train_checkpoint_roundtrip(tmp_path):
@@ -521,6 +563,8 @@ def test_train_checkpoint_roundtrip(tmp_path):
     model2 = SONN(cfg, d_model=4)
     trainer.load_model_checkpoint(model2)
     assert len(model2.layers) == len(trained.layers)
+    assert (trainer.run_dir / "model_last.ckpt").exists()
+    assert trainer.run_dir.parent == tmp_path
 
 
 def test_layer_err_source_readout_rejects_incompatible_config(tmp_path):

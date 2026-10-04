@@ -155,6 +155,7 @@ def main(config: DictConfig) -> None:
     model_out2, _ = trainer.infer(model, test_dl)
     PlotModel(model, filename=str(plot_dir / 'iris_pruned_model'),
               plot_neuron_name=True, view=False).plot()
+    print(f"Run folder: {trainer.run_dir}")
     print("Done!")
 
 

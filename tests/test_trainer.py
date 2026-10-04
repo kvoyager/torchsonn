@@ -88,10 +88,8 @@ class TestGetCheckpointDir:
             },
             train={"checkpoint_dir": str(tmp_path / "ckpts")},
         )
-        model = SONN(cfg, d_model=4)
-        out = Trainer.get_checkpoint_dir(model)
+        out = Trainer(cfg).checkpoint_root
         assert out == tmp_path / "ckpts"
-        assert out.exists()
 
     def test_empty_dir_defaults_to_repo_path(self, tmp_path):
         cfg = _make_cfg(
@@ -104,8 +102,7 @@ class TestGetCheckpointDir:
             },
             train={"checkpoint_dir": ""},
         )
-        model = SONN(cfg, d_model=4)
-        out = Trainer.get_checkpoint_dir(model)
+        out = Trainer(cfg).checkpoint_root
         # the path resolves to <repo>/checkpoints; just check it ends with "checkpoints"
         assert out.name == "checkpoints"
 
@@ -239,6 +236,24 @@ class TestCleanupCheckpoints:
         assert "model_layer_0_neuron_0_step_4.ckpt" in remaining
         assert "model_layer_0_neuron_0_step_0.ckpt" not in remaining
 
+    def test_leaves_everything_else_alone(self, tmp_path):
+        for step in range(12):
+            (tmp_path / f"model_layer_0_neuron_0_step_{step}.ckpt").write_text("x")
+        (tmp_path / "model_layer_0_neuron_0_step_0_last.ckpt").write_text("x")
+        (tmp_path / "model_last.ckpt").write_text("x")
+        (tmp_path / "train.log").write_text("log")
+        (tmp_path / "notes.txt").write_text("mine")
+        (tmp_path / "2026-08-19-12-57-00").mkdir()
+
+        Trainer(config=None).cleanup_checkpoints(tmp_path, keep_last_n=10)
+
+        remaining = {p.name for p in tmp_path.iterdir()}
+        assert {"train.log", "notes.txt", "2026-08-19-12-57-00", "model_last.ckpt",
+                "model_layer_0_neuron_0_step_0_last.ckpt"} <= remaining
+        steps = sorted(Trainer.parse_checkpoint_step(n)[2] for n in remaining
+                       if n.startswith("model_layer") and not n.endswith("_last.ckpt"))
+        assert steps == list(range(2, 12))
+
     def test_cleanup_layer(self, tmp_path):
         cfg = _make_cfg(
             model={
@@ -251,55 +266,46 @@ class TestCleanupCheckpoints:
             train={"checkpoint_dir": str(tmp_path)},
         )
         model = SONN(cfg, d_model=4)
+        trainer = Trainer(config=cfg)
+        trainer.save_model_checkpoint(model)  # opens a run folder
+        run = trainer.run_dir
         # spread checkpoints over two layers
-        (tmp_path / "model_layer_0_neuron_0_step_0.ckpt").write_text("x")
-        (tmp_path / "model_layer_0_neuron_1_step_3.ckpt").write_text("x")
-        (tmp_path / "model_layer_1_neuron_0_step_0.ckpt").write_text("x")
+        (run / "model_layer_0_neuron_0_step_0.ckpt").write_text("x")
+        (run / "model_layer_0_neuron_1_step_3_last.ckpt").write_text("x")
+        (run / "model_layer_1_neuron_0_step_0.ckpt").write_text("x")
+        (run / "train.log").write_text("log")
 
-        trainer = Trainer(config=None)
-        trainer.cleanup_layer_checkpoints(model, layer_idx=0)
+        trainer.cleanup_layer_checkpoints(layer_idx=0)
 
-        names = sorted(p.name for p in tmp_path.iterdir())
+        names = sorted(p.name for p in run.iterdir())
         assert "model_layer_1_neuron_0_step_0.ckpt" in names
+        assert "train.log" in names and "model_last.ckpt" in names
         # layer 0 files should be gone
         assert all("layer_0" not in n for n in names)
 
 
 class TestFromCheckpoint:
     def test_no_checkpoints_returns_none(self, tmp_path):
-        cfg = _make_cfg(
-            model={
-                "type": "regressor",
-                "num_classes": 1,
-                "nbest_neurons": 3,
-                "soft_binner": False,
-                "ref_functions": ["linear_cov"],
-            },
-            train={"checkpoint_dir": str(tmp_path)},
-        )
-        model = SONN(cfg, d_model=4)
         trainer = Trainer(config=None)
-        assert trainer.from_checkpoint(model) is None
+        assert trainer.from_checkpoint() is None  # no run folder yet
+        assert trainer.from_checkpoint(tmp_path) is None
+
+    def test_ignores_other_files(self, tmp_path):
+        (tmp_path / "train.log").write_text("log")
+        (tmp_path / "2026-08-19-12-57-00").mkdir()
+        trainer = Trainer(config=None)
+        assert trainer.from_checkpoint(tmp_path) is None
+        torch.save({"marker": 7}, tmp_path / "model_layer_0_neuron_0_step_7.ckpt")
+        assert trainer.from_checkpoint(tmp_path)["marker"] == 7
 
     def test_picks_latest(self, tmp_path):
-        cfg = _make_cfg(
-            model={
-                "type": "regressor",
-                "num_classes": 1,
-                "nbest_neurons": 3,
-                "soft_binner": False,
-                "ref_functions": ["linear_cov"],
-            },
-            train={"checkpoint_dir": str(tmp_path)},
-        )
-        model = SONN(cfg, d_model=4)
         torch.save({"marker": 1}, tmp_path / "model_layer_0_neuron_0_step_5.ckpt")
         torch.save({"marker": 99}, tmp_path / "model_layer_0_neuron_0_step_99.ckpt")
         # spurious _last file should be ignored
         torch.save({"marker": -1}, tmp_path / "model_last.ckpt")
 
         trainer = Trainer(config=None)
-        data = trainer.from_checkpoint(model)
+        data = trainer.from_checkpoint(tmp_path)
         assert data["marker"] == 99
 
 
@@ -320,11 +326,62 @@ class TestSaveLoadModelCheckpoint:
 
         trainer = Trainer(config=cfg)
         trainer.save_model_checkpoint(model)
+        run = trainer.run_dir
+        assert run.parent == tmp_path and (run / "model_last.ckpt").exists()
 
         # Build a fresh model and reload state
         model2 = SONN(cfg, d_model=4)
         trainer.load_model_checkpoint(model2)
         assert len(model2.layers) == 1
+
+        # A new trainer finds the newest run with a saved model, or a named one
+        later = Trainer(config=cfg)
+        model3 = SONN(cfg, d_model=4)
+        later.load_model_checkpoint(model3)
+        assert later.run_dir == run and len(model3.layers) == 1
+        model4 = SONN(cfg, d_model=4)
+        Trainer(config=cfg).load_model_checkpoint(model4, run=run.name)
+        assert len(model4.layers) == 1
+
+    def test_load_without_any_run_raises(self, tmp_path):
+        cfg = _make_cfg(
+            model={
+                "type": "regressor",
+                "num_classes": 1,
+                "nbest_neurons": 3,
+                "soft_binner": False,
+                "ref_functions": ["linear_cov"],
+            },
+            train={"checkpoint_dir": str(tmp_path)},
+        )
+        with pytest.raises(FileNotFoundError, match="model_last.ckpt"):
+            Trainer(config=cfg).load_model_checkpoint(SONN(cfg, d_model=4))
+
+
+class TestRunFolders:
+    def test_new_run_dir_name_and_clash_suffix(self, tmp_path, monkeypatch):
+        import datetime as _dt
+
+        class _Fixed(_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 10, 4, 10, 15, 30)
+
+        monkeypatch.setattr("torchsonn.trainer.datetime.datetime", _Fixed)
+        first = Trainer._new_run_dir(tmp_path)
+        second = Trainer._new_run_dir(tmp_path)
+        assert first.name == "2026-10-04-10-15-30"
+        assert second.name == "2026-10-04-10-15-30-2"
+
+    def test_run_folders_order_and_filter(self, tmp_path):
+        for name in ["2026-10-04-10-15-30-10", "2026-10-04-10-15-30", "2026-10-04-10-15-30-9",
+                     "2026-10-03-23-59-59", "2026-08-19-12-57", "fold_01", "notes"]:
+            (tmp_path / name).mkdir()
+        (tmp_path / "2026-10-05-00-00-00").write_text("a file, not a folder")
+        names = [p.name for p in Trainer.run_folders(tmp_path)]
+        assert names == ["2026-10-03-23-59-59", "2026-10-04-10-15-30",
+                         "2026-10-04-10-15-30-9", "2026-10-04-10-15-30-10"]
+        assert Trainer.run_folders(tmp_path / "missing") == []
 
 
 class TestSplitLoader:

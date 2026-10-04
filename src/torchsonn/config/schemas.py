@@ -345,8 +345,13 @@ class TrainConfig:
 
     save_interval: int = 1000
     save_last_layer: bool = True
+    # How many of a run folder's most recent step checkpoints to keep; the
+    # `_last` copies, model_last.ckpt and train.log are not counted.
     keep_last_n: int = 10
     skip_saving_at_epoch_end: bool = True
+    # Parent of the run folders: every Trainer.train run writes its
+    # checkpoints, model_last.ckpt and train.log to
+    # <checkpoint_dir>/<YYYY-MM-DD-HH-MM-SS>/. Empty = <repo>/checkpoints.
     checkpoint_dir: str = ""
 
     early_stop_completion_percentage: int = 100
