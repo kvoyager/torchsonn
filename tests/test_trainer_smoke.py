@@ -515,6 +515,33 @@ def test_train_with_out_proj(tmp_path):
     trainer.train_out_proj(model, train_dl, dev_dl)
 
 
+def test_head_fit_and_pass_repeat_when_seeded_after_building(tmp_path):
+    """Built first, seeded afterwards, from different global random states:
+    the search, the head fit and the end-to-end pass give the same model."""
+    finals = []
+    for run in range(2):
+        cfg = OmegaConf.merge(
+            _cfg(tmp_path / f"run{run}", max_layer_count=1),
+            OmegaConf.create({
+                "model": {"use_output_projection": True, "num_out_neurons": 2},
+                "train": {"out_proj_train": {"optimizer": "lbfgs", "max_steps": 10, "eval_interval": 5},
+                          "finetune_train": {"optimizer": "adamw", "max_steps": 30, "eval_interval": 10}},
+            }),
+        )
+        torch.manual_seed(1000 + run)
+        model = SONN(cfg, d_model=4)
+        trainer = Trainer(config=cfg)
+        Trainer.set_seed(cfg.train.seed)
+        dl = DataLoader(_make_dl(64).dataset, batch_size=8, shuffle=True)
+        trainer.train(model, dl, dl, dl, verbose=False)
+        trainer.train_out_proj(model, dl, dl)
+        trainer.train_finetune(model, dl, dl)
+        finals.append({k: v.clone() for k, v in model.state_dict().items() if torch.is_tensor(v)})
+    assert finals[0].keys() == finals[1].keys()
+    for k in finals[0]:
+        assert torch.equal(finals[0][k], finals[1][k]), k
+
+
 def test_train_out_proj_raises_without_head(tmp_path):
     cfg = _cfg(tmp_path)
     model = SONN(cfg, d_model=4)

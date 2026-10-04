@@ -855,3 +855,47 @@ def test_readout_width_is_what_infer_reads(model_over, expected):
     m.layers.append(layer)
     assert len(layer) > 2
     assert m._readout_width(layer) == (len(layer) if expected == "all" else expected)
+
+
+_HEADED = {
+    "regressor": {"type": "regressor", "num_classes": 1, "soft_binner": False,
+                  "use_output_projection": True, "num_out_neurons": 4},
+    "multi-class": {"type": "multi-class", "num_classes": 3, "soft_binner": False,
+                    "use_output_projection": True, "num_out_neurons": 4},
+}
+
+
+def _headed(kind, seed=10):
+    return SONN(_make_cfg(model={"nbest_neurons": 4, "ref_functions": ["linear_cov"], **_HEADED[kind]},
+                          train={"seed": seed}), d_model=4)
+
+
+@pytest.mark.parametrize("kind", list(_HEADED))
+def test_head_starts_from_the_configured_seed(kind):
+    """The head's first weights depend on train.seed, not on the global
+    random state at the time the model is built."""
+    torch.manual_seed(1)
+    a = _headed(kind)
+    torch.manual_seed(2)
+    torch.rand(7)
+    b = _headed(kind)
+    c = _headed(kind, seed=11)
+    assert torch.equal(a.out_proj.weight, b.out_proj.weight)
+    assert torch.equal(a.out_proj.bias, b.out_proj.bias)
+    assert not torch.equal(a.out_proj.weight, c.out_proj.weight)
+    # nn.Linear's default range: +-1/sqrt(in_features) for weights and bias.
+    bound = 1 / 4 ** 0.5
+    assert a.out_proj.weight.abs().max() <= bound and a.out_proj.bias.abs().max() <= bound
+
+
+@pytest.mark.parametrize("model_over", [
+    _HEADED["regressor"],
+    _HEADED["multi-class"],
+    {"type": "multi-class", "num_classes": 3, "soft_binner": False},   # shared projection
+    {"type": "multi-class", "num_classes": 3, "soft_binner": True},
+])
+def test_building_a_model_leaves_the_global_random_state_alone(model_over):
+    torch.manual_seed(5)
+    state = torch.get_rng_state()
+    SONN(_make_cfg(model={"nbest_neurons": 4, "ref_functions": ["linear_cov"], **model_over}), d_model=4)
+    assert torch.equal(torch.get_rng_state(), state)
