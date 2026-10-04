@@ -118,7 +118,27 @@ logger = logging.getLogger(__name__)
 
 
 class SONN(SONNModule):
-    """Base class for self-organizing deep learning polynomial neural network
+    """Self-organizing deep learning polynomial neural network (GMDH) as a PyTorch module.
+
+    The model starts with no layers; `Trainer.train` grows them, and `infer`
+    predicts with the trained network.
+
+    Parameters
+    ----------
+    config : DictConfig or mapping
+        The configuration. It is merged into `default_config()`, so it may
+        hold only the keys that differ from the defaults.
+    d_model : int
+        Number of input features.
+    feature_names : list of str or ndarray, optional
+        Feature names, used in logs, by `get_selected_features` and in the
+        network diagrams.
+    preprocessing : nn.Module, optional
+        A module applied to every input batch before the first layer.
+    class_weights : tensor, optional
+        Per-class loss weights for a multi-class model, or the weight of the
+        positive class for a binary one. `Trainer` sets them when it is
+        given class weights.
     """
     model_class = None
 
@@ -327,93 +347,22 @@ class SONN(SONNModule):
 
     @classmethod
     def default_config(cls) -> Any:
-        """Parameters of self-organizing deep learning polynomial neural network
-        ----------------------------
-        shortcut - what feeds every layer after the first, besides the outputs of the previous layer
-            (always fed):
-            raw_features - if true the original features are added to the inputs of each layer,
-                default value is true
-            prev_layers - the outputs of that many layers before the previous one are added too;
-                null (the default) adds none, 'all' adds every earlier layer
-            shortcut: true / false is shorthand for {raw_features: true / false, prev_layers: null}
+        """Return the configuration schema with every default filled in.
 
-        criterion_type - criterion for selecting the best neurons
-        the following criteria are possible:
-            'validate': the default value,
-                neurons are compared on the basis of validate error
-            'bias': neurons are compared on the basis of bias error
-            'validate_bias': combined criterion, neurons are compared on the basis of bias and validate errors
-            'bias_retrain': firstly, neurons are compared on the basis of bias error, then neurons are retrain
-                on the total data set (train and validate)
-        example of using:
-            model = Regressor(criterion_type='bias_retrain')
+        The result is `OmegaConf.structured(SONNConfig)`: a typed `DictConfig`
+        with the sections `model` and `train` and a few top-level flags, a
+        fresh copy on every call. Merge changes into it:
 
-        max_layer_count - maximum number of layers,
-            the default value is infinite (sys.maxsize)
+            config = OmegaConf.merge(SONN.default_config(), {"model": {"nbest_neurons": 8}})
 
-        criterion_minimum_width - minimum number of layers at the right required to evaluate optimal number of layer
-            (the optimal neuron) according to the minimum of criteria. For example, if it is found that
-             criterion value has minimum at layer with index 10, the algorithm will proceed till the layer
-             with index 15
-             the default value is 5
+        A key the schema does not have, or a value of the wrong type, is
+        rejected when it is merged. `SONNConfig` and its sections document
+        every key.
 
-        stop_train_epsilon_condition - the threshold to stop train. If the layer relative training error in compare
-            with minimum layer error becomes smaller than stop_train_epsilon_condition the train is stopped. Default value is
-            0.001
-
-        manual_best_neurons_selection - if this value set to False, the number of best neurons to be
-            selected is determined automatically and it is equal to the number of original features.
-            Otherwise the number of best neurons to be selected is determined as
-            max(original features, min_best_neurons_count) but not more than max_best_neurons_count.
-            min_best_neurons_count (default 5) or max_best_neurons_count (default inf) has to be provided.
-            For example, if you have N=10 features, the number of all generated neurons will be
-            N*(N-1)/2=45, the number of selected best neurons will be 10, but you can increase this number to
-            20 by setting manual_min_l_count_value = True and min_best_neurons_count = 20.
-            If you have N=100 features, the number of all generated neurons will be
-            N*(N-1)/2=4950, by default the number of partial neurons passed to the second layer is equal to the number of
-            features = 100. If you want to reduce this number for some smaller number, 50 for example, set
-            manual_best_neurons_selection=True and max_best_neurons_count=50.
-            Note: if min_best_neurons_count is larger than number of generated neurons of the layer it will be reduced
-            to that number
-        example of using:
-            model = Regressor(manual_best_neurons_selection=True, min_best_neurons_count=20)
-            or
-            model = Regressor(manual_best_neurons_selection=True, max_best_neurons_count=50)
-
-        ref_function_types - set of reference functions, by default the set contains linear combination of two inputs
-            and covariation: y = w0 + w1*x1 + w2*x2 + w3*x1*x2
-            you can add other reference functions:
-            'linear': y = w0 + w1*x1 + w2*x2
-            'linear_cov': y = w0 + w1*x1 + w2*x2 + w3*x1*x2
-            'quadratic': full polynom of the 2-nd degree
-            'cubic': - full polynom of the 3-rd degree
-            'legendre': Legendre orthogonal-polynomial basis over the neuron's
-                inputs (options: degree, cross, squash, dim, squash_method,
-                squash_n_sigma, squash_core_range). dim defaults to 2
-                (a pair neuron); dim > 2 gives a multi-input neuron with additive
-                univariate terms plus pairwise (cross) interactions.
-                squash_method selects how inputs are mapped into [-1, 1]:
-                'sigma' (default, mean/std-calibrated SigmaSquashNorm) or
-                'tanh'. It defaults to model.squash_method; set it on the entry
-                to override one family only.
-            'chebyshev': Chebyshev orthogonal-polynomial basis over the neuron's
-                inputs (options: degree, cross, squash, dim, squash_method,
-                squash_n_sigma, squash_core_range; see 'legendre')
-            'rbf': Gaussian radial-basis neuron: `centers` bumps over the
-                neuron's (standardized) inputs, centers and widths learnable
-                and initialized by k-means in the per-layer input pass, plus
-                a linear part (options: centers, placement, width,
-                learn_centers, learn_widths, width_band, normalize, linear,
-                standardize, dim). See neurons/rbf.py.
-            examples of using:
-             - Regressor(ref_functions='linear')
-             - Regressor(ref_functions=('linear_cov', 'quadratic', 'cubic', 'linear'))
-             - Regressor(ref_functions=('quadratic', 'linear'))
-
-        layer_err_criterion - criterion of layer error calculation: 'top' - the topmost best neuron error is chosen
-            as layer error; 'avg' - the layer error is the average error of the selected best neurons
-            default value is 'top'
-
+        Returns
+        -------
+        omegaconf.DictConfig
+            The default configuration.
         """
         # Defaults live in the SONNConfig dataclass schema (src/config/
         # schemas.py). OmegaConf.structured turns the dataclass into a

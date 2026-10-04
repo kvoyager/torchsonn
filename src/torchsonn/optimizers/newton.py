@@ -47,14 +47,6 @@ class BatchedNewton:
         damping: float = 1e-3,
         shared_param_lr_multiplier: float = 1.0,
     ) -> None:
-        """
-        Newton-like optimizer with damping (Levenberg-style regularization).
-
-        params: dict of parameter tensors with leading batch dimension
-        shared_param_names: list of keys for shared parameters
-        lr: base learning rate (can be scalar tensor or per-model tensor)
-        damping: small constant added to Hessian diagonal
-        """
         self.lr = lr
         self.damping = damping
         self.shared_param_names = set(shared_param_names)
@@ -84,9 +76,23 @@ class BatchedNewton:
         active_mask: torch.Tensor | None = None,
         b: object = None,
     ) -> dict[str, torch.Tensor]:
-        """
-        params, grads: dicts of tensors with leading batch dimension
-        active_mask: tensor of shape (batch,) bool, True if model active
+        """Take one optimizer step for every active member.
+
+        Parameters
+        ----------
+        params : dict of str -> (B, ...) tensor
+            Current parameters, with the members on the leading dimension.
+        grads : dict of str -> (B, ...) tensor
+            Their gradients, with the same keys and shapes.
+        active_mask : (B,) bool tensor, optional
+            True for the members that step; None steps every member.
+        b : any, optional
+            Not used.
+
+        Returns
+        -------
+        dict of str -> (B, ...) tensor
+            The new parameters, with the same keys and shapes.
         """
         batch_size = next(iter(params.values())).shape[0]
         device = next(iter(params.values())).device

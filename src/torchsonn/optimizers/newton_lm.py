@@ -30,7 +30,7 @@ class BatchedNewtonLM:
     damping : float
         Diagonal term of the estimated H. Default 1e-2.
     max_damping : float
-        Upper limit for the damping; currently unused. Default 1e3.
+        Upper limit for the damping; not used. Default 1e3.
     shared_param_lr_multiplier : float
         Factor on the learning rate of the shared parameters. Default 1.0.
     """
@@ -44,15 +44,6 @@ class BatchedNewtonLM:
         max_damping: float = 1e3,
         shared_param_lr_multiplier: float = 1.0,
     ) -> None:
-        """
-        Batched Newton / Levenberg–Marquardt optimizer.
-
-        params: dict of batched tensors (same as BatchedSGD)
-        shared_param_names: list of parameter names shared across models
-        lr: tensor of learning rates (shape [batch])
-        damping: initial damping term for LM
-        max_damping: upper limit for damping
-        """
         self.lr = lr
         self.damping = damping
         self.max_damping = max_damping
@@ -66,10 +57,24 @@ class BatchedNewtonLM:
         hessians: dict[str, torch.Tensor] | None = None,
         active_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        """
-        params, grads: dict of tensors with leading batch dimension
-        hessians: optional dict of Hessian matrices per param, or None (approximates as diag(g^2))
-        active_mask: tensor of shape (batch,) bool, True if model is active
+        """Take one optimizer step for every active member.
+
+        Parameters
+        ----------
+        params : dict of str -> (B, ...) tensor
+            Current parameters, with the members on the leading dimension.
+        grads : dict of str -> (B, ...) tensor
+            Their gradients, with the same keys and shapes.
+        hessians : dict of str -> tensor, optional
+            Hessian matrices per parameter; None approximates each as
+            diag(g^2).
+        active_mask : (B,) bool tensor, optional
+            True for the members that step; None steps every member.
+
+        Returns
+        -------
+        dict of str -> (B, ...) tensor
+            The new parameters, with the same keys and shapes.
         """
         batch_size = next(iter(params.values())).shape[0]
         device = next(iter(params.values())).device

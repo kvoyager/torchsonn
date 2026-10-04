@@ -57,6 +57,15 @@ plugins:
             docstring_style: numpy
             show_source: false
             filters: ["!^_"]
+            members_order: source
+            merge_init_into_class: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            separate_signature: true
+            show_signature_annotations: true
+            heading_level: 2
 
 markdown_extensions:
   - admonition
@@ -127,6 +136,16 @@ nav:
       # only as the landing page of its section. Patch 10 adds pages here.
       - API:
           - reference/api/index.md
+          - SONN: reference/api/model.md
+          - Trainer: reference/api/trainer.md
+          - Data: reference/api/data.md
+          - Neurons: reference/api/neurons.md
+          - Losses and criteria: reference/api/loss.md
+          - Modules: reference/api/modules.md
+          - Optimizers: reference/api/optimizers.md
+          - Schedulers: reference/api/schedulers.md
+          - Plotting: reference/api/plot_model.md
+          - Configuration: reference/api/config.md
   - Tutorials:
       - tutorials/index.md
       - Iris: tutorials/iris.md

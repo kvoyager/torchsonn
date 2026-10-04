@@ -565,11 +565,19 @@ class Trainer:
 
     def cleanup_checkpoints(self, checkpoint_dir: Path, keep_last_n: int = 10) -> None:
         """
-        Deletes older checkpoints, keeping only the last `n` for each (layer_idx, neuron_model_idx).
+        Delete the oldest entries of the checkpoint folder, keeping the `keep_last_n` most recent.
 
-        Args:
-            checkpoint_dir (str): Path to directory containing .ckpt files.
-            keep_last_n (int): Number of most recent checkpoints to keep per (layer, neuron).
+        Every entry counts except `model_last.ckpt` and the `_last` copies,
+        ordered by `parse_checkpoint_step`. Names that are not step
+        checkpoints sort first, so they are deleted first; keep nothing else
+        in the folder.
+
+        Parameters
+        ----------
+        checkpoint_dir : Path
+            The checkpoint folder.
+        keep_last_n : int
+            Number of most recent entries to keep. Default 10.
         """
 
         checkpoints = os.listdir(checkpoint_dir)
@@ -583,11 +591,14 @@ class Trainer:
 
     def cleanup_layer_checkpoints(self, model: SONN, layer_idx: int) -> None:
         """
-        Deletes all checkpoints for a layer
+        Delete every step checkpoint of one layer, the `_last` copies included.
 
-        Args:
-            checkpoint_dir (str): Path to directory containing .ckpt files.
-            keep_last_n (int): Number of most recent checkpoints to keep per (layer, neuron).
+        Parameters
+        ----------
+        model : SONN
+            The model whose checkpoint folder is cleaned.
+        layer_idx : int
+            The layer whose checkpoints are deleted.
         """
 
         def filter_checkpoints_by_layer(filenames, idx):
@@ -1730,10 +1741,14 @@ class Trainer:
         """
         Copy updated batched parameters & buffers into the model.
 
-        Args:
-            model: nn.Module
-            new_params: dict[str, Tensor] – updated batched parameters
-            new_buffers: dict[str, Tensor] – updated buffers (optional)
+        Parameters
+        ----------
+        model : nn.Module
+            The module to update in place.
+        new_params : dict of str -> torch.Tensor
+            Updated batched parameters.
+        new_buffers : dict of str -> torch.Tensor, optional
+            Updated buffers.
         """
         # Write back parameters
         for name, param in model.named_parameters():
@@ -2196,12 +2211,11 @@ class Trainer:
         Regression / binary: normalized MSE (matches regularity_error).
         Multi-class:         normalized cross-entropy (matches regularity_error_ce).
 
-        The previous implementation concatenated per-batch preds into a
-        (ensemble, N, K) tensor before calling the helpers, which for Otto-
-        sized ensembles (~17k candidates after shortcut) materialized a 6+ GB
-        tensor on GPU and then doubled it inside log_softmax — the OOM site
-        at layer 5. Per-batch accumulation keeps GPU residency to a single
-        batch's predictions.
+        The sums are accumulated batch by batch instead of concatenating the
+        predictions into one (ensemble, N, K) tensor first: for Otto-sized
+        ensembles (~17k candidates after shortcut) that tensor would take
+        over 6 GB of GPU memory, twice that inside log_softmax. GPU memory
+        stays at one batch's predictions.
         """
         eps = 1e-12
 
@@ -2324,10 +2338,11 @@ class Trainer:
         optimizer — because out_proj is a single shared nn.Linear whose gradient
         comes from the full batch in one shot.
 
-        Stops at cfg.max_steps, or earlier if the early-stop criterion fires.
-        ReduceLROnPlateau drops the LR when val loss stagnates; if it has
-        already hit lr_min and val loss still hasn't improved for
-        early_stop_patience consecutive evaluations, training halts.
+        Stops at cfg.max_steps, or after early_stop_patience evaluations in a
+        row without an improvement of the dev loss. ReduceLROnPlateau lowers
+        the learning rate when the dev loss stalls, down to lr_min. With
+        `optimizer: lbfgs` the head is fitted full-batch instead, without the
+        plateau schedule. Saves the model to `model_last.ckpt` at the end.
         """
         if model.out_proj is None:
             raise ValueError("model.out_proj is None; enable use_output_projection in the model config")
@@ -3133,7 +3148,12 @@ class Trainer:
         verbose: bool = True,
         use_compile: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run inference over test_dl and return (log_probs, targets).
+        """Predict over test_dl and return (predictions, targets), both in loader order.
+
+        The predictions are one value per row for regression, a logit per
+        row for binary models and a row of log-probabilities per sample for
+        multi-class models (see `SONN.infer`). Each batch must be an
+        `(x, y)` pair: `batch_callback` is not applied here.
 
         use_compile=True wraps model.infer with torch.compile before the loop,
         fusing the sequential per-layer kernel launches into a single optimized

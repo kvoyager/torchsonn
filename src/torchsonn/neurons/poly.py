@@ -42,13 +42,21 @@ class PolyQuadratic(BasePolynomNeuron):
 
     def forward(self, inp: torch.Tensor) -> torch.Tensor:
         """
-        Compute polynomial of degree N:
+        Compute the degree-2 polynomial of each neuron's `dim` inputs:
         y = w0 + sum_i w1_i*x_i + sum_{i<=j} w2_ij*x_i*x_j
-        Args:
-            x: [B, D] input
-            w: [1 + D + D*(D+1)//2] weights
-        Returns:
-            y: [B]
+
+        Parameters
+        ----------
+        inp : torch.Tensor
+            Layer input, (..., num_feat). Each neuron reads its `dim`
+            columns; its weights are 1 + D + D*(D+1)//2 coefficients for
+            D = `dim` (fewer without the squares).
+
+        Returns
+        -------
+        torch.Tensor
+            (..., num_neurons) neuron outputs, or (...,) when the weights
+            are 1-D (inside the trainer's vmap over candidates).
         """
         inp_x = inp.view(-1, inp.shape[-1])
 

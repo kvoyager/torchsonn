@@ -145,16 +145,25 @@ def generate_unique_combinations(
     """
     Generate unique k-tuples (pairs, triplets, etc.) of indices.
 
-    Args:
-        n (int): Number of available inputs.
-        num_inputs (int): Size of each tuple (e.g. 2=pair, 3=triplet, etc.).
-        max_neuron_models (int): Maximum number of unique combinations to generate.
-        seed (int, optional): Random seed for reproducibility.
-        allow_self (bool): Whether repeated indices in a tuple are allowed.
-        ordered (bool): Whether order matters (permutations) or not (combinations).
+    Parameters
+    ----------
+    n : int
+        Number of available inputs.
+    num_inputs : int
+        Size of each tuple (e.g. 2=pair, 3=triplet, etc.).
+    max_neuron_models : int
+        Maximum number of unique combinations to generate.
+    seed : int, optional
+        Random seed for reproducibility.
+    allow_self : bool
+        Whether repeated indices in a tuple are allowed.
+    ordered : bool
+        Whether order matters (permutations) or not (combinations).
 
-    Returns:
-        list[tuple[int, ...]]: List of unique tuples.
+    Returns
+    -------
+    list of tuple of int
+        List of unique tuples.
     """
     if seed is not None:
         random.seed(seed)

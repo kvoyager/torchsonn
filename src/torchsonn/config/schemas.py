@@ -36,7 +36,7 @@ class OutProjTrainConfig:
 
     Used twice in `TrainConfig`: `train.out_proj_train` (the output head fit
     and the per-layer fine-tune) and `train.finetune_train` (the end-to-end
-    pass). The comments on the fields below document them.
+    pass). The comments next to the fields document them.
     """
     max_steps: int = 5000
     lr: float = 1.0e-3
@@ -110,7 +110,7 @@ def _default_optimizer_params() -> Dict[str, Any]:
 class OptimizerConfig:
     """The `train.optimizer:` section: the optimizer for candidate neuron fits.
 
-    The comments on the fields below document them.
+    The comments next to the fields document them.
     """
     # 'adam' | 'sgd' | 'lbfgs' | 'newton' | 'newton-lm' — see optimizer_map
     # in src/optimizers/__init__.py.
@@ -134,7 +134,7 @@ class OptimizerConfig:
 class SchedulerConfig:
     """The `train.scheduler:` section: the learning-rate scheduler for candidate fits.
 
-    The comments on the fields below document them.
+    The comments next to the fields document them.
     """
     # 'warmup_flat' (currently the only registered scheduler) | null to
     # disable the scheduler entirely.
@@ -150,7 +150,7 @@ class SchedulerConfig:
 class ModelConfig:
     """The `model:` section: task type, neuron families and network structure.
 
-    The comments on the fields below document them.
+    The comments next to the fields document them.
     """
     # 'regressor' | 'binary' | 'multi-class'
     type: str = "multi-class"
@@ -229,7 +229,7 @@ class ModelConfig:
 class TrainConfig:
     """The `train:` section: fitting, selection, stopping and checkpointing.
 
-    The comments on the fields below document them.
+    The comments next to the fields document them.
     """
     seed: int = 10
 
@@ -484,7 +484,7 @@ class SONNConfig:
     """Root config schema: the `model:` and `train:` sections plus top-level flags.
 
     Registered with Hydra as `default`; `SONN` merges the user config into it,
-    so unknown keys are rejected. The comments on the fields below document
+    so unknown keys are rejected. The comments next to the fields document
     them.
     """
     model: ModelConfig = field(default_factory=ModelConfig)

@@ -23,7 +23,15 @@ class BatchedSGD(BaseOptimizer):
     ----------
     params : dict of str -> (B, ...) tensor
         Initial parameters; they set the shapes of the momentum buffers.
-    shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier
+    shared_param_names : iterable of str
+        See `BaseOptimizer`.
+    lr : float or (B,) tensor
+        See `BaseOptimizer`.
+    clip_value : float or None
+        See `BaseOptimizer`.
+    clip_norm : float or None
+        See `BaseOptimizer`.
+    shared_param_lr_multiplier : float
         See `BaseOptimizer`.
     momentum : float
         Momentum coefficient. Default 0.9.
@@ -60,9 +68,21 @@ class BatchedSGD(BaseOptimizer):
         grads: dict[str, torch.Tensor],
         active_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        """
-        params, grads: dict of tensors with leading batch dimension
-        active_mask: tensor of shape (batch,) bool, True if model is active
+        """Take one optimizer step for every active member.
+
+        Parameters
+        ----------
+        params : dict of str -> (B, ...) tensor
+            Current parameters, with the members on the leading dimension.
+        grads : dict of str -> (B, ...) tensor
+            Their gradients, with the same keys and shapes.
+        active_mask : (B,) bool tensor, optional
+            True for the members that step; None steps every member.
+
+        Returns
+        -------
+        dict of str -> (B, ...) tensor
+            The new parameters, with the same keys and shapes.
         """
         batch_size = next(iter(params.values())).shape[0]
 
