@@ -31,14 +31,15 @@ resume: false
 
 # === The point of this config =================================================
 # Top-level flag (declared in SONNConfig, read by ccpp.py after
-# load_model_checkpoint): drop model.out_proj, then call
-# Trainer.train_finetune over every parameter in the network.
+# load_model_checkpoint): call Trainer.train_finetune over every parameter in
+# the network, the head included (finetune_drop_head below removes the head
+# first).
 #
-# The pass optimizes `_finetune_prediction` — for a headless regressor, the
-# best-error neuron's column — so it trains exactly what `_predict_mw` reads.
-# Gradients reach every layer through that one column, so earlier layers are
-# refined for their contribution to it rather than for their own per-neuron
-# error. Tuned by `train.finetune_train` at the bottom of this file, which is a
+# The pass optimizes `_finetune_prediction` — the head's output, the value
+# `_predict_mw` reads — so gradients reach every layer through the survivors
+# the head reads, and earlier layers are refined for their contribution to the
+# prediction rather than for their own per-neuron error. Tuned by
+# `train.finetune_train` at the bottom of this file, which is a
 # *separate* block from `out_proj_train` precisely so this pass can use a much
 # smaller learning rate than the per-layer fine-tunes.
 #
