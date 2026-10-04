@@ -244,6 +244,13 @@ class TrainConfig:
     The comments on the fields below document them.
     """
     seed: int = 10
+    # True: the Trainer switches PyTorch to deterministic kernels
+    # (torch.use_deterministic_algorithms), process-wide, and sets
+    # CUBLAS_WORKSPACE_CONFIG=:4096:8 if it is unset, so that runs on a GPU
+    # repeat, at some cost in speed; an operation without a deterministic
+    # kernel then raises an error naming it. On a CPU the runs repeat without
+    # it. False leaves PyTorch's setting as it is.
+    use_deterministic_algorithms: bool = False
 
     # String form — coerced to CriterionType via CriterionType.get() in
     # SONN.__init__. Accepted: 'validate' | 'bias' | 'validate_bias' | 'bias_retrain'.

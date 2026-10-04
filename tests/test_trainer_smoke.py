@@ -542,6 +542,47 @@ def test_head_fit_and_pass_repeat_when_seeded_after_building(tmp_path):
         assert torch.equal(finals[0][k], finals[1][k]), k
 
 
+def test_use_deterministic_algorithms(tmp_path, monkeypatch):
+    """On: PyTorch's flag is switched on and cuBLAS's workspace setting is
+    supplied when missing (an existing value is kept), and a short run with
+    a head and the end-to-end pass works under it. Off: the flag is left as
+    the caller set it."""
+    import os
+    was = torch.are_deterministic_algorithms_enabled()
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    try:
+        torch.use_deterministic_algorithms(False)
+        Trainer(config=_cfg(tmp_path))
+        assert not torch.are_deterministic_algorithms_enabled()
+        assert "CUBLAS_WORKSPACE_CONFIG" not in os.environ
+        torch.use_deterministic_algorithms(True)
+        Trainer(config=_cfg(tmp_path))
+        assert torch.are_deterministic_algorithms_enabled()
+
+        torch.use_deterministic_algorithms(False)
+        cfg = OmegaConf.merge(
+            _cfg(tmp_path, max_layer_count=1, use_deterministic_algorithms=True),
+            OmegaConf.create({
+                "model": {"use_output_projection": True, "num_out_neurons": 2},
+                "train": {"finetune_train": {"optimizer": "adamw", "max_steps": 20, "eval_interval": 10}},
+            }),
+        )
+        model = SONN(cfg, d_model=4)
+        trainer = Trainer(config=cfg)
+        assert torch.are_deterministic_algorithms_enabled()
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+        dl = _make_dl(64)
+        trainer.train(model, dl, dl, dl, verbose=False)
+        trainer.train_out_proj(model, dl, dl)
+        trainer.train_finetune(model, dl, dl)
+
+        monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":16:8")
+        Trainer(config=cfg)
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
+    finally:
+        torch.use_deterministic_algorithms(was)
+
+
 def test_train_out_proj_raises_without_head(tmp_path):
     cfg = _cfg(tmp_path)
     model = SONN(cfg, d_model=4)
