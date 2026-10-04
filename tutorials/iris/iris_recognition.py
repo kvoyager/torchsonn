@@ -124,11 +124,6 @@ def main(config: DictConfig) -> None:
     pred_y = model_out.argmax(dim=1).cpu().numpy()
     test_y = test_targets.cpu().numpy()
 
-    print(f"Selected features indices: {model.get_selected_features_indices()}")
-    print(f"Unselected features indices: {model.get_unselected_features_indices()}")
-    print(f"Selected features: {model.get_selected_features()}")
-    print(f"Unselected features: {model.get_unselected_features()}")
-
     fig = plt.figure()
     cm = confusion_matrix(test_y, pred_y)
     np.set_printoptions(precision=2)
@@ -153,6 +148,11 @@ def main(config: DictConfig) -> None:
 
     trainer.prune(model)
     model_out2, _ = trainer.infer(model, test_dl)
+    # After pruning, so the lists name the features the prediction uses.
+    print(f"Selected features indices: {model.get_selected_features_indices()}")
+    print(f"Unselected features indices: {model.get_unselected_features_indices()}")
+    print(f"Selected features: {model.get_selected_features()}")
+    print(f"Unselected features: {model.get_unselected_features()}")
     PlotModel(model, filename=str(plot_dir / 'iris_pruned_model'),
               plot_neuron_name=True, view=False).plot()
     print(f"Run folder: {trainer.run_dir}")

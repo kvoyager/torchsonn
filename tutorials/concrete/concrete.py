@@ -1,8 +1,9 @@
 """UCI Concrete Compressive Strength regression — Hydra entry point.
 
 Fetches the 1030-sample UCI Concrete dataset (Yeh, 1998), trains a SONN
-regressor with `linear_cov + quadratic` reference functions, and reports
-MSE / MAE / R² on a held-out 15 % test split.
+regressor with four power-basis families (`linear_cov`, `quadratic`,
+`cubic` and a five-input `polyquad`), and reports MSE / MAE / R² on a
+held-out 20 % test split.
 
 Run from the repo root:
     python -m tutorials.concrete.concrete
@@ -131,16 +132,14 @@ def main(config: DictConfig) -> None:
     # Features span 3 orders of magnitude; z-score them so polynomial neurons
     # see a comparable dynamic range across inputs.
     #
-    # The target is also z-scored — *critical* for SONN's regression-mode
-    # selection criterion. `regularity_error(y, ŷ) = Σ(y - ŷ)² / Σy²` uses
-    # the uncentered sum-of-squares in the denominator. For raw-MPa y with
-    # mean≈36, Σy² is dominated by N·μ² and the entire range from
-    # "no-skill" to "near-perfect" collapses into a tiny absolute band
-    # (~0.003 to ~0.18). Per-layer growth heuristics (relative-improvement
-    # threshold, criterion_minimum_width) can't distinguish a great fit
-    # from a mediocre one, so layer growth stalls early and R² flatlines
-    # near OLS. After z-scoring, `Σy² ≈ N`, the "no-skill" baseline lands
-    # at exactly 1.0, and improvements are crisp.
+    # The target is z-scored too. The default criterion normalization,
+    # `train.error_normalization: variance`, divides by Σ(y - ȳ)² and does
+    # not depend on the target's offset; under `energy` it divides by Σy²,
+    # and for raw-MPa y with mean ≈ 36 that is dominated by N·μ², squeezing
+    # the range from "no-skill" to "near-perfect" into a tiny band (~0.003
+    # to ~0.18) where the growth rule cannot tell a good layer from a
+    # mediocre one. A z-scored target behaves the same under both: the
+    # "no-skill" baseline is 1.0.
     #
     # Predictions are inverse-transformed inside report() so the reported
     # MSE / MAE / R² are still in physical MPa units.
@@ -174,7 +173,8 @@ def main(config: DictConfig) -> None:
     Trainer.set_seed(int(config.train.seed))
     trainer.train(model, train_dl, dev_dl, test_dl, resume=bool(config.get("resume", False)))
 
-    # Train the (num_out, 1) regression head against MSE on dev. Mirrors
+    # Train the (num_out, 1) regression head on the training split, with an
+    # early stop on dev. Mirrors
     # the otto_classification.py flow: each layer-grown checkpoint persists
     # an *initial-random* out_proj, so without this pass `load_model_checkpoint`
     # below would reload a randomly-initialized head and the reported
@@ -189,22 +189,11 @@ def main(config: DictConfig) -> None:
     def report(tag: str) -> None:
         """Run inference on the test loader and print MSE / MAE / R²."""
         model_out, _ = trainer.infer(model, test_dl, verbose=False)
+        # One prediction per test row (the best-error neuron's output, or the
+        # head's when there is one), in z-scored target space: the trainer
+        # never saw the raw-MPa scale. Inverse-transform so the reported
+        # numbers are in MPa and directly comparable to y_test.
         y_pred = model_out.cpu().numpy()
-        # SONN.infer for a `type: regressor` model without `out_proj` returns
-        # the full last-layer output, shape (N, nbest_neurons). Collapse to
-        # the best-error neuron's column so sklearn metrics see a 1-D vector
-        # matching y_test. After `trainer.prune(...)` the last layer holds a
-        # single neuron and the shape is (N, 1), still handled by the same
-        # path via `_best_neuron_column` returning column 0.
-        if y_pred.ndim == 2 and y_pred.shape[1] > 1:
-            best_col = model._best_neuron_column(model.layers[-1])
-            y_pred = y_pred[:, best_col]
-        elif y_pred.ndim == 2:
-            y_pred = y_pred[:, 0]
-
-        # Predictions are in z-scored target space (the trainer never saw the
-        # raw-MPa scale). Inverse-transform so the reported numbers are in
-        # MPa and directly comparable to y_test.
         y_pred = y_scaler.inverse_transform(y_pred.reshape(-1, 1)).ravel()
         mse  = metrics.mean_squared_error(y_test, y_pred)
         rmse = float(np.sqrt(mse))

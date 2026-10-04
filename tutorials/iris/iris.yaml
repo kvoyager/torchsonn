@@ -36,8 +36,8 @@ model:
   nbest_neurons: 4
   max_neuron_models: 8
 train:
-  # Near-full-batch: iris train split ~105 samples, large batch keeps LBFGS
-  # curvature pairs stable.
+  # Mini-batches of 30 of the 105 training rows, for the SGD optimizer
+  # below.
   batch_size: 30
   device: cpu
   criterion_type: validate

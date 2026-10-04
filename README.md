@@ -180,7 +180,7 @@ python tutorials/otto/otto_classification.py
 Hydra overrides work on any field in the schema. A few useful ones:
 
 ```bash
-# Resume from the last checkpoint
+# Resume the newest run of the config (its run folder under train.checkpoint_dir)
 python -m tutorials.iris.iris_recognition resume=true
 
 # Swap optimizer + tune its kwargs
