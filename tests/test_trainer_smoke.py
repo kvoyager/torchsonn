@@ -453,6 +453,34 @@ def test_trainer_infer_and_prune(tmp_path):
     assert len(trained.layers[-1].neuron_models) == 1
 
 
+def test_prune_keeps_every_last_neuron_of_a_headless_neuron_proj_model(tmp_path):
+    """Without a head, a use_neuron_proj model predicts from every neuron of
+    its last layer, so prune keeps them all and the predictions stay put;
+    a second prune changes nothing."""
+    cfg = OmegaConf.merge(
+        _mc_cfg(tmp_path, max_layer_count=2),
+        OmegaConf.create({"model": {"soft_binner": False, "use_neuron_proj": True,
+                                    "nbest_neurons": 3, "max_neuron_models": 6}}),
+    )
+    model = SONN(cfg, d_model=4)
+    x, dl = _make_mc_dl(64)
+    trainer = Trainer(config=cfg)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    xs = torch.from_numpy(x)
+    width = len(trained.layers[-1])
+    assert width > 1 and trained._readout_width(trained.layers[-1]) == width
+    with torch.no_grad():
+        before = trained.infer(xs)
+    trainer.prune(trained)
+    assert len(trained.layers[-1]) == width
+    with torch.no_grad():
+        after = trained.infer(xs)
+    assert torch.allclose(before, after, atol=1e-5)
+    trainer.prune(trained)
+    with torch.no_grad():
+        assert torch.allclose(trained.infer(xs), after, atol=1e-5)
+
+
 def test_train_with_out_proj(tmp_path):
     """Exercise train_out_proj on a regressor with out_proj enabled."""
     cfg = _cfg(tmp_path, max_layer_count=1)

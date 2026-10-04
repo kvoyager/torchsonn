@@ -3555,13 +3555,16 @@ class Trainer:
         its successor, and with `shortcut.prev_layers` later layers too. A
         layer nobody reads any more is deleted.
 
-        How many columns the model reads depends on the head. Without one,
-        `SONN.infer` returns the best-error column and a single neuron suffices.
-        With `out_proj` it reads `in_features` columns, chosen by
-        `_best_neuron_columns` — so collapsing the layer to one neuron would
-        leave the head consuming zero-padding on every other input and silently
-        destroy the model rather than raising. Keep exactly the columns the head
-        consumes instead.
+        How many columns the model reads is `SONN._readout_width`. Without a
+        head, `SONN.infer` returns the best-error column and a single neuron
+        suffices, except for a multi-class model with per-neuron projections
+        (`use_neuron_proj`): its prediction sums every last-layer neuron's
+        projected output, so the whole last layer stays. With `out_proj` it
+        reads `in_features` columns, chosen by `_best_neuron_columns` — so
+        collapsing the layer to one neuron would leave the head consuming
+        zero-padding on every other input and silently destroy the model
+        rather than raising. Keep exactly the columns the head consumes
+        instead.
 
         The head needs no reindexing: the retained neurons keep their
         `err_values`, so re-running `_best_neuron_columns` on the pruned layer
@@ -3598,8 +3601,7 @@ class Trainer:
 
         last_layer = model.layers[-1]
         dev_last = last_layer.module_idxs.device
-        n_keep = 1 if model.out_proj is None else int(model.out_proj.in_features)
-        n_keep = min(n_keep, int(last_layer.err_values.shape[0]))
+        n_keep = model._readout_width(last_layer)
 
         # Sorted, not left in topk's error order: module_idxs is laid out
         # module-by-module and the rest of this method (and a second prune()
