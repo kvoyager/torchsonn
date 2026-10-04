@@ -160,7 +160,7 @@
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
-# `src/config/schemas.py` and exposed under the name `default`.
+# `src/torchsonn/config/schemas.py` and exposed under the name `default`.
 defaults:
   - default
   - _self_
