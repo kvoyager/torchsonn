@@ -241,6 +241,7 @@ class TestCleanupCheckpoints:
             (tmp_path / f"model_layer_0_neuron_0_step_{step}.ckpt").write_text("x")
         (tmp_path / "model_layer_0_neuron_0_step_0_last.ckpt").write_text("x")
         (tmp_path / "model_last.ckpt").write_text("x")
+        (tmp_path / "best_layer_0_finetune.ckpt").write_text("x")
         (tmp_path / "train.log").write_text("log")
         (tmp_path / "notes.txt").write_text("mine")
         (tmp_path / "2026-08-19-12-57-00").mkdir()
@@ -249,6 +250,7 @@ class TestCleanupCheckpoints:
 
         remaining = {p.name for p in tmp_path.iterdir()}
         assert {"train.log", "notes.txt", "2026-08-19-12-57-00", "model_last.ckpt",
+                "best_layer_0_finetune.ckpt",
                 "model_layer_0_neuron_0_step_0_last.ckpt"} <= remaining
         steps = sorted(Trainer.parse_checkpoint_step(n)[2] for n in remaining
                        if n.startswith("model_layer") and not n.endswith("_last.ckpt"))
@@ -293,6 +295,7 @@ class TestFromCheckpoint:
     def test_ignores_other_files(self, tmp_path):
         (tmp_path / "train.log").write_text("log")
         (tmp_path / "2026-08-19-12-57-00").mkdir()
+        torch.save({"marker": 1}, tmp_path / "best_finetune.ckpt")
         trainer = Trainer(config=None)
         assert trainer.from_checkpoint(tmp_path) is None
         torch.save({"marker": 7}, tmp_path / "model_layer_0_neuron_0_step_7.ckpt")

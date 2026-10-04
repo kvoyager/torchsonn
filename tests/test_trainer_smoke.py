@@ -1223,3 +1223,214 @@ def test_headless_model_captures(tmp_path):
         stepper.step(x, y)
     assert stepper.capture_error is None and stepper.graph is not None and stepper.graph_steps >= 2
 
+
+# --- The best evaluated weights (best_weights_copy) --------------------------
+
+import torchsonn.trainer as _trainer_mod
+from torchsonn.trainer import _BestWeights
+
+
+@pytest.mark.parametrize("where", ["device", "cpu", "disk"])
+def test_best_weights_keeps_the_lowest_loss_and_restores_in_place(tmp_path, where):
+    """Strictly the lowest loss wins (NaN never does); the restore writes into
+    the same tensor, and the disk copy is gone afterwards."""
+    p = torch.nn.Parameter(torch.zeros(3))
+    best = _BestWeights([p], where, tmp_path / "best_x.ckpt", "x")
+    for step, loss in [(1, 2.0), (2, 1.0), (3, float("nan")), (4, 1.0), (5, 1.5)]:
+        with torch.no_grad():
+            p.fill_(step)
+        best.update(step, loss)
+    ptr = p.data_ptr()
+    best.restore()
+    assert torch.equal(p.detach(), torch.full((3,), 2.0)) and p.data_ptr() == ptr
+    assert (best.best_step, best.best_loss, best.last_step) == (2, 1.0, 5)
+    assert not list(tmp_path.iterdir())
+
+
+def test_best_weights_rejects_an_unknown_place(tmp_path):
+    with pytest.raises(ValueError, match="best_weights_copy"):
+        _BestWeights([], "gpu", None, "x")
+    for block in ("out_proj_train", "finetune_train"):
+        cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
+            {"train": {block: {"best_weights_copy": "gpu"}}}))
+        with pytest.raises(ValueError, match=f"train.{block}.best_weights_copy"):
+            Trainer(config=cfg)
+
+
+def test_best_weights_disk_file_per_rank(tmp_path, monkeypatch):
+    """In a distributed run every rank writes its own file."""
+    cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
+        {"train": {"finetune_train": {"best_weights_copy": "disk"}}}))
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    p = torch.nn.Parameter(torch.zeros(2))
+    monkeypatch.setattr(Trainer, "_is_dist", staticmethod(lambda: True))
+    monkeypatch.setattr(_trainer_mod.dist, "get_rank", lambda: 3)
+    best = trainer._best_weights(model, [p], cfg.train.finetune_train, "finetune", "finetune")
+    assert best.path.name == "best_finetune_rank3.ckpt"
+    assert best.path.parent == trainer.run_dir
+
+
+class _ScriptedBest(_BestWeights):
+    """Records the parameters at every evaluation and reports a scripted loss
+    in place of the real one: the second evaluation is the lowest and every
+    later one higher, so a pass must end on the second evaluation's
+    parameters whatever its real losses. The patience counter still reads
+    the real losses, so the pass runs as configured."""
+    made: list = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seen = []
+        _ScriptedBest.made.append(self)
+
+    def update(self, step, loss):
+        self.seen.append((step, [p.detach().cpu().clone() for p in self.params]))
+        super().update(step, 0.0 if len(self.seen) == 2 else float(len(self.seen)))
+
+
+@pytest.fixture
+def scripted_best(monkeypatch):
+    _ScriptedBest.made = []
+    monkeypatch.setattr(_trainer_mod, "_BestWeights", _ScriptedBest)
+    return _ScriptedBest.made
+
+
+def _pass_settings(optimizer, max_steps=6, eval_interval=1, **extra):
+    s = {"optimizer": optimizer, "max_steps": max_steps, "eval_interval": eval_interval,
+         "early_stop_patience": 100, "lr": 0.05}
+    if optimizer == "lbfgs":
+        # One plain iteration per outer step, so the head keeps moving.
+        s.update({"lbfgs_max_iter": 1, "lbfgs_line_search": "", "lr": 0.5})
+    s.update(extra)
+    return s
+
+
+def _headed_model(tmp_path, out_proj_train=None, finetune_train=None):
+    train = {}
+    if out_proj_train:
+        train["out_proj_train"] = out_proj_train
+    if finetune_train:
+        train["finetune_train"] = finetune_train
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=1),
+        OmegaConf.create({"model": {"use_output_projection": True, "num_out_neurons": 2},
+                          "train": train}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    trainer.train(model, dl, dl, dl, verbose=False)
+    return cfg, model, trainer, dl
+
+
+def _assert_ends_on_second_evaluation(best, params):
+    assert len(best.seen) >= 3
+    second = best.seen[1][1]
+    assert any(not torch.equal(a, b) for a, b in zip(best.seen[-1][1], second)), \
+        "the parameters never moved after the second evaluation"
+    for p, s in zip(params, second):
+        assert torch.equal(p.detach().cpu(), s)
+
+
+@pytest.mark.parametrize("optimizer", ["adam", "lbfgs"])
+def test_head_fit_ends_on_its_best_evaluation(tmp_path, scripted_best, optimizer):
+    cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=_pass_settings(optimizer))
+    scripted_best.clear()
+    trainer.train_out_proj(model, dl, dl)
+    (best,) = scripted_best
+    _assert_ends_on_second_evaluation(best, list(model.out_proj.parameters()))
+    saved = torch.load(trainer.run_dir / "model_last.ckpt", weights_only=False)["model"]
+    assert torch.equal(saved["out_proj.weight"], model.out_proj.weight.detach().cpu())
+
+
+@pytest.mark.parametrize("optimizer", ["adam", "lbfgs"])
+def test_layer_finetune_ends_on_its_best_evaluation(tmp_path, scripted_best, optimizer):
+    """The survivors end on the best evaluation's weights, and the readout
+    error the pass returns is that evaluation's loss."""
+    cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=_pass_settings(optimizer))
+    layer = model.layers[-1]
+    scripted_best.clear()
+    readout_err = trainer._train_layer_finetune(model, layer, dl, dl)
+    (best,) = scripted_best
+    assert readout_err == 0.0
+    survivors = [p for nm in layer.neuron_models for name, p in nm.named_parameters()
+                 if name not in ("proj_weight", "proj_bias")]
+    assert [id(p) for p in best.params] == [id(p) for p in survivors]
+    _assert_ends_on_second_evaluation(best, survivors)
+    for p in model.parameters():
+        assert p.requires_grad
+
+
+def test_layer_finetune_with_frozen_neurons_copies_nothing(tmp_path, scripted_best):
+    cfg, model, trainer, dl = _headed_model(
+        tmp_path, out_proj_train=_pass_settings("adam", best_weights_copy="disk"))
+    layer = model.layers[-1]
+    before = [p.detach().clone() for nm in layer.neuron_models for p in nm.parameters()]
+    scripted_best.clear()
+    readout_err = trainer._train_layer_finetune(model, layer, dl, dl, freeze_neurons=True)
+    (best,) = scripted_best
+    assert best.params == [] and readout_err == 0.0
+    after = [p.detach() for nm in layer.neuron_models for p in nm.parameters()]
+    assert all(torch.equal(a, b) for a, b in zip(after, before))
+    assert not list(trainer.run_dir.glob("best_*"))
+
+
+@pytest.mark.parametrize("where", ["device", "cpu", "disk"])
+def test_end_to_end_pass_ends_on_its_best_evaluation_and_saves(tmp_path, scripted_best, where):
+    cfg, model, trainer, dl = _headed_model(
+        tmp_path, finetune_train=_pass_settings("adamw", lr=1e-2, best_weights_copy=where))
+    scripted_best.clear()
+    trainer.train_finetune(model, dl, dl)
+    (best,) = scripted_best
+    _assert_ends_on_second_evaluation(best, list(model.parameters()))
+    saved = torch.load(trainer.run_dir / "model_last.ckpt", weights_only=False)["model"]
+    for k, v in model.state_dict().items():
+        if torch.is_tensor(v):
+            assert torch.equal(saved[k], v.cpu()), k
+    assert not list(trainer.run_dir.glob("best_*"))
+
+
+@pytest.mark.parametrize("which", ["out_proj_adam", "out_proj_lbfgs", "layer_finetune", "finetune"])
+def test_a_last_step_between_evaluations_is_evaluated(tmp_path, scripted_best, which):
+    settings = _pass_settings("lbfgs" if which == "out_proj_lbfgs" else "adam",
+                              max_steps=7, eval_interval=5)
+    if which == "finetune":
+        cfg, model, trainer, dl = _headed_model(tmp_path, finetune_train=settings)
+    else:
+        cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=settings)
+    scripted_best.clear()
+    if which == "finetune":
+        trainer.train_finetune(model, dl, dl)
+    elif which == "layer_finetune":
+        trainer._train_layer_finetune(model, model.layers[-1], dl, dl)
+    else:
+        trainer.train_out_proj(model, dl, dl)
+    (best,) = scripted_best
+    assert [step for step, _ in best.seen] == [5, 7]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+@pytest.mark.parametrize("where", ["device", "cpu", "disk"])
+def test_end_to_end_graph_pass_restores_in_place(tmp_path, scripted_best, where, caplog):
+    """Under a captured CUDA graph the restore copies into the tensors the
+    graph holds: same storage, best values, and the graph still trains them."""
+    cfg, model, trainer, dl = _headed_model(
+        tmp_path, finetune_train=_pass_settings("adamw", max_steps=9, lr=1e-2,
+                                                best_weights_copy=where))
+    cfg = OmegaConf.merge(cfg, OmegaConf.create({"train": {"device": "cuda"}}))
+    model.to("cuda")
+    for layer in model.layers:
+        for nm in layer.neuron_models:
+            nm.to("cuda")
+    trainer.config = cfg
+    ptrs = [p.data_ptr() for p in model.parameters()]
+    scripted_best.clear()
+    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+        trainer.train_finetune(model, dl, dl, cfg=cfg.train.finetune_train)
+    assert any("CUDA graph captured" in r.message for r in caplog.records)
+    assert any("kept the weights of step" in r.message for r in caplog.records)
+    (best,) = scripted_best
+    _assert_ends_on_second_evaluation(best, list(model.parameters()))
+    assert [p.data_ptr() for p in model.parameters()] == ptrs
+    assert not list(trainer.run_dir.glob("best_*"))
