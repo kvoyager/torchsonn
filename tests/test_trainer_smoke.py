@@ -325,6 +325,11 @@ def test_train_finetune_and_layer_finetune_multiclass(tmp_path):
     trained = trainer.train(model, dl, dl, dl, verbose=False)
     # Also run train_finetune explicitly (loss_fn=NLL is needed → multi-class works)
     trainer.train_finetune(trained, dl, dl)
+    # Neither pass moves the soft binner's class points: they are fixed.
+    centers = trained.soft_binner.centers
+    assert "soft_binner.centers" not in dict(trained.named_parameters())
+    assert torch.equal(centers.cpu(), torch.linspace(0.05, 0.95, 3))
+    assert not centers.requires_grad
 
 
 def test_train_with_omp_mixed_selection(tmp_path):

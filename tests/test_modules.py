@@ -69,6 +69,29 @@ class TestSoftBinner:
         # logits axis moves: from (B, T, n_bins) → (B, n_bins, T)
         assert out.shape == (4, 3, 6)
 
+    def test_centers_are_a_fixed_buffer(self):
+        """The class points are state, not parameters: nothing can train them."""
+        sb = SoftBinner(n_bins=4)
+        assert "centers" in dict(sb.named_buffers())
+        assert not list(sb.parameters())
+        sb.requires_grad_(True)
+        assert not sb.centers.requires_grad
+
+    def test_centers_are_saved_and_loaded(self):
+        sb = SoftBinner(n_bins=4)
+        state = sb.state_dict()
+        assert torch.equal(state["centers"], torch.linspace(0.05, 0.95, 4))
+        other = SoftBinner(n_bins=4)
+        state["centers"] = state["centers"] + 0.01
+        other.load_state_dict(state)
+        assert torch.allclose(other.centers, torch.linspace(0.05, 0.95, 4) + 0.01)
+
+    def test_centers_follow_the_module_dtype_and_device(self):
+        sb = SoftBinner(n_bins=4).to(torch.float64)
+        assert sb.centers.dtype == torch.float64
+        if torch.cuda.is_available():
+            assert sb.to("cuda").centers.device.type == "cuda"
+
 
 def _unit_norm(**kwargs) -> SigmaSquashNorm:
     """Standard-normal layer in float64 — the smoothness assertions below
