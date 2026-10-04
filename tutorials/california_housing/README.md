@@ -3,8 +3,9 @@
 This tutorial fits a self-organizing neural network (SONN, a GMDH-style
 polynomial network) to the California housing regression task. It then
 compares the result with gradient-boosted trees on the same features and
-the same split. This page covers the dataset, the published results, how
-the tutorial's score improved, and where it stands against XGBoost.
+the same split. This page covers the dataset, the published results, what
+each of the tutorial's settings is worth, and where it stands against
+XGBoost.
 
 ## The dataset
 
@@ -106,11 +107,16 @@ in the last section.
   training range.
 - **Metrics.** Test MSE and MAE on the 4,128 held-out rows, in (\$100k)²
   and \$100k.
+- **Candidate early stop.** The results below stop each candidate's fit on
+  its training loss, `train.early_stop_source=train` on the command line,
+  which the config files leave at `dev`. With it, the Legendre config's
+  seed-10 run keeps 6 layers; without it, the search stops after 4 layers
+  at a test MSE of about 0.187.
 
 Every setting is documented in `tutorial_params()` in
 `california_housing.py`.
 
-## How the score improved
+## What each setting is worth
 
 All numbers are single-model test results, as recorded in the config
 headers [[6]](#ref-6). Each row adds one change to
@@ -157,7 +163,7 @@ finding.
 
 | configuration | mean MSE ± sd | mean MAE |
 |---|---|---|
-| Legendre-3, 16 survivors (old reference) | 0.1890 ± 0.0031 | 0.2793 |
+| Legendre-3, 16 survivors | 0.1890 ± 0.0031 | 0.2793 |
 | RBF-8, 16 survivors | 0.1909 ± 0.0016 | 0.2793 |
 | Legendre + RBF-8, 16 survivors | 0.1898 ± 0.0022 | 0.2797 |
 | Legendre-3, 32 survivors | 0.1851 ± 0.0023 | 0.2764 |
@@ -165,8 +171,8 @@ finding.
 | Legendre degree 5 | 0.1868 ± 0.0027 | 0.2788 |
 | `linear_cov` instead of Legendre, 24 survivors | 0.1990 ± 0.0021 | 0.2924 |
 | `quadratic` instead of Legendre, 24 survivors | 0.2027 ± 0.0054 | 0.2941 |
-| **Legendre-3, 24 survivors (current default)** | **0.1852 ± 0.0008** | 0.2775 |
-| **RBF-8, 24 survivors (current default)** | **0.1853 ± 0.0014** | 0.2772 |
+| **Legendre-3, 24 survivors (as shipped)** | **0.1852 ± 0.0008** | 0.2775 |
+| **RBF-8, 24 survivors (as shipped)** | **0.1853 ± 0.0014** | 0.2772 |
 
 What the experiments found:
 
@@ -194,7 +200,7 @@ What the experiments found:
   - a strong ridge on RBF weights;
   - a fixed RBF basis.
 
-Legendre-3 and RBF-8 now tie at 0.185.
+Legendre-3 and RBF-8 tie at 0.185.
 
 ## Against gradient boosting, same data
 
@@ -435,8 +441,9 @@ On identical features and splits:
 That is a gap of 0.015 MSE, or about 0.018 RMSE (0.412 vs 0.430). No
 seed of either torchsonn model reaches the trees' worst seed.
 
-Over this project, torchsonn has closed most of that gap. The tutorial
-started at 0.348 and now sits within 9% of the trees. Its 0.430 RMSE is
+The settings in [What each setting is worth](#what-each-setting-is-worth)
+take the tutorial from 0.348, for the plain Legendre setup, to within 9% of
+the trees. Its 0.430 RMSE is
 on a par with the tuned XGBoost and LightGBM numbers published for this
 dataset (0.432 and 0.434, on their split and features) [[2]](#ref-2).
 
@@ -470,7 +477,7 @@ ensembles are not:
 5. <a id="ref-5"></a>Kaggle Playground Series S3E1, *Regression with a Tabular
    California Housing Dataset*:
    <https://www.kaggle.com/competitions/playground-series-s3e1>
-6. <a id="ref-6"></a>Tutorial history: the headers of
+6. <a id="ref-6"></a>The results tables in the headers of
    [`california_housing_legendre_finetune.yaml`](california_housing_legendre_finetune.yaml)
    and [`california_housing_rbf.yaml`](california_housing_rbf.yaml).
 7. <a id="ref-7"></a>J. Yan et al., *T2G-Former: Organizing Tabular Features into

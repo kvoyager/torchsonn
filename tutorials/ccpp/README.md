@@ -132,13 +132,15 @@ at the end of that run's `train.log`), reproduced verbatim.
 Sorted by MAE, the canonical CCPP metric. Wall-clock is hardware-dependent —
 see [Hardware](#hardware) — and quoted only for the cost/accuracy trade-off.
 All `ccpp_legendre*` configs run `squash: True` with the default `sigma`
-method; the per-config sections below give the side-by-side against the earlier
-`squash: False` runs. `ccpp_mix.yaml` is the exception and stays unsquashed.
+method; the per-config sections below compare each with a `squash: False`
+run of the same config. `ccpp_mix.yaml` is the exception and stays unsquashed.
 The `*_finetune` rows add the [fine-tuning stack](#fine-tuning-the-discovered-network)
 on top of the config they are named after, and nothing else.
 
-All rows were logged under torchsonn 0.1.1, whose regression criterion divided
-by `Σy²`; 0.1.2 made `Σ(y-ȳ)²` the default (`train.error_normalization`).
+All rows were measured with torchsonn 0.1.1, whose regression criterion
+divides by `Σy²`, the form `train.error_normalization: energy` selects. The
+configs use the default, `variance` (`Σ(y-ȳ)²`), so a rerun can differ
+slightly from these rows.
 
 | Config | Families | Pools (nbest/max) | Device | Wall-clock | MAE (MW) | RMSE (MW) | R² |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
@@ -155,8 +157,8 @@ by `Σy²`; 0.1.2 made `Σ(y-ȳ)²` the default (`train.error_normalization`).
 | `ccpp.yaml` (default) | `linear_cov`, `quadratic`, `polyquad`(4) | 8/60 | CPU | ≈ 19 min | 3.3423 ± 0.0256 | 4.2593 ± 0.0511 | 0.9377 ± 0.0012 |
 
 The **fine-tuned configs sweep the top of the table** on all three metrics, and
-by a wide margin: every one of them beats the 11.3 h heavy monomial search that
-previously led, and the best of them does so by 0.13 MW of MAE. Two of the four
+by a wide margin: every one of them beats the 11.3 h heavy monomial search, the
+best of the searches without it, and the best of them does so by 0.13 MW of MAE. Two of the four
 run on a CPU in under an hour.
 
 They are also barely distinguishable from one another. The four span
@@ -247,7 +249,7 @@ heavy config's wide pools on CUDA.
 
 Finally, `ccpp_mix.yaml` keeps the default's monomial families *and* adds two
 Legendre ones (degree 2 and 3), so per-layer selection weighs the two bases
-head-to-head on the same run. It is the one Legendre-bearing config still on
+head-to-head on the same run. It is the one Legendre-bearing config on
 `squash: False`, deliberately: its number below comes from that run, and it is
 kept as the unsquashed reference point. Run it with
 `python -m tutorials.ccpp.ccpp --config-name=ccpp_mix`.
@@ -259,16 +261,17 @@ kept as the unsquashed reference point. Run it with
 recurrence. The mapping is `model.squash_method`, `sigma` by default: standardize
 on the training set's per-feature mean/std (measured once per layer, on that
 layer's actual inputs), pass everything within ±2 σ through linearly onto ±0.75,
-and saturate only the tail. They also previously ran `squash: False`, feeding the
-recurrence the scaled features raw at up to ±3.3 σ, and each section below carries
-the before/after. The effect is the same in all four cases and worth stating once:
+and saturate only the tail. Each was also run with `squash: False`, which feeds
+the recurrence the scaled features raw at up to ±3.3 σ, and each section below
+compares the two. The effect is the same in all four cases and worth stating once
+(the wall-clock column gives `squash: False`, then `squash: True`):
 
 | Config | MAE Δ | RMSE Δ | σ(MAE) | σ(RMSE) | σ(R²) | Wall-clock |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `ccpp_legendre.yaml` | −0.001 | +0.021 | −57 % | −41 % | −46 % | 17 → 12 min |
-| `ccpp_legendre_heavy.yaml` | +0.012 | +0.019 | −44 % | −35 % | −38 % | 2.9 → 1.4 h |
-| `ccpp_legendre_poly.yaml` | +0.006 | +0.024 | −53 % | −30 % | −42 % | 30 → 25 min |
-| `ccpp_legendre_poly_heavy.yaml` | +0.026 | +0.039 | −50 % | −35 % | −38 % | 13.9 → 8.8 h |
+| `ccpp_legendre.yaml` | −0.001 | +0.021 | −57 % | −41 % | −46 % | 17 / 12 min |
+| `ccpp_legendre_heavy.yaml` | +0.012 | +0.019 | −44 % | −35 % | −38 % | 2.9 / 1.4 h |
+| `ccpp_legendre_poly.yaml` | +0.006 | +0.024 | −53 % | −30 % | −42 % | 30 / 25 min |
+| `ccpp_legendre_poly_heavy.yaml` | +0.026 | +0.039 | −50 % | −35 % | −38 % | 13.9 / 8.8 h |
 
 The central estimate gives up a little — always well inside one unsquashed
 standard deviation — while the fold-to-fold spread falls by a third to a half on
@@ -304,14 +307,15 @@ repeat   fold   RMSE(MW)    MAE(MW)        R²
   R²   = 0.9379 ± 0.0007
 ```
 
-The [`squash: True` switch](#the-squash-switch) leaves the central estimate essentially
-where it was — MAE is flat at −0.001, RMSE a hair worse at +0.021, itself under
-one previous standard deviation — but **halves the fold-to-fold spread**:
+Against `squash: False`, the [`squash: True` setting](#the-squash-switch) barely
+moves the central estimate — MAE is flat at −0.001, RMSE a hair worse at +0.021,
+itself under one unsquashed standard deviation — but **halves the fold-to-fold
+spread**:
 
 | `ccpp_legendre.yaml` | MAE (MW) | RMSE (MW) | R² |
 |---|:--:|:--:|:--:|
-| `squash: False` (previous) | 3.3094 ± 0.0342 | 4.2309 ± 0.0545 | 0.9385 ± 0.0013 |
-| `squash: True` (sigma, current) | 3.3084 ± 0.0147 | 4.2518 ± 0.0322 | 0.9379 ± 0.0007 |
+| `squash: False` | 3.3094 ± 0.0342 | 4.2309 ± 0.0545 | 0.9385 ± 0.0013 |
+| `squash: True` (sigma, as shipped) | 3.3084 ± 0.0147 | 4.2518 ± 0.0322 | 0.9379 ± 0.0007 |
 
 The standard deviations drop by 57 %, 41 % and 46 % — the largest reduction of
 the four configs, and the tightest MAE spread in this tutorial. The unsquashed
@@ -347,8 +351,8 @@ Same trade as the light config, and the same magnitude:
 
 | `ccpp_legendre_heavy.yaml` | MAE (MW) | RMSE (MW) | R² |
 |---|:--:|:--:|:--:|
-| `squash: False` (previous) | 3.2919 ± 0.0287 | 4.2152 ± 0.0538 | 0.9390 ± 0.0013 |
-| `squash: True` (sigma, current) | 3.3035 ± 0.0162 | 4.2339 ± 0.0350 | 0.9384 ± 0.0008 |
+| `squash: False` | 3.2919 ± 0.0287 | 4.2152 ± 0.0538 | 0.9390 ± 0.0013 |
+| `squash: True` (sigma, as shipped) | 3.3035 ± 0.0162 | 4.2339 ± 0.0350 | 0.9384 ± 0.0008 |
 
 Note what the wide pools buy over the light config once both are squashed:
 3.3035 vs 3.3084 MAE, a 0.005 MW gap against a 0.016 MW fold spread — the
@@ -386,13 +390,13 @@ pattern seen on the light config — the same trade, at about the same size:
 
 | `ccpp_legendre_poly.yaml` | MAE (MW) | RMSE (MW) | R² |
 |---|:--:|:--:|:--:|
-| `squash: False` (previous) | 3.2727 ± 0.0285 | 4.1932 ± 0.0481 | 0.9396 ± 0.0012 |
-| `squash: True` (sigma, current) | 3.2782 ± 0.0135 | 4.2174 ± 0.0339 | 0.9389 ± 0.0007 |
+| `squash: False` | 3.2727 ± 0.0285 | 4.1932 ± 0.0481 | 0.9396 ± 0.0012 |
+| `squash: True` (sigma, as shipped) | 3.2782 ± 0.0135 | 4.2174 ± 0.0339 | 0.9389 ± 0.0007 |
 
 The central estimate gives up a little — MAE +0.006, RMSE +0.024, both inside
-one previous standard deviation — while the spread falls 53 %, 30 % and 42 %.
+one unsquashed standard deviation — while the spread falls 53 %, 30 % and 42 %.
 The effect on the mean is modest here for a specific reason: `ccpp.py` already
-divides the StandardScaler'd features by 3 (`ccpp.py:252`), so they largely sit
+divides the StandardScaler'd features by 3 (in `ccpp.py`), so they largely sit
 inside [-1, 1] before any squash runs — the training log confirms it, reporting
 `std range [0.3333, 0.3333]` when it calibrates layer 0. The sigma squash is the
 principled version of that hand-rolled rescale — it measures the actual
@@ -431,14 +435,14 @@ and takes the largest speed-up:
 
 | `ccpp_legendre_poly_heavy.yaml` | MAE (MW) | RMSE (MW) | R² |
 |---|:--:|:--:|:--:|
-| `squash: False` (previous) | 3.2518 ± 0.0400 | 4.1726 ± 0.0605 | 0.9402 ± 0.0013 |
-| `squash: True` (sigma, current) | 3.2777 ± 0.0200 | 4.2111 ± 0.0395 | 0.9391 ± 0.0008 |
+| `squash: False` | 3.2518 ± 0.0400 | 4.1726 ± 0.0605 | 0.9402 ± 0.0013 |
+| `squash: True` (sigma, as shipped) | 3.2777 ± 0.0200 | 4.2111 ± 0.0395 | 0.9391 ± 0.0008 |
 
 MAE +0.026 and RMSE +0.039 — both still inside one unsquashed standard
 deviation, but this is the one config where the unsquashed run's point estimate
 was genuinely the best in the tutorial (3.2518) and the squashed one is not. The
-spread halves in exchange (−50 % / −35 % / −38 %) and the run drops from 13.9 h
-to 8.8 h. Which you prefer depends on what you report: the unsquashed
+spread halves in exchange (−50 % / −35 % / −38 %) and the run takes 8.8 h instead
+of 13.9 h. Which you prefer depends on what you report: the unsquashed
 configuration remains available (`squash: False` on each `legendre` entry) and is
 the right pick if the best single number matters more than its reproducibility.
 
@@ -458,8 +462,8 @@ Scaling that up buys nothing further here: `ccpp_legendre_poly_heavy.yaml` —
 arity over wide pools on CUDA — lands at **3.2777 ± 0.0200** against the light
 multi-input config's **3.2782 ± 0.0135**, i.e. the same number to within a
 twentieth of a standard deviation, for 8.8 h of GPU against 25 min of CPU. Both
-remain ~0.018 MW behind the heavy monomial search (3.26 ± 0.04) — which held
-the best central estimate on every metric until the fine-tuned configs below.
+remain ~0.018 MW behind the heavy monomial search (3.26 ± 0.04), which has the
+best central estimate on every metric among the configs without fine-tuning.
 
 Every fold selects all four ambient variables (`features=AT, V, AP, RH`),
 confirming each input carries signal.
@@ -533,9 +537,10 @@ Three observations worth drawing out:
 ### The end-to-end pass needs its head
 
 One negative result is recorded in `ccpp_legendre_finetune.yaml` because it is
-easy to re-derive by accident. Stage 3 was first written to *drop* the head and
-fine-tune the bare network against its own best-error neuron, aiming for a pure
-polynomial model with no learned readout. That scored **3.4637 ± 0.2730** —
+easy to re-derive by accident. With `finetune_drop_head: true`, stage 3 drops
+the head and fine-tunes the bare network against its own best-error neuron,
+aiming for a pure polynomial model with no learned readout. That scored
+**3.4637 ± 0.2730** —
 worse than doing nothing. Removing the head collapses the readout to MAE ~12
 and the pass has to rebuild a predictor from there, reaching near-head quality
 on 7 of 10 folds and a bad basin on the other 3. A learning-rate sweep over two

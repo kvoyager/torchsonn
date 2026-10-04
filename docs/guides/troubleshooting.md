@@ -171,5 +171,6 @@ These are problems of the library as it stands, with a way around each.
 | `SONNLayer.describe` raises `AttributeError` | Use the loop in [Inspecting a model](inspecting.md#inside-a-layer). |
 | `Trainer.infer` does not apply the trainer's `batch_callback` | Give `infer` a loader that yields `(x, y)` pairs. |
 | An empty `train.checkpoint_dir` writes inside the installed package's environment | Set `train.checkpoint_dir`. |
+| The checkpoint cleanup deletes any file in `train.checkpoint_dir` that is not a step checkpoint, and fails with `PermissionError` (Windows) on a subfolder | Give each run a checkpoint folder that holds nothing else (see [Training](training.md#checkpoints)). |
 
 <small>Checked against TorchSONN 0.1.5.</small>

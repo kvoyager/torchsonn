@@ -81,7 +81,15 @@ installed package is inside the Python environment.
 
 `L` is the layer, `N` the family within it and `S` the step. Only the
 `train.keep_last_n` most recent step checkpoints are kept; that cleanup
-leaves the `_last` copies and `model_last.ckpt` alone. When the search ends,
+leaves the `_last` copies and `model_last.ckpt` alone.
+
+!!! warning "Keep nothing else in the checkpoint folder"
+    The cleanup counts every entry in the folder, not only checkpoints, and
+    deletes the surplus oldest first, starting with whatever is not a step
+    checkpoint. A file of your own in `train.checkpoint_dir` is deleted as
+    soon as the folder holds more than `keep_last_n` entries, and a
+    subfolder makes the cleanup fail with an error. Give each run a folder
+    of its own. When the search ends,
 the step checkpoints of the layers trained past the best one, `_last`
 copies included, are deleted.
 

@@ -11,6 +11,12 @@ site_dir: site
 # `mkdocs gh-deploy` publishes the local build, so the folder is excluded here.
 exclude_docs: |
   drafts/
+  hooks/
+
+# docs/hooks/assets.py publishes the tutorial diagrams and includes the
+# tutorial READMEs, which live next to the tutorial code (see its docstring).
+hooks:
+  - docs/hooks/assets.py
 
 # Under `mkdocs build --strict` every warning fails the build, so these make
 # broken links, missing anchors and pages left out of the nav into errors.
