@@ -1921,8 +1921,8 @@ class Trainer:
                         }, refresh=True)
 
                     # The single correctness sync per eval: has the whole ensemble
-                    # stopped (or the step budget run out — a free host-int test)?
-                    if bool((all_stopped | completion_stop).item()) or global_step > model.param.train.steps:
+                    # stopped? The step budget is checked after every step below.
+                    if bool((all_stopped | completion_stop).item()):
                         # Snap total to the current step so the bar renders as
                         # 100% on the final line — otherwise an early-stop at
                         # step 80 of a 500-step budget leaves a permanent
@@ -1942,6 +1942,19 @@ class Trainer:
 
                 global_step += 1
                 tbar.update(1)
+
+                # The step budget holds at any step, not only at evaluations:
+                # a fit runs at most train.steps optimizer steps (counted
+                # across a resume, like global_step). The write-back and the
+                # completed checkpoint after the loop end it as usual.
+                if global_step >= int(model.param.train.steps):
+                    tbar.total = tbar.n
+                    tbar.refresh()
+                    logger.info(
+                        f"{neuron_model.__class__.__name__} reached train.steps ({global_step})"
+                    )
+                    stop = True
+                    break
 
                 save_interval = model.param.train.save_interval
                 if (save_interval != -1 and global_step % save_interval == 0) or (step == train_dl_len - 1 and not model.param.train.skip_saving_at_epoch_end):
@@ -3604,8 +3617,23 @@ class Trainer:
         The head needs no reindexing: the retained neurons keep their
         `err_values`, so re-running `_best_neuron_columns` on the pruned layer
         re-derives the same neurons in the same ascending-error order, which is
-        the order the head's inputs were fitted in.
+        the order the head's inputs were fitted in. Every kept layer's
+        `d_model` is set to its new width.
+
+        Raises
+        ------
+        ValueError
+            If the model was built with `model.use_layer_norm`. Its LayerNorms
+            normalize each row over every column of a layer's input, so
+            removing columns would change the predictions; the model is left
+            as it is.
         """
+        if bool(model.param.model.use_layer_norm):
+            raise ValueError(
+                "Trainer.prune cannot keep the predictions of a model built with "
+                "model.use_layer_norm: each LayerNorm normalizes over every column of a "
+                "layer's input, so removing columns changes it. The model is unchanged."
+            )
         # Every layer's input is a concatenation of blocks — the outputs of
         # the layers in its `input_layers`, then the raw inputs (see the
         # layout note above SONN.forward) — and a layer can be read by several
@@ -3766,4 +3794,9 @@ class Trainer:
                 f"prune: removed layer(s) at position(s) {sorted(deleted)} "
                 "(outputs read by no surviving layer)."
             )
+
+        # The widths the layers have now, as neuron_selection records them
+        # (and as the checkpoint metadata saves them).
+        for layer in model.layers:
+            layer.d_model = len(layer)
 

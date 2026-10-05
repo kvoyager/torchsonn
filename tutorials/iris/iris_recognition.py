@@ -105,6 +105,9 @@ def main(config: DictConfig) -> None:
     dev_dl = DataLoader(dev_ds, batch_size=config.train.batch_size)
     test_dl = DataLoader(test_ds, batch_size=config.train.batch_size)
 
+    # Seed first: everything random from here on, the model included,
+    # follows train.seed.
+    Trainer.set_seed(config.train.seed)
     model = SONN(
         config,
         d_model=x_train.shape[1],
@@ -113,7 +116,6 @@ def main(config: DictConfig) -> None:
     model = model.to(config.train.device)
 
     trainer = Trainer(config, feature_names=iris.feature_names)
-    trainer.set_seed(model.param.train.seed)
 
     # `resume` is now a top-level config field (default False); override via:
     #   python -m tutorials.iris.iris_recognition resume=true

@@ -161,6 +161,9 @@ def main(config: DictConfig) -> None:
     test_dl  = DataLoader(SONNDataset(X_test,  y_test),    batch_size=bs)
 
     # --- Build + train -------------------------------------------------------
+    # Seed first: everything random from here on, the model included,
+    # follows train.seed.
+    Trainer.set_seed(int(config.train.seed))
     model = SONN(
         config,
         d_model=X_train.shape[1],
@@ -170,7 +173,6 @@ def main(config: DictConfig) -> None:
     print(model)
 
     trainer = Trainer(config, feature_names=feature_names)
-    Trainer.set_seed(int(config.train.seed))
     trainer.train(model, train_dl, dev_dl, test_dl, resume=bool(config.get("resume", False)))
 
     # Train the (num_out, 1) regression head on the training split, with an

@@ -405,10 +405,12 @@ def main(config: DictConfig) -> None:
         logger.info("rows: train %d, dev %d, val %s, test %d", len(train_x), len(dev_x),
                     len(val_x) if val_x is not None else "-", len(tx))
 
+        # Seed first: everything random from here on, the model included,
+        # follows this member's seed.
+        Trainer.set_seed(seed)
         model = SONN(config, d_model=train_x.shape[1], feature_names=names)
         model = model.to(config.train.device)
         trainer = Trainer(config, feature_names=names)
-        trainer.set_seed(seed)
 
         # --- Train ------------------------------------------------------------
         resume = bool(config.get("resume", False)) and member == 0

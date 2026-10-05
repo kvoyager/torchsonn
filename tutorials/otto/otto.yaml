@@ -96,7 +96,11 @@ train:
   # (above) so there's a single place to tune optimizer / max_steps /
   # weight_decay for both passes.
   layer_finetune: true
-  steps: 1000
+  # Optimizer steps per family fit. No candidate fit here stops early, so
+  # every fit runs exactly this many steps. The recorded results come from
+  # fits of 1,101 steps; one step fewer moves the test log loss from 0.73 to
+  # 0.75 (one GPU run each, 2026-10-04): the fits have not converged here.
+  steps: 1101
   shuffle: true
   train_loss_tol: 0.001
   train_loss_window: 20

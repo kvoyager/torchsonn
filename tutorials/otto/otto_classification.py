@@ -155,13 +155,15 @@ def main():
 
     preprocessing = torch.nn.Sequential(torch.nn.LayerNorm(x_train.shape[1], elementwise_affine=False))
     # -- Model ---------------------------------------------------------------
+    # Seed first: everything random from here on, the model included,
+    # follows train.seed.
+    Trainer.set_seed(config.train.seed)
     model = SONN(config, d_model=x_train.shape[1], feature_names=feature_names, preprocessing=preprocessing)
     model = model.to(config.train.device)
     print(model)
 
     # -- Train SONN layers ---------------------------------------------------
     trainer = Trainer(config, feature_names=feature_names, class_weights=cw)
-    Trainer.set_seed(config.train.seed)
     trainer.train(model, train_dl, dev_dl, test_dl, resume=config.resume)
 
     # -- Train out_proj ------------------------------------------------------
