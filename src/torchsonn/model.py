@@ -217,7 +217,6 @@ class SONN(SONNModule):
         if isinstance(self.feature_names, np.ndarray):
             self.feature_names = self.feature_names.tolist()
 
-        self.dtype = getattr(torch, self.param.train.dtype)
 
         self.nbest_neurons = config.model.nbest_neurons        # number of the best neurons to be selected
         assert self.nbest_neurons > 1
@@ -228,7 +227,8 @@ class SONN(SONNModule):
         self.layer_val_err: list[float] = []      # same on the validation split, when one is given
         self.layer_val_err: list[float] = []      # same on the validation split, when one is given
 
-        cw = class_weights.to(dtype=self.dtype) if class_weights is not None else None
+        # In the type every parameter is built in, PyTorch's default.
+        cw = class_weights.to(dtype=torch.get_default_dtype()) if class_weights is not None else None
 
         if self.param.model.type == "regressor":
             self.shared_proj = None
@@ -251,9 +251,10 @@ class SONN(SONNModule):
             # default GMDH path), capped at whatever a single polynomial
             # neuron can express. Its starting weights come from train.seed.
             if self.param.model.use_output_projection:
+                # Null: every survivor of the last layer.
                 num_out = self.param.model.num_out_neurons
                 if num_out is None:
-                    num_out = self.param.model.max_neuron_models
+                    num_out = self.param.model.nbest_neurons
                 self.out_proj = _linear_from_seed(num_out, 1, self.param.train.seed)
             else:
                 self.out_proj = None
@@ -305,9 +306,10 @@ class SONN(SONNModule):
 
             if self.param.model.use_output_projection:
                 # Starting weights from train.seed, as for the regression head.
+                # Null: every survivor of the last layer.
                 num_out = self.param.model.num_out_neurons
                 if num_out is None:
-                    num_out = self.param.model.max_neuron_models
+                    num_out = self.param.model.nbest_neurons
                 self.out_proj = _linear_from_seed(num_out, num_classes, self.param.train.seed)
             else:
                 self.out_proj = None
@@ -328,7 +330,7 @@ class SONN(SONNModule):
         Safe to call after model.to(device) — the new loss module is moved to
         the model's current device automatically.
         """
-        cw = class_weights.to(dtype=self.dtype, device=self.device)
+        cw = class_weights.to(dtype=torch.get_default_dtype(), device=self.device)
         if isinstance(self.loss_fn, nn.NLLLoss):
             self.loss_fn = nn.NLLLoss(weight=cw, reduction="none").to(device=self.device)
         elif isinstance(self.loss_fn, nn.BCEWithLogitsLoss):

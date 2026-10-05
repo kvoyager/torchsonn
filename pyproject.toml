@@ -76,7 +76,7 @@ Issues = "https://github.com/kvoyager/torchsonn/issues"
 where = ["src"]
 # `where=["src"]` makes setuptools scan inside src/ instead of the project
 # root, picking up `torchsonn` + every subpackage (config, data, loss,
-# modules, neurons, optimizers, schedulers). Without this hint, auto-
+# modules, neurons, optimizers). Without this hint, auto-
 # discovery falls back to flat-layout rules and errors out because tests/
 # and tutorials/ also have __init__.py.
 

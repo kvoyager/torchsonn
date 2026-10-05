@@ -1,7 +1,7 @@
 """The configuration reference (docs/reference/config.md) stays in step with the code.
 
 Every configuration key, every option a `model.ref_functions` entry accepts
-and every argument an optimizer or scheduler takes must appear on the page,
+and every argument an optimizer takes must appear on the page,
 and every key the page names must exist. Adding, renaming or removing one
 without updating the page fails here.
 """
@@ -15,7 +15,6 @@ import pytest
 from torchsonn.config.schemas import SONNConfig, _default_optimizer_params
 from torchsonn.neurons import BasePolynomNeuron
 from torchsonn.optimizers import optimizer_map
-from torchsonn.schedulers import scheduler_map
 
 REFERENCE = Path(__file__).resolve().parents[1] / "docs" / "reference" / "config.md"
 
@@ -23,7 +22,6 @@ REFERENCE = Path(__file__).resolve().parents[1] / "docs" / "reference" / "config
 FAMILY_BUILDER_ARGS = {"self", "num_feat", "num_src_feat", "layer_index", "start_index"}
 # Optimizer arguments the trainer passes itself.
 OPTIMIZER_BUILDER_ARGS = {"self", "params", "shared_param_names"}
-SCHEDULER_BUILDER_ARGS = {"self", "optimizer"}
 
 
 @pytest.fixture(scope="module")
@@ -106,12 +104,3 @@ def test_every_default_optimizer_param_is_documented(page):
     section = _section(page, "Optimizer parameters")
     missing = [key for key in _default_optimizer_params() if f"`{key}`" not in section]
     assert not missing, f"default optimizer_params keys missing from 'Optimizer parameters': {missing}"
-
-
-@pytest.mark.parametrize("name", sorted(scheduler_map))
-def test_every_scheduler_argument_is_documented(page, name):
-    section = _section(page, "Scheduler parameters")
-    assert f"`{name}`" in section, f"scheduler {name!r} missing from 'Scheduler parameters'"
-    missing = [arg for arg in _arguments(scheduler_map[name], SCHEDULER_BUILDER_ARGS)
-               if f"`{arg}`" not in section]
-    assert not missing, f"arguments of scheduler {name!r} missing: {missing}"

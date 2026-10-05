@@ -93,7 +93,6 @@ train:
   # `train.device=cpu` if you don't want the GPU; cuda only pays off for the
   # heavy config's much larger candidate pools (ccpp_heavy.yaml).
   device: cpu
-  dtype: float32
 
   criterion_type: validate
   error_alpha: 0.5
@@ -139,8 +138,6 @@ train:
   early_stop_tolerance_steps: 3
   early_stop_patience: 1e-3
   early_stop_completion_percentage: 100
-  train_loss_tol: 0.001
-  train_loss_window: 20
 
   # Checkpointing — local to the tutorial folder so artifacts don't collide
   # with the other tutorials. Path is relative to the launch cwd; the README

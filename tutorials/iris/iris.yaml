@@ -60,7 +60,5 @@ train:
   shuffle: True
   early_stop_tolerance_steps: 5
   early_stop_patience: 1e-4
-  train_loss_tol: 0.001
-  train_loss_window: 20
   max_layer_count: 5
   stop_train_epsilon_condition: 1e-6

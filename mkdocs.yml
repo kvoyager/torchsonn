@@ -143,7 +143,6 @@ nav:
           - Losses and criteria: reference/api/loss.md
           - Modules: reference/api/modules.md
           - Optimizers: reference/api/optimizers.md
-          - Schedulers: reference/api/schedulers.md
           - Plotting: reference/api/plot_model.md
           - Configuration: reference/api/config.md
   - Tutorials:

@@ -37,7 +37,6 @@ train:
   seed: 42
   batch_size: 512
   device: cuda
-  dtype: float32
   criterion_type: validate
   error_alpha: 0.5
   max_layer_count: 3
@@ -102,8 +101,6 @@ train:
   # 0.75 (one GPU run each, 2026-10-04): the fits have not converged here.
   steps: 1101
   shuffle: true
-  train_loss_tol: 0.001
-  train_loss_window: 20
   verbose: true
   log_layer_diagnostics: true
   neuron_selection_method: omp_mixed

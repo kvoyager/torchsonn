@@ -485,13 +485,10 @@ class TestStepCheckpoint:
             layer_completed=False,
             err=[],
             module_idxs=[],
-            scheduler=None,
         )
         d = ckpt.to_dict()
         # FakeOpt's state_dict was unwrapped via the safe_value branch
         assert d["opt"] == {"v": 1}
-        # `scheduler=None` is filtered out
-        assert "scheduler" not in d
 
 
 class TestLayerAccumulator:
