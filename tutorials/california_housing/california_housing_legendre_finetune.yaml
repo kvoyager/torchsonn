@@ -41,7 +41,7 @@
 #   layer_finetune off + 16 survivors    MSE 0.1986   MAE 0.2803   (15 layers) <- this file
 #   (rerun of this file as written: MSE 0.1972 / MAE 0.2786 - cuda runs are not
 #   bit-reproducible, so that is the seed-noise scale for a single split)
-# Legendre degree, on this file:
+# Legendre degree, on this file (single runs):
 #   degree 4                             MSE 0.1969   MAE 0.2796   (16 layers)
 #   degree 5                             MSE 0.2027   MAE 0.2810   (14 layers)
 # Second family, 3-input Legendre (degree 3, squash) next to the pairs, cap 140
@@ -219,8 +219,10 @@ model:
   # line of defence here rather than the only one.
   #
   # degree 3 -> 1 + 2*3 + 1 (cross term) = 8 coefficients per pair neuron.
-  # Higher degrees measured on this file (see the results table): degree 4 is
-  # a tie (MSE 0.1969 vs 0.1972), degree 5 is worse (0.2027), so 3 stays.
+  # Degrees 4 and 5 were measured on this file too. Single runs (the results
+  # table) gave 0.1969 and 0.2027 against 0.1972; the README's seed repeats
+  # put both within the seed noise of degree 3, so 3 stays, with the fewest
+  # coefficients (10 at degree 4, 12 at degree 5).
   # Per-neuron-type activation: the entry sets its own `activation:`; an empty
   # string means None -> `nn.Identity()`.
   ref_functions:
