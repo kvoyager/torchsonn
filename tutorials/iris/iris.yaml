@@ -47,7 +47,7 @@ train:
   eval_smoothing_factor: 0.2
   save_interval: 100
   keep_last_n: 100
-  checkpoint_dir: ""
+  checkpoint_dir: checkpoints
   optimizer:
     name: sgd
     verbose: True

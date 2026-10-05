@@ -48,7 +48,7 @@ train:
   save_last_layer: true
   keep_last_n: 10
   skip_saving_at_epoch_end: true
-  checkpoint_dir: ""
+  checkpoint_dir: checkpoints
   early_stop_completion_percentage: 100
   early_stop_patience: 1.0e-4
   early_stop_tolerance_steps: 10
@@ -62,9 +62,6 @@ train:
       gamma: 0.5
       clip_value: 1.0
       clip_norm: 5.0
-  scheduler:
-    name: null
-    scheduler_params: null
   out_proj_train:
     optimizer: lbfgs
     # outer LBFGS steps; each opt.step() runs lbfgs_max_iter inner iterations,

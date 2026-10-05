@@ -357,8 +357,10 @@ class TrainConfig:
     skip_saving_at_epoch_end: bool = True
     # Parent of the run folders: every Trainer.train run writes its
     # checkpoints, model_last.ckpt and train.log to
-    # <checkpoint_dir>/<YYYY-MM-DD-HH-MM-SS>/. Empty = <repo>/checkpoints.
-    checkpoint_dir: str = ""
+    # <checkpoint_dir>/<YYYY-MM-DD-HH-MM-SS>/. A relative path, the default
+    # included, is taken from the working directory. Empty raises ValueError
+    # when the Trainer is built.
+    checkpoint_dir: str = "checkpoints"
 
     early_stop_completion_percentage: int = 100
     early_stop_patience: float = 1.0e-4
