@@ -16,6 +16,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
+from torchsonn.optimizers import BatchedAdam as _BatchedAdam
 
 
 def _cfg(tmp_path, **train_overrides) -> OmegaConf:
@@ -616,6 +617,47 @@ def test_use_deterministic_algorithms(tmp_path, monkeypatch):
         assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
     finally:
         torch.use_deterministic_algorithms(was)
+
+
+class _CountingAdam(_BatchedAdam):
+    steps = 0
+
+    def step(self, *args, **kwargs):
+        _CountingAdam.steps += 1
+        return super().step(*args, **kwargs)
+
+
+@pytest.fixture
+def counted_steps(monkeypatch):
+    import torchsonn.trainer as trainer_mod
+    _CountingAdam.steps = 0
+    monkeypatch.setitem(trainer_mod.optimizer_map, "adam", _CountingAdam)
+    return _CountingAdam
+
+
+@pytest.mark.parametrize("steps,eval_interval", [(30, 1000), (12, -1)])
+def test_a_fit_runs_exactly_train_steps(tmp_path, counted_steps, caplog, steps, eval_interval):
+    """The budget holds between evaluations too: no early stop (huge
+    tolerance), one family, one layer, 6 batches per pass over the loader."""
+    cfg = _cfg(tmp_path, max_layer_count=1, steps=steps, eval_step_interval=eval_interval,
+               early_stop_tolerance_steps=100000)
+    model = SONN(cfg, d_model=4)
+    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+        Trainer(config=cfg).train(model, _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
+    assert counted_steps.steps == steps
+    assert any(f"reached train.steps ({steps})" in r.message for r in caplog.records)
+    assert not any("early stopped at step" in r.message for r in caplog.records)
+
+
+def test_an_early_stop_still_says_so(tmp_path, counted_steps, caplog):
+    cfg = _cfg(tmp_path, max_layer_count=1, steps=100000, eval_step_interval=1,
+               early_stop_tolerance_steps=1)
+    model = SONN(cfg, d_model=4)
+    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+        Trainer(config=cfg).train(model, _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
+    assert counted_steps.steps < 100000
+    assert any("early stopped at step" in r.message for r in caplog.records)
+    assert not any("reached train.steps" in r.message for r in caplog.records)
 
 
 def test_train_out_proj_raises_without_head(tmp_path):

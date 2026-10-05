@@ -1921,8 +1921,8 @@ class Trainer:
                         }, refresh=True)
 
                     # The single correctness sync per eval: has the whole ensemble
-                    # stopped (or the step budget run out — a free host-int test)?
-                    if bool((all_stopped | completion_stop).item()) or global_step > model.param.train.steps:
+                    # stopped? The step budget is checked after every step below.
+                    if bool((all_stopped | completion_stop).item()):
                         # Snap total to the current step so the bar renders as
                         # 100% on the final line — otherwise an early-stop at
                         # step 80 of a 500-step budget leaves a permanent
@@ -1942,6 +1942,19 @@ class Trainer:
 
                 global_step += 1
                 tbar.update(1)
+
+                # The step budget holds at any step, not only at evaluations:
+                # a fit runs at most train.steps optimizer steps (counted
+                # across a resume, like global_step). The write-back and the
+                # completed checkpoint after the loop end it as usual.
+                if global_step >= int(model.param.train.steps):
+                    tbar.total = tbar.n
+                    tbar.refresh()
+                    logger.info(
+                        f"{neuron_model.__class__.__name__} reached train.steps ({global_step})"
+                    )
+                    stop = True
+                    break
 
                 save_interval = model.param.train.save_interval
                 if (save_interval != -1 and global_step % save_interval == 0) or (step == train_dl_len - 1 and not model.param.train.skip_saving_at_epoch_end):
