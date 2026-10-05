@@ -41,12 +41,14 @@ vmapped candidate fit, which takes every named parameter with in_dims=0.
 Initialization happens in the trainer's per-layer input pass
 (`Trainer.fit_layer_inputs`): the module receives the layer's input moments
 (`fit_input_stats`), then a row sample of the layer input (`fit_input_sample`)
-on which it runs k-means++ and, in sample mode, Lloyd's iterations batched
-over the candidates; in stream mode (large data) only the k-means++ start is
-taken from the sample and the centers are then refined by mini-batch k-means
-over the whole split (`stream_input_batch`, Sculley's per-center 1/n rate),
-finishing with `finish_input_stream`. `placement="grid"` replaces k-means by
-the product of per-slot quantile grids (deterministic, `M` must be K^dim).
+on which it takes the k-means start (`seeding`: the rows at the quantiles of
+the first principal axis by default, or a seeded k-means++ draw) and, in
+sample mode, runs Lloyd's iterations batched over the candidates; in stream
+mode (large data) only the start is taken from the sample and the centers
+are then refined by mini-batch k-means over the whole split
+(`stream_input_batch`, Sculley's per-center 1/n rate), finishing with
+`finish_input_stream`. `placement="grid"` replaces k-means by the product of
+per-slot quantile grids (deterministic, `M` must be K^dim).
 Widths start at `width` times the local spacing, radii at `center_radius`
 times it, both floored so duplicated centers (tied or binary slots) never give
 a zero width or radius.
@@ -346,8 +348,9 @@ class RBFNeuron(BaseTupleNeuron):
                                               dtype=torch.float64, device=centers.device)
             self._stream_rows = 0
             self._stream_start = centers.detach().clone()
-            logger.info("%s: k-means++ start on %d sampled rows in %.2fs; streaming pass follows",
-                        self.get_short_name(), n_rows, time.perf_counter() - t0)
+            start = "PCA-quantile start" if self.seeding == "pca_quantiles" else "k-means++ start"
+            logger.info("%s: %s on %d sampled rows in %.2fs; streaming pass follows",
+                        self.get_short_name(), start, n_rows, time.perf_counter() - t0)
             return
         centers = self._lloyd(u, centers, int(iters))
         self._finish_placement(centers, u, f"k-means on {n_rows} rows, {int(iters)} Lloyd iterations", t0)

@@ -920,6 +920,18 @@ class TestRBFNeuron:
         grid.stream_input_batch(x[:8])
         grid.finish_input_stream()
 
+    @pytest.mark.parametrize("seeding, start", [("pca_quantiles", "PCA-quantile start"),
+                                                ("kmeans++", "k-means++ start")])
+    def test_stream_start_log_names_the_seeding(self, caplog, seeding, start):
+        x = _two_clusters(n_rows=512, seed=1)
+        n = _rbf(2, centers=2, max_neuron_models=None, seeding=seeding)
+        n.fit_input_stats(x.mean(0), x.std(0, unbiased=False))
+        caplog.set_level(logging.INFO, logger="torchsonn.neurons.rbf")
+        n.fit_input_sample(x, stream=True, seed=5)
+        lines = [rec.getMessage() for rec in caplog.records if "streaming pass follows" in rec.getMessage()]
+        assert len(lines) == 1
+        assert f": {start} on 512 sampled rows" in lines[0]
+
     def test_local_bump_beats_legendre_design(self):
         """A fixed 16-center k-means basis resolves a bump comparable to its
         center spacing (radius ~0.7 std here: measured ratio 0.26 of the

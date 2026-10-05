@@ -91,6 +91,14 @@ them on the whole training split. An unknown `train.criterion_type`, this
 one included, raises `ValueError` naming `validate`, `bias` and
 `validate_bias` when the model is built.
 
+### Fixed — the streaming RBF start's log line names its seeding
+
+With `train.rbf_kmeans_mode` streaming, an `rbf` family logged "k-means++
+start on N sampled rows" whatever its `seeding`; under the default
+`pca_quantiles` the start is the rows at the quantiles of the first
+principal axis. The line now says "PCA-quantile start" or "k-means++
+start".
+
 ## 0.1.5
 
 ### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs
