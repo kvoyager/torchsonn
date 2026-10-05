@@ -62,9 +62,6 @@ train:
       gamma: 0.5
       clip_value: 1.0
       clip_norm: 5.0
-  scheduler:
-    name: null
-    scheduler_params: null
   out_proj_train:
     optimizer: lbfgs
     # outer LBFGS steps; each opt.step() runs lbfgs_max_iter inner iterations,
