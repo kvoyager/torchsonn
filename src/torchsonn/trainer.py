@@ -3608,8 +3608,23 @@ class Trainer:
         The head needs no reindexing: the retained neurons keep their
         `err_values`, so re-running `_best_neuron_columns` on the pruned layer
         re-derives the same neurons in the same ascending-error order, which is
-        the order the head's inputs were fitted in.
+        the order the head's inputs were fitted in. Every kept layer's
+        `d_model` is set to its new width.
+
+        Raises
+        ------
+        ValueError
+            If the model was built with `model.use_layer_norm`. Its LayerNorms
+            normalize each row over every column of a layer's input, so
+            removing columns would change the predictions; the model is left
+            as it is.
         """
+        if bool(model.param.model.use_layer_norm):
+            raise ValueError(
+                "Trainer.prune cannot keep the predictions of a model built with "
+                "model.use_layer_norm: each LayerNorm normalizes over every column of a "
+                "layer's input, so removing columns changes it. The model is unchanged."
+            )
         # Every layer's input is a concatenation of blocks — the outputs of
         # the layers in its `input_layers`, then the raw inputs (see the
         # layout note above SONN.forward) — and a layer can be read by several
@@ -3770,4 +3785,9 @@ class Trainer:
                 f"prune: removed layer(s) at position(s) {sorted(deleted)} "
                 "(outputs read by no surviving layer)."
             )
+
+        # The widths the layers have now, as neuron_selection records them
+        # (and as the checkpoint metadata saves them).
+        for layer in model.layers:
+            layer.d_model = len(layer)
 

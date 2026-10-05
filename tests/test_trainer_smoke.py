@@ -660,6 +660,41 @@ def test_an_early_stop_still_says_so(tmp_path, counted_steps, caplog):
     assert not any("reached train.steps" in r.message for r in caplog.records)
 
 
+def test_prune_records_the_new_widths(tmp_path):
+    """Every kept layer's d_model is its width after prune, also once the
+    pruned model is saved and loaded."""
+    cfg = _cfg(tmp_path, max_layer_count=2)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(48)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    trainer.prune(trained)
+    assert [layer.d_model for layer in trained.layers] == [len(layer) for layer in trained.layers]
+    trainer.save_model_checkpoint(trained)
+    loaded = SONN(cfg, d_model=4)
+    trainer.load_model_checkpoint(loaded)
+    assert [layer.d_model for layer in loaded.layers] == [len(layer) for layer in trained.layers]
+
+
+@pytest.mark.parametrize("shortcut", [False, True])
+def test_prune_refuses_a_layer_norm_model(tmp_path, shortcut):
+    cfg = OmegaConf.merge(_cfg(tmp_path, max_layer_count=2),
+                          OmegaConf.create({"model": {"use_layer_norm": True, "shortcut": shortcut}}))
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(48)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    x = torch.randn(6, 4)
+    with torch.no_grad():
+        before = trained.infer(x)
+    widths = [len(layer) for layer in trained.layers]
+    with pytest.raises(ValueError, match="model.use_layer_norm"):
+        trainer.prune(trained)
+    assert [len(layer) for layer in trained.layers] == widths
+    with torch.no_grad():
+        assert torch.equal(trained.infer(x), before)
+
+
 def test_train_out_proj_raises_without_head(tmp_path):
     cfg = _cfg(tmp_path)
     model = SONN(cfg, d_model=4)
