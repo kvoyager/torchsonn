@@ -442,9 +442,10 @@ class TrainConfig:
     input_sample_rows: int = 65536
     # How RBF centers are initialized when a family asks for a sample:
     #   'sample' - exact Lloyd k-means on the reservoir sample;
-    #   'stream' - k-means++ start on the sample, then mini-batch k-means over
-    #              the whole split, `rbf_kmeans_passes` passes, never holding
-    #              more than one batch (Sculley's algorithm);
+    #   'stream' - the k-means start (the family's `seeding`) on the sample,
+    #              then mini-batch k-means over the whole split,
+    #              `rbf_kmeans_passes` passes, never holding more than one
+    #              batch (Sculley's algorithm);
     #   'auto'   - 'sample' when the split has at most input_sample_rows
     #              rows, 'stream' above it.
     rbf_kmeans_mode: str = "auto"
