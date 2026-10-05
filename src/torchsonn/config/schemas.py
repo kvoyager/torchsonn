@@ -224,13 +224,16 @@ class ModelConfig:
     # features (e.g. California-housing Population).
     output_clamp_value: float = 1000.0
 
-    # Apply nn.LayerNorm(d_layer, elementwise_affine=False) to each layer's
-    # post-clamp output, before the optional shortcut concat. Standardizes
-    # the (batch, nbest_neurons) feature map so the next layer's polynomial
-    # neurons see comparable scales regardless of how heavy-tailed the
-    # previous layer's polynomial happens to be. No trainable params — pure
-    # per-sample standardization, identical to the preprocessing LayerNorm
-    # that the Otto tutorial puts on the model's raw input.
+    # Apply nn.LayerNorm(width, elementwise_affine=False) to each layer's
+    # input, after the clamped outputs it reads and, with the shortcut, the
+    # raw features are concatenated, so they are standardized together. The
+    # last layer's LayerNorm applies to its own output, and only without a
+    # shortcut (with one, its width is a next layer's input, which does not
+    # exist). The next layer's polynomial neurons then see comparable scales
+    # however heavy-tailed the previous layer's polynomial happens to be. No
+    # trainable params — pure per-sample standardization, identical to the
+    # preprocessing LayerNorm that the Otto tutorial puts on the model's raw
+    # input. Trainer.prune refuses a model built with it.
     use_layer_norm: bool = False
 
 
@@ -474,14 +477,14 @@ class TrainConfig:
     finetune_train: OutProjTrainConfig = field(default_factory=OutProjTrainConfig)
 
     # When True, train_layer runs an extra per-layer fine-tune pass after
-    # neuron_selection: jointly trains the surviving neurons' polynomial
-    # `weight`s together with a temporary (d_layer, num_classes) Linear head
-    # against the class-weighted CE on the dev split. Refines the polynomial
-    # coefficients so they're CE-aligned before the next layer trains on top
-    # of them. Hyperparameters are shared with `out_proj_train` to keep the
-    # config surface small. Skipped on the planned last layer
-    # (layer_index == max_layer_count - 1) since the subsequent
-    # train_out_proj pass effectively replaces it.
+    # neuron_selection, on every layer, the last one included: it trains the
+    # surviving neurons' parameters together with a temporary Linear head
+    # over them (num_classes outputs, or 1 for a regressor) against the
+    # model's loss on the training split, with an early stop on dev, then
+    # discards the head. The survivors come out as a basis for a head rather
+    # than as individual predictors, so use it with use_output_projection.
+    # Hyperparameters are shared with `out_proj_train` to keep the config
+    # surface small.
     layer_finetune: bool = False
 
     device: str = "cpu"

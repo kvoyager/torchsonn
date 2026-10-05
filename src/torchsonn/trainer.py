@@ -2661,10 +2661,11 @@ class Trainer:
         optimizer — because out_proj is a single shared nn.Linear whose gradient
         comes from the full batch in one shot.
 
-        Stops at cfg.max_steps, or earlier if the early-stop criterion fires.
-        ReduceLROnPlateau drops the LR when val loss stagnates; if it has
-        already hit lr_min and val loss still hasn't improved for
-        early_stop_patience consecutive evaluations, training halts.
+        Stops at cfg.max_steps, or after early_stop_patience evaluations in a
+        row without an improvement of the dev loss. ReduceLROnPlateau lowers
+        the learning rate when the dev loss stalls, down to lr_min. With
+        `optimizer: lbfgs` the head is fitted full-batch instead, without the
+        plateau schedule.
 
         The head ends on its last step, or with `cfg.keep_best_weights` on
         the weights of its lowest dev loss (a last step between two
