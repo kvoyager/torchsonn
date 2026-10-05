@@ -276,7 +276,7 @@ def test_set_class_weights_swap():
     cw = torch.tensor([2.0])
     m.set_class_weights(cw)
     assert isinstance(m.loss_fn, nn.BCEWithLogitsLoss)
-    assert torch.allclose(m.loss_fn.pos_weight, cw.to(m.dtype))
+    assert torch.allclose(m.loss_fn.pos_weight, cw.to(torch.get_default_dtype()))
 
 
 def test_set_class_weights_nll_swap():
@@ -889,3 +889,12 @@ def test_building_a_model_leaves_the_global_random_state_alone(model_over):
     state = torch.get_rng_state()
     SONN(_make_cfg(model={"nbest_neurons": 4, "ref_functions": ["linear_cov"], **model_over}), d_model=4)
     assert torch.equal(torch.get_rng_state(), state)
+
+
+@pytest.mark.parametrize("max_neuron_models", [None, 50])
+@pytest.mark.parametrize("kind", list(_HEADED))
+def test_head_width_defaults_to_nbest_neurons(kind, max_neuron_models):
+    """num_out_neurons: null reads every survivor, whatever max_neuron_models is."""
+    over = {**_HEADED[kind], "num_out_neurons": None, "max_neuron_models": max_neuron_models}
+    m = SONN(_make_cfg(model={"nbest_neurons": 5, "ref_functions": ["linear_cov"], **over}), d_model=4)
+    assert m.out_proj.in_features == 5

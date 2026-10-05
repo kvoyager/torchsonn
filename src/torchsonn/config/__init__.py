@@ -7,7 +7,6 @@ so any subsequent `@hydra.main` / `hydra.compose` call that references
 from torchsonn.config.schemas import (
     ModelConfig,
     OptimizerConfig,
-    SchedulerConfig,
     SONNConfig,
     TrainConfig,
 )
@@ -16,7 +15,6 @@ from torchsonn.config.schemas import (
 __all__ = [
     "ModelConfig",
     "OptimizerConfig",
-    "SchedulerConfig",
     "SONNConfig",
     "TrainConfig",
 ]

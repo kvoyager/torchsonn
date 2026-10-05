@@ -6,7 +6,6 @@ from omegaconf.errors import ConfigKeyError
 from torchsonn.config import (
     ModelConfig,
     OptimizerConfig,
-    SchedulerConfig,
     SONNConfig,
     TrainConfig,
 )
@@ -17,7 +16,6 @@ def test_default_sonnconfig_loads():
     assert cfg.model.type == "multi-class"
     assert cfg.train.criterion_type == "validate"
     assert cfg.train.optimizer.name == "adam"
-    assert cfg.train.scheduler.name is None
     assert isinstance(cfg.train.optimizer.optimizer_params, dict) or hasattr(
         cfg.train.optimizer.optimizer_params, "keys"
     )
@@ -38,12 +36,6 @@ def test_optimizer_params_default_keys():
     assert "lr" in cfg.optimizer_params
     assert "min_lr" in cfg.optimizer_params
     assert cfg.optimizer_params["lr"] == 1.0e-4
-
-
-def test_scheduler_config_defaults():
-    cfg = SchedulerConfig()
-    assert cfg.name is None
-    assert cfg.scheduler_params is None
 
 
 def test_model_config_default_ref_functions():
@@ -81,3 +73,20 @@ def test_removed_best_neurons_keys_are_not_in_the_schema():
 def test_a_config_setting_a_removed_key_is_rejected(key):
     with pytest.raises(ConfigKeyError):
         OmegaConf.merge(OmegaConf.structured(SONNConfig), {"train": {key: 1}})
+
+
+@pytest.mark.parametrize("key", ["train_loss_tol", "train_loss_window", "dtype"])
+def test_unused_train_keys_are_gone(key):
+    assert key not in OmegaConf.structured(SONNConfig).train
+    with pytest.raises(ConfigKeyError):
+        OmegaConf.merge(OmegaConf.structured(SONNConfig), {"train": {key: 1}})
+
+
+def test_the_scheduler_is_gone():
+    """train.scheduler and torchsonn.schedulers are removed: a config that
+    still has the section is rejected."""
+    import importlib.util
+    assert importlib.util.find_spec("torchsonn.schedulers") is None
+    assert "scheduler" not in OmegaConf.structured(SONNConfig).train
+    with pytest.raises(ConfigKeyError):
+        OmegaConf.merge(OmegaConf.structured(SONNConfig), {"train": {"scheduler": {"name": "warmup_flat"}}})

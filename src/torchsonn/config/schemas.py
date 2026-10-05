@@ -17,7 +17,6 @@ or `Optional[Dict[str, Any]]`:
     dict form, which would uglify the common `- linear_cov` case.
   • `ModelConfig.shortcut` — a bool shorthand or a mapping; parsed by
     `_parse_shortcut` in model.py.
-  • `SchedulerConfig.scheduler_params` — varies per scheduler family.
   • `TrainConfig.criterion_type` — string here (e.g. `"validate"`); coerced
     to `CriterionType` enum inside `SONN.__init__` via `CriterionType.get`.
 """
@@ -28,7 +27,7 @@ from hydra.core.config_store import ConfigStore
 
 
 # ---------------------------------------------------------------------------
-# Optimizer / scheduler — referenced from TrainConfig
+# Optimizer — referenced from TrainConfig
 # ---------------------------------------------------------------------------
 @dataclass
 class OutProjTrainConfig:
@@ -142,19 +141,6 @@ class OptimizerConfig:
     optimizer_params: Dict[str, Any] = field(default_factory=_default_optimizer_params)
 
 
-@dataclass
-class SchedulerConfig:
-    """The `train.scheduler:` section: the learning-rate scheduler for candidate fits.
-
-    The comments on the fields below document them.
-    """
-    # 'warmup_flat' (currently the only registered scheduler) | null to
-    # disable the scheduler entirely.
-    name: Optional[str] = None
-    # Schema is loose here — each scheduler family takes its own kwargs.
-    scheduler_params: Optional[Dict[str, Any]] = None
-
-
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
@@ -212,6 +198,8 @@ class ModelConfig:
     max_neuron_models: Optional[int] = None
 
     use_output_projection: bool = False
+    # The head's inputs: the last layer's `num_out_neurons` lowest-error
+    # survivors. Null means `nbest_neurons`, every survivor of the layer.
     num_out_neurons: Optional[int] = None
 
     # Per-neuron linear projection: each neuron in the ensemble gets its own
@@ -464,7 +452,6 @@ class TrainConfig:
     rbf_kmeans_passes: int = 1
 
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     out_proj_train: OutProjTrainConfig = field(default_factory=OutProjTrainConfig)
 
     # Hyperparameters for `Trainer.train_finetune` — the end-to-end pass that
@@ -488,13 +475,9 @@ class TrainConfig:
     layer_finetune: bool = False
 
     device: str = "cpu"
-    dtype: str = "float32"
     batch_size: int = 1
     steps: int = 1000
     shuffle: bool = False
-
-    train_loss_tol: float = 0.001
-    train_loss_window: int = 20
 
     verbose: bool = True
 

@@ -25,9 +25,12 @@
   per-member history layout written before the batched recursion of 0.1.4.
   State saved by 0.1.5 loads as before.
 
-### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`, `train.manual_best_neurons_selection`, `train.min_best_neurons_count`, `train.max_best_neurons_count`
+### Removed — unused config keys `model.normalize`, `train.normalize`, `train_on_first_half`, `train.manual_best_neurons_selection`, `train.min_best_neurons_count`, `train.max_best_neurons_count`, `train.train_loss_tol`, `train.train_loss_window`, `train.dtype`
 
-None of the six was read. `model.normalize` and `train.normalize` came
+None of the first eight was read, and `train.dtype` only cast the class
+weights and the per-layer input statistics: every neuron, head and buffer
+is built in PyTorch's default type, which those two now follow too. The tutorial configs no longer set
+`train_loss_tol`, `train_loss_window` or `dtype`. `model.normalize` and `train.normalize` came
 from gmdhpy and never had an effect; `train_on_first_half` was the
 California housing script's old 50/50 split switch, and the script stopped
 reading it in 0.1.4. The three `*_best_neurons_*` keys were meant to set
@@ -46,6 +49,25 @@ the defaults into every configuration, so selecting either raised
 `TypeError` at the first candidate fit. Use `lbfgs`. An unknown
 `train.optimizer.name`, these two included, now raises `ValueError` when
 the `Trainer` is built, naming `adam`, `sgd` and `lbfgs`.
+
+### Removed — the `warmup_flat` scheduler and `train.scheduler`
+
+The candidate fit's early stop lowers each candidate's learning rate when
+it stops improving and stops it at `min_lr`; `warmup_flat`, the only
+scheduler, reset the rate from its starting value after every step, so no
+candidate ever stopped early. The scheduler, `torchsonn.schedulers` and the
+`train.scheduler` section (`name`, `scheduler_params`) are removed; the
+early stop's drops are the candidate fit's schedule. A config that still
+has `train.scheduler` fails to load: delete the section.
+
+### Changed — the head's width defaults to `nbest_neurons`
+
+With `use_output_projection` and `model.num_out_neurons: null`, the head
+read `max_neuron_models` columns, the candidate cap, usually wider than the
+last layer, so part of its input was zero padding; with `max_neuron_models`
+null too, building the model raised `TypeError`. Null now means
+`nbest_neurons`, every survivor of the last layer. The tutorial configs set
+the width explicitly and are unchanged.
 
 ### Fixed — the `bias` criterion trains its survivors
 

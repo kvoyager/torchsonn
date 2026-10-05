@@ -36,7 +36,6 @@ def _cfg(tmp_path, **train_overrides) -> OmegaConf:
             "train": {
                 "checkpoint_dir": str(tmp_path),
                 "device": "cpu",
-                "dtype": "float32",
                 "batch_size": 8,
                 "steps": 20,
                 "eval_step_interval": 5,
@@ -58,7 +57,6 @@ def _cfg(tmp_path, **train_overrides) -> OmegaConf:
                         "clip_norm": 5.0,
                     },
                 },
-                "scheduler": {"name": None, "scheduler_params": None},
                 "save_interval": 1000,
             },
         }
@@ -110,7 +108,6 @@ def _mc_cfg(tmp_path, **train_overrides) -> OmegaConf:
             "train": {
                 "checkpoint_dir": str(tmp_path),
                 "device": "cpu",
-                "dtype": "float32",
                 "batch_size": 16,
                 "steps": 20,
                 "eval_step_interval": 5,
@@ -132,7 +129,6 @@ def _mc_cfg(tmp_path, **train_overrides) -> OmegaConf:
                         "clip_norm": 5.0,
                     },
                 },
-                "scheduler": {"name": None, "scheduler_params": None},
                 "save_interval": 1000,
             },
         }
@@ -315,7 +311,6 @@ def test_train_finetune_and_layer_finetune_multiclass(tmp_path):
             "train": {
                 "checkpoint_dir": str(tmp_path),
                 "device": "cpu",
-                "dtype": "float32",
                 "batch_size": 16,
                 "steps": 8,
                 "eval_step_interval": 4,
@@ -333,7 +328,6 @@ def test_train_finetune_and_layer_finetune_multiclass(tmp_path):
                     "optimizer_params": {"lr": 1.0e-2, "min_lr": 1.0e-4, "gamma": 0.5,
                                           "clip_value": 1.0, "clip_norm": 5.0},
                 },
-                "scheduler": {"name": None, "scheduler_params": None},
                 "out_proj_train": {
                     "max_steps": 4,
                     "optimizer": "adam",

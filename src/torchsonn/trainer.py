@@ -14,7 +14,6 @@ from torch.func import vmap, grad
 from torch.utils.data import DataLoader
 from pathlib import Path
 from torchsonn.optimizers import optimizer_map, BaseOptimizer
-from torchsonn.schedulers import scheduler_map, BaseScheduler
 from torchsonn.layer import SONNLayer, NeuronModuleList
 from torchsonn.neurons import BasePolynomNeuron
 from torchsonn.data.dataset import SONNDataset
@@ -27,7 +26,7 @@ from torchsonn.loss import NormMSE, bias_error, bias_error_l2, bias_error_js
 
 logger = logging.getLogger(__name__)
 import re
-from typing import Optional, Any, Callable
+from typing import Any, Callable
 import torch.distributed as dist
 import torch.nn.functional as F
 
@@ -112,8 +111,8 @@ class LayerAccumulator:
 class StepCheckpoint:
     """Immutable snapshot of all state needed to save or resume a training step.
 
-    All fields except `scheduler` are required so the type checker can catch a
-    missing assignment at construction time rather than at serialization time.
+    All fields are required so the type checker can catch a missing
+    assignment at construction time rather than at serialization time.
     Built explicitly at each save site inside train_model_ensemble; never
     mutated after construction (use dataclasses.replace() for variants).
     """
@@ -138,8 +137,6 @@ class StepCheckpoint:
     layer_completed: bool
     err: list[torch.Tensor]
     module_idxs: list[torch.Tensor]
-    # optional
-    scheduler: Optional[BaseScheduler] = None
 
     def to_dict(self) -> dict:
         """Return the snapshot as a dict, with `state_dict()` in place of any object that has one and None fields left out."""
@@ -1736,11 +1733,6 @@ class Trainer:
             raise ValueError(
                 f"train.early_stop_source must be 'dev' or 'train', got {model.param.train.early_stop_source!r}")
         opt = optimizer_cls(params_batch, shared_param_names, shared_param_lr_multiplier=shared_param_lr_multiplier, **optimizer_params)
-        if model.param.train.scheduler.name is None:
-            scheduler = None
-        else:
-            scheduler_cls = scheduler_map[model.param.train.scheduler.name]
-            scheduler = scheduler_cls(opt, **model.param.train.scheduler.scheduler_params)
 
         last_ckpt: StepCheckpoint | None = None
 
@@ -1774,8 +1766,6 @@ class Trainer:
             smoothed_val_losses = checkpoint_data["smoothed_val_losses"][_s:_e] if dist_slice else checkpoint_data["smoothed_val_losses"]
             lr = checkpoint_data["lr"][_s:_e] if dist_slice else checkpoint_data["lr"]
             opt.load_state_dict(checkpoint_data["opt"])
-            if scheduler:
-                scheduler.load_state_dict(checkpoint_data["scheduler"])
 
         train_dl_len = len(train_dl)
         step = 0
@@ -1829,11 +1819,6 @@ class Trainer:
                 # Synchronize shared-param gradients so every rank applies the same update.
                 self._allreduce_shared_grads(grads, shared_param_names)
                 params_batch = opt.step(params_batch, grads, active_mask=~early_stop_flags)
-
-                if scheduler:
-                    scheduler.step()
-                    # Scheduler reassigns opt.lr to a fresh tensor; re-sync our view.
-                    lr = opt.lr
 
                 if global_step > 0 and ((eval_step_interval != -1 and global_step % eval_step_interval == 0) or (eval_step_interval == -1 and step == train_dl_len - 1)):
 
@@ -1964,7 +1949,6 @@ class Trainer:
                     last_ckpt = StepCheckpoint(
                         model=model,
                         opt=opt,
-                        scheduler=scheduler,
                         layer_idx=layer_idx,
                         neuron_model_idx=neuron_model_idx,
                         epoch=epoch,
@@ -2004,7 +1988,6 @@ class Trainer:
         last_ckpt = StepCheckpoint(
             model=model,
             opt=opt,
-            scheduler=scheduler,
             layer_idx=layer_idx,
             neuron_model_idx=neuron_model_idx,
             epoch=epoch,
@@ -2027,10 +2010,10 @@ class Trainer:
         if checkpoint_data:
             checkpoint_data["neuron_model_completed"] = True
 
-        # Drop optimizer / scheduler / gradient state before returning so the
-        # next neuron model in the same layer starts from a clean slate. We
-        # cannot drop params_batch (it is returned) or last_ckpt (it is returned).
-        del opt, scheduler, buffers_batch
+        # Drop optimizer / gradient state before returning so the next neuron
+        # model in the same layer starts from a clean slate. We cannot drop
+        # params_batch (it is returned) or last_ckpt (it is returned).
+        del opt, buffers_batch
         return accumulator, params_batch, last_ckpt
 
     @staticmethod
@@ -2194,7 +2177,7 @@ class Trainer:
                 f"train.rbf_kmeans_mode must be 'auto', 'sample' or 'stream', got {cfg.rbf_kmeans_mode!r}")
 
         device = modules[0].device
-        # Accumulate in float64 whatever train.dtype is: a running sum of
+        # Accumulate in float64 whatever the inputs' type is: a running sum of
         # squares over a large split bleeds precision badly in float32, and
         # this runs once per layer so the extra width is free.
         total: torch.Tensor | None = None
@@ -2238,7 +2221,9 @@ class Trainer:
         std = (total_sq / count - mean * mean).clamp(min=0.0).sqrt()
 
         if want_stats:
-            layer.fit_input_stats(mean.to(dtype=model.dtype), std.to(dtype=model.dtype))
+            # Back from the float64 accumulators to the parameters' type.
+            dtype = torch.get_default_dtype()
+            layer.fit_input_stats(mean.to(dtype=dtype), std.to(dtype=dtype))
             logger.info(
                 "Layer #%d squash calibrated on %d training samples over %d input "
                 "feature(s); |mean| max %.4g, std range [%.4g, %.4g]",
