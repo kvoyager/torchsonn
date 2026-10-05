@@ -194,6 +194,41 @@ def test_train_with_bias_criterion(tmp_path):
     assert len(trained.layers) >= 1
 
 
+def _regression_dl(n: int, seed: int) -> DataLoader:
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, 4)).astype("float32")
+    y = (x[:, 0] + 0.5 * x[:, 1] * x[:, 2]).astype("float32")
+    return DataLoader(SONNDataset(torch.from_numpy(x), torch.from_numpy(y)), batch_size=256)
+
+
+def test_bias_criterion_trains_its_survivors(tmp_path):
+    """The survivors `bias` keeps are fitted on the whole training split:
+    the model predicts about as well as a `validate` one, not like the mean
+    (which untrained survivors did)."""
+    test_dl = _regression_dl(200, seed=2)
+    variance = float(test_dl.dataset.target.var())
+    mse = {}
+    for criterion in ("validate", "bias"):
+        cfg = OmegaConf.merge(
+            _cfg(tmp_path / criterion, criterion_type=criterion, max_layer_count=1, steps=100),
+            OmegaConf.create({"train": {"optimizer": {
+                "name": "lbfgs", "optimizer_params": {"lr": 0.1, "min_lr": 0.01, "history_size": 10}}}}),
+        )
+        Trainer.set_seed(cfg.train.seed)
+        model = SONN(cfg, d_model=4)
+        trainer = Trainer(config=cfg)
+        trainer.train(model, _regression_dl(400, seed=0), _regression_dl(200, seed=1), test_dl, verbose=False)
+        pred, target = trainer.infer(model, test_dl, verbose=False)
+        mse[criterion] = float(((pred - target) ** 2).mean())
+    assert mse["validate"] < 0.2 * variance
+    assert mse["bias"] < 0.2 * variance, mse
+
+
+def test_unknown_criterion_is_rejected_when_the_model_is_built(tmp_path):
+    with pytest.raises(ValueError, match="train.criterion_type='bias_retrain'"):
+        SONN(_cfg(tmp_path, criterion_type="bias_retrain"), d_model=4)
+
+
 def test_train_with_validate_bias_criterion(tmp_path):
     """Combined criterion exercises both regularity and bias branches."""
     cfg = _cfg(tmp_path, criterion_type="validate_bias", max_layer_count=1)

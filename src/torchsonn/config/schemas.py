@@ -253,7 +253,7 @@ class TrainConfig:
     use_deterministic_algorithms: bool = False
 
     # String form — coerced to CriterionType via CriterionType.get() in
-    # SONN.__init__. Accepted: 'validate' | 'bias' | 'validate_bias' | 'bias_retrain'.
+    # SONN.__init__. Accepted: 'validate' | 'bias' | 'validate_bias'.
     criterion_type: str = "validate"
     # Bias criterion variant for multi-class: 'l2' (L2 on logits) | 'js' (Jensen-Shannon divergence).
     bias_ce_type: str = "js"

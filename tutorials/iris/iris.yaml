@@ -42,7 +42,6 @@ train:
   device: cpu
   criterion_type: validate
   error_alpha: 0.5
-#  criterion_type: bias_retrain
   criterion_minimum_width: 5
   eval_step_interval: 5
   eval_smoothing_factor: 0.2

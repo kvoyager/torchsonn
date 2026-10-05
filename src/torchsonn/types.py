@@ -84,7 +84,6 @@ class CriterionType(Enum):
     cmpValidate = 1
     cmpBias = 2
     cmpComb_validate_bias = 4
-    cmpComb_bias_retrain = 5
 
     @classmethod
     def get_name(cls, value: "CriterionType") -> str:
@@ -95,8 +94,6 @@ class CriterionType(Enum):
             return 'bias error comparison'
         elif value == cls.cmpComb_validate_bias:
             return 'bias and validate error comparison'
-        elif value == cls.cmpComb_bias_retrain:
-            return 'bias error comparison with retrain'
         else:
             return 'Unknown'
 
@@ -104,7 +101,7 @@ class CriterionType(Enum):
     def get(cls, arg: "CriterionType | str") -> "CriterionType":
         """Resolve a config name to a `CriterionType`.
 
-        Accepted names: 'validate', 'bias', 'validate_bias', 'bias_retrain'. A `CriterionType` is returned unchanged.
+        Accepted names: 'validate', 'bias', 'validate_bias'. A `CriterionType` is returned unchanged.
 
         Raises
         ------
@@ -119,10 +116,10 @@ class CriterionType(Enum):
             return CriterionType.cmpBias
         elif arg == 'validate_bias':
             return CriterionType.cmpComb_validate_bias
-        elif arg == 'bias_retrain':
-            return CriterionType.cmpComb_bias_retrain
         else:
-            raise ValueError(arg)
+            raise ValueError(
+                f"train.criterion_type={arg!r}; expected 'validate', 'bias' or 'validate_bias'."
+            )
 
 
 class LayerCreationError(Exception):
