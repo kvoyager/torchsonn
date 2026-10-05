@@ -91,7 +91,24 @@ class TestGetCheckpointDir:
         out = Trainer(cfg).checkpoint_root
         assert out == tmp_path / "ckpts"
 
-    def test_empty_dir_defaults_to_repo_path(self, tmp_path):
+    def test_default_is_checkpoints_in_the_working_directory(self, tmp_path, monkeypatch):
+        cfg = _make_cfg(
+            model={
+                "type": "regressor",
+                "num_classes": 1,
+                "nbest_neurons": 3,
+                "soft_binner": False,
+                "ref_functions": ["linear_cov"],
+            },
+        )
+        assert cfg.train.checkpoint_dir == "checkpoints"
+        trainer = Trainer(cfg)
+        assert trainer.checkpoint_root == Path("checkpoints")
+        monkeypatch.chdir(tmp_path)
+        trainer.save_model_checkpoint(SONN(cfg, d_model=4))
+        assert (tmp_path / "checkpoints" / trainer.run_dir.name / "model_last.ckpt").is_file()
+
+    def test_empty_dir_raises(self):
         cfg = _make_cfg(
             model={
                 "type": "regressor",
@@ -102,9 +119,8 @@ class TestGetCheckpointDir:
             },
             train={"checkpoint_dir": ""},
         )
-        out = Trainer(cfg).checkpoint_root
-        # the path resolves to <repo>/checkpoints; just check it ends with "checkpoints"
-        assert out.name == "checkpoints"
+        with pytest.raises(ValueError, match="train.checkpoint_dir is empty"):
+            Trainer(cfg)
 
 
 def _norm_cfg(tmp_path: Path, normalization: str) -> OmegaConf:

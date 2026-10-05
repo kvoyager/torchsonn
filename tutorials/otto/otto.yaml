@@ -48,7 +48,7 @@ train:
   save_last_layer: true
   keep_last_n: 10
   skip_saving_at_epoch_end: true
-  checkpoint_dir: ""
+  checkpoint_dir: checkpoints
   early_stop_completion_percentage: 100
   early_stop_patience: 1.0e-4
   early_stop_tolerance_steps: 10

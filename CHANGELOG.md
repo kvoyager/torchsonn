@@ -99,6 +99,15 @@ start on N sampled rows" whatever its `seeding`; under the default
 principal axis. The line now says "PCA-quantile start" or "k-means++
 start".
 
+### Changed — `train.checkpoint_dir` defaults to `checkpoints`
+
+The run folders go to `checkpoints/` in the working directory, like any
+other relative `checkpoint_dir`. The default used to be empty, which meant
+a `checkpoints` folder three levels above `trainer.py`: the repository root
+in a source checkout, but inside the Python environment for an installed
+package. An empty `checkpoint_dir` now raises `ValueError` when the
+`Trainer` is built. The iris and Otto tutorial configs set `checkpoints`.
+
 ## 0.1.5
 
 ### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs

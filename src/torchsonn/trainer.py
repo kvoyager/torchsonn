@@ -479,6 +479,7 @@ class Trainer:
         self._validate_layer_err_source(config)
         self._validate_best_weights_copy(config)
         self._validate_optimizer_name(config)
+        self._validate_checkpoint_dir(config)
         self._apply_deterministic_algorithms(config)
 
     @staticmethod
@@ -564,6 +565,13 @@ class Trainer:
         )
 
     @staticmethod
+    def _validate_checkpoint_dir(config: Any) -> None:
+        """Reject an empty `train.checkpoint_dir` when the Trainer is built, before any run folder is made."""
+        train_cfg = getattr(config, "train", None) if config is not None else None
+        if getattr(train_cfg, "checkpoint_dir", None) is not None:
+            Trainer._checkpoint_root(config)
+
+    @staticmethod
     def _split_loader(dl: DataLoader, split: int) -> DataLoader:
         """Build a DataLoader over the same underlying tensors but restricted to one split.
 
@@ -609,17 +617,22 @@ class Trainer:
 
     @property
     def checkpoint_root(self) -> Path:
-        """The folder that holds the run folders: `train.checkpoint_dir` of the trainer's configuration, or `<repo>/checkpoints` when it is empty."""
+        """The folder that holds the run folders: `train.checkpoint_dir` of the trainer's configuration, `checkpoints` in the working directory by default."""
         return self._checkpoint_root(self.config)
 
     @staticmethod
     def _checkpoint_root(config: Any) -> Path:
-        """`train.checkpoint_dir` of `config`, or `<repo>/checkpoints` when it is empty."""
+        """`train.checkpoint_dir` of `config`, taken from the working directory when relative.
+
+        Raises `ValueError` when it is empty: `Path("")` is the working
+        directory itself, so the run folders would land loose in it.
+        """
         checkpoint_dir = str(config.train.checkpoint_dir)
         if checkpoint_dir == "":
-            # This file lives at `<repo>/src/torchsonn/trainer.py`, so three
-            # `.parent`s reach the repo root.
-            return Path(__file__).parent.parent.parent / "checkpoints"
+            raise ValueError(
+                "train.checkpoint_dir is empty; set the folder that holds the run folders "
+                "(the default is 'checkpoints', in the working directory)."
+            )
         return Path(checkpoint_dir)
 
     @classmethod
