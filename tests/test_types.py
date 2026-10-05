@@ -59,7 +59,6 @@ class TestCriterionType:
             (CriterionType.cmpValidate, "validate error comparison"),
             (CriterionType.cmpBias, "bias error comparison"),
             (CriterionType.cmpComb_validate_bias, "bias and validate error comparison"),
-            (CriterionType.cmpComb_bias_retrain, "bias error comparison with retrain"),
         ],
     )
     def test_get_name(self, value, name):
@@ -77,7 +76,6 @@ class TestCriterionType:
             ("validate", CriterionType.cmpValidate),
             ("bias", CriterionType.cmpBias),
             ("validate_bias", CriterionType.cmpComb_validate_bias),
-            ("bias_retrain", CriterionType.cmpComb_bias_retrain),
         ],
     )
     def test_get_from_string(self, arg, expected):
@@ -87,9 +85,9 @@ class TestCriterionType:
         c = CriterionType.cmpBias
         assert CriterionType.get(c) is c
 
-    @pytest.mark.parametrize("arg", ["nope", "bias_refit"])
+    @pytest.mark.parametrize("arg", ["nope", "bias_refit", "bias_retrain"])
     def test_get_invalid_raises(self, arg):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=f"train.criterion_type='{arg}'; expected 'validate', 'bias' or 'validate_bias'"):
             CriterionType.get(arg)
 
 

@@ -153,9 +153,6 @@ class TestSONNProperties:
         model = self._model()
         assert isinstance(model.device, torch.device)
 
-    def test_retrain_required_false_by_default(self):
-        assert self._model().retrain_required is False
-
     def test_need_bias_and_regularity_err_flags(self):
         m = self._model()
         assert m.need_regularity_err
@@ -223,13 +220,6 @@ class TestGetError:
             torch.tensor([3.0]),
         )
         assert out.item() == 2.0
-
-    def test_bias_retrain(self):
-        m = self._model("bias_retrain")
-        out = m.get_error(
-            CriterionType.cmpComb_bias_retrain, None, torch.tensor([7.0])
-        )
-        assert out.item() == 7.0
 
 
 class TestForward:

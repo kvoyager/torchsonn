@@ -14,7 +14,7 @@
   raises `TypeError`. The six tutorial YAMLs that used it are converted.
 - **Short name aliases.** `lcov`, `quad`, `leg`, `cheb`, `gauss` and the
   criterion `bias_refit` are no longer accepted. Use `linear_cov`,
-  `quadratic`, `legendre`, `chebyshev`, `rbf` and `bias_retrain`.
+  `quadratic`, `legendre`, `chebyshev`, `rbf` and `bias`.
 - **Checkpoint fallbacks.** Restoring a checkpoint reads every saved
   metadata field and raises `KeyError` when one is missing, instead of
   filling in a default. Checkpoints written by 0.1.5 load as before;
@@ -46,6 +46,28 @@ the defaults into every configuration, so selecting either raised
 `TypeError` at the first candidate fit. Use `lbfgs`. An unknown
 `train.optimizer.name`, these two included, now raises `ValueError` when
 the `Trainer` is built, naming `adam`, `sgd` and `lbfgs`.
+
+### Fixed — the `bias` criterion trains its survivors
+
+With `train.criterion_type: bias`, only the two fits that score the
+candidates, one on the even and one on the odd training rows, were
+trained; the survivors that selection kept had their initial weights. On a
+small synthetic regression (900 rows, 4 inputs, `linear_cov`) the test MSE
+was 1.18, the variance of the target, against 0.012 with `validate`. Every
+criterion now fits the layer's neurons on the whole training split, with
+the early stop on dev, and `bias` uses its two half-fits only to score
+them; the same regression scores 0.33 (the criterion keeps the candidates
+whose two half-fits agree, not the most accurate ones). A `bias` layer runs
+three fits per family instead of two, as `validate_bias` does.
+
+### Removed — the `bias_retrain` criterion
+
+It scored candidates like `bias`, then raised `NotImplementedError` when
+the first layer selected its survivors. It was meant to train the
+survivors on the whole data after the bias comparison; `bias` now trains
+them on the whole training split. An unknown `train.criterion_type`, this
+one included, raises `ValueError` naming `validate`, `bias` and
+`validate_bias` when the model is built.
 
 ## 0.1.5
 

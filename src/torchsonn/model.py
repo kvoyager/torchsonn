@@ -392,11 +392,6 @@ class SONN(SONNModule):
         # the first time. Fall back to the configured device.
         return torch.device(self.param.train.device)
 
-    @property
-    def retrain_required(self) -> bool:
-        """True for the 'bias_retrain' criterion, which `Trainer.train_layer` does not implement."""
-        return self.criterion_type == CriterionType.cmpComb_bias_retrain
-
     def _get_features_names_by_index(self, features_set: list[int] | set[int]) -> str:
         """Return names of features
         """
@@ -575,11 +570,10 @@ class SONN(SONNModule):
 
     @property
     def need_bias_err(self) -> bool:
-        """True when the selection criterion uses the bias error ('bias', 'validate_bias', 'bias_retrain')."""
+        """True when the selection criterion uses the bias error ('bias', 'validate_bias')."""
         return self.criterion_type in (
             CriterionType.cmpBias,
             CriterionType.cmpComb_validate_bias,
-            CriterionType.cmpComb_bias_retrain,
         )
 
     @property
@@ -605,8 +599,6 @@ class SONN(SONNModule):
         elif criterion_type == CriterionType.cmpComb_validate_bias:
             alpha = self.param.train.error_alpha
             return (1.0 - alpha) * bias_err + alpha * regularity_err
-        elif criterion_type == CriterionType.cmpComb_bias_retrain:
-            return bias_err
         else:
             raise NotImplementedError
 

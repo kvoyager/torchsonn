@@ -1232,31 +1232,35 @@ class Trainer:
             regularity_err = None
             bias_err = None
 
+            # Every criterion fits the layer's own modules on the whole
+            # training split, with the early stop on dev: they are the
+            # survivors selection keeps. The bias criterion's two half-fits
+            # below only score the candidates.
+            loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names = (
+                self.create_loss_functions(model, neuron_model))
+            accumulator, trained_params, last_ckpt = self.train_model_ensemble(
+                model,
+                neuron_model,
+                neuron_model_idx,
+                layer.layer_index,
+                train_feat_dl,
+                dev_feat_dl,
+                checkpoint_data,
+                accumulator,
+                loss_fn_vmapped,
+                eval_loss_fn_vmapped,
+                params_batch,
+                buffers_batch,
+                shared_param_names,
+                features_precomputed=precompute)
+            trained_params_per_model[neuron_model_idx] = trained_params
             if model.need_regularity_err:
-                loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names = (
-                    self.create_loss_functions(model, neuron_model))
-                accumulator, trained_params, last_ckpt = self.train_model_ensemble(
-                    model,
-                    neuron_model,
-                    neuron_model_idx,
-                    layer.layer_index,
-                    train_feat_dl,
-                    dev_feat_dl,
-                    checkpoint_data,
-                    accumulator,
-                    loss_fn_vmapped,
-                    eval_loss_fn_vmapped,
-                    params_batch,
-                    buffers_batch,
-                    shared_param_names,
-                    features_precomputed=precompute)
-                trained_params_per_model[neuron_model_idx] = trained_params
                 regularity_err = self.regularity_err(model, pred_fn_vmapped, trained_params, buffers_batch, dev_feat_dl, device, skip_model_fwd=precompute)
-                # Cache the per-candidate raw scalar outputs on the full dev
-                # split for neuron_selection's OMP decorrelation.
-                accumulator.z_val.append(
-                    self._compute_z_val(neuron_model, model, dev_feat_dl, device, precompute)
-                )
+            # Cache the per-candidate raw scalar outputs on the full dev
+            # split for neuron_selection's OMP decorrelation.
+            accumulator.z_val.append(
+                self._compute_z_val(neuron_model, model, dev_feat_dl, device, precompute)
+            )
 
             if model.need_bias_err:
                 neuron_module_a = deepcopy(neuron_model)
@@ -1284,7 +1288,6 @@ class Trainer:
                     buffers_batch_a,
                     shared_param_names_a,
                     features_precomputed=precompute)
-                trained_params_per_model.setdefault(neuron_model_idx, trained_params_a)
 
                 loss_fn_vmapped_b, eval_loss_fn_vmapped_b, pred_fn_vmapped_b, params_batch_b, buffers_batch_b, shared_param_names_b = (
                     self.create_loss_functions(model, neuron_model))
@@ -1316,14 +1319,6 @@ class Trainer:
                     device,
                     bias_method=model.param.train.bias_ce_type,
                     skip_model_fwd=precompute)
-                # If regularity branch ran above it already appended z_val for
-                # this neuron_model_idx; skip here to keep the lists aligned
-                # with err / module_idxs (one entry per neuron_model). Otherwise
-                # use the split-A trained module as a representative.
-                if not model.need_regularity_err:
-                    accumulator.z_val.append(
-                        self._compute_z_val(neuron_module_a, model, dev_feat_dl, device, precompute)
-                    )
 
             module_err = model.get_error(model.criterion_type, regularity_err, bias_err)
             accumulator.module_idxs.append(
@@ -1388,9 +1383,8 @@ class Trainer:
         layer.err_values = err_values
         layer.module_idxs = module_idxs
         if model.param.train.layer_err_criterion == 'top':
-            # err_values is sorted by module_idx (not by error), and the retrain
-            # path replaces it with an unsorted concat, so take the minimum
-            # explicitly instead of trusting position 0.
+            # err_values is sorted by module_idx (not by error), so take the
+            # minimum explicitly instead of trusting position 0.
             neuron_err = err_values.min().item()
         elif model.param.train.layer_err_criterion == 'avg':
             neuron_err = err_values.mean().item()
@@ -1634,9 +1628,6 @@ class Trainer:
                     with torch.no_grad():
                         model.shared_proj.weight.copy_(best_trained["shared_proj_weight"])
                         model.shared_proj.bias.copy_(best_trained["shared_proj_bias"])
-
-        if model.retrain_required:
-            raise NotImplementedError
 
         return err_values, module_idxs
 
