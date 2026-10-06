@@ -7,9 +7,11 @@ in `model.ref_functions` decide what each layer's candidates look like.
 ## What a neuron computes
 
 A neuron reads a small tuple of inputs, two by default, and expands it into
-a *design row* $\varphi(x_i, x_j)$, a fixed list of terms such as $1$,
-$x_i$, $x_j$ and $x_i x_j$. Its output is the weighted sum of the design
-row, passed through an optional output activation $a$:
+a *design row* $\varphi(x_i, x_j)$, a fixed list of terms set by its family.
+For `linear_cov` the terms are $1$, $x_i$, $x_j$ and $x_i x_j$; other
+families add higher-order terms such as $x_i^2$ and $x_i^3$, as the weight
+counts below show. Its output is the weighted sum of the design row, passed
+through an optional output activation $a$:
 
 $$
 y = a\big(w \cdot \varphi(x_i, x_j)\big)
@@ -82,34 +84,32 @@ model:
         activation: tanh
 ```
 
-A bounded activation also bounds what the neuron can predict. On California
-housing, whose target runs up to 5, `tanh` neurons gave a test MSE of 0.2191
-against 0.1877 without an activation, with a layer error of 1.87 (single
-runs, recorded in `california_housing_legendre_finetune.yaml`).
+A bounded activation also bounds what the neuron can predict: `tanh`, for
+example, saturates, so on regression targets that range beyond its output
+it can cost accuracy relative to the identity. Leave the activation at the
+identity unless a bounded output is what the task wants.
 
 ## Choosing a family
 
-What the tutorials measured:
+The families differ in the shape of function they fit, not in a fixed
+ranking — which works best depends on the data:
 
-- **Legendre is the strongest single family on California housing.** Over
-  four seeds with 24 survivors, Legendre of degree 3 reaches a test MSE of
-  0.1852 ± 0.0008. In the same configuration, `linear_cov` instead of
-  Legendre gives 0.1990 ± 0.0021 and `quadratic` 0.2027 ± 0.0054.
-- **RBF matches Legendre's accuracy with more parameters.** `rbf` with 8
-  centres per neuron reaches 0.1853 ± 0.0014 in the same configuration. After
-  pruning, the best Legendre model has 801 learned parameters and the
-  smallest RBF model 6,485.
-- **Degree and basis matter less than expected.** Legendre of degree 4 or 5,
-  Chebyshev instead of Legendre, and RBF with 4 to 16 centres all land
-  within the seed noise of the defaults (California housing README).
-- **More inputs per neuron can matter more than a wider search.** On the
-  CCPP power-plant data, adding a four-input Legendre family (`dim: 4`)
-  lowers the mean absolute error from 3.31 to 3.28 MW, while widening the
-  Legendre search alone gives 3.30 (CCPP README).
+- **Power-basis polynomials** (`linear_cov`, `quadratic`, `cubic`,
+  `polyquad`) are the simplest and the most directly readable, and a good
+  first choice.
+- **Orthogonal polynomials** (`legendre`, `chebyshev`) span the same
+  function space as the power basis but stay better conditioned at higher
+  degrees, which can make the search more stable.
+- **RBF** (`rbf`) fits local structure rather than a global polynomial
+  surface, at the cost of more parameters.
+- **More inputs per neuron** (a higher `dim`) lets a single neuron capture
+  joint interactions that pairwise neurons reach only indirectly.
 
 `linear_cov` is the family of the [regression quickstart](../../getting-started/quickstart-regression.md)
-and a sensible first model; the tutorials' best configurations use
-`legendre`.
+and a sensible first model. Beyond that, the best family is an empirical
+question for your data — the families compete together in a layer, so you
+can also list several and let [selection](../selection.md) choose among
+them.
 
 ## The knobs
 

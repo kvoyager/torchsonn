@@ -3,7 +3,11 @@
 The polynomial families fit a *global* basis: every term is nonzero almost
 everywhere. The `rbf` family fits a *local* one. Each neuron places $M$
 Gaussian bumps over the space of its inputs and learns the weights of the
-bumps together with where the bumps sit and how wide they are.
+bumps together with where the bumps sit and how wide they are. Each bump is
+active only near its own centre and fades away from it, so together they
+cover the range in overlapping patches:
+
+![A row of Gaussian bumps at different centres across the input range](rbf_basis.svg){ width="560" }
 
 ## The neuron
 
@@ -48,9 +52,8 @@ the train split:
   sample. The default start, **`seeding: pca_quantiles`**, takes the rows at
   evenly spaced quantiles along the first principal axis of the inputs. It
   depends on the data only, so the same data gives the same centres under
-  any seed: three runs of the California housing RBF configuration are
-  identical at every layer and end at test MSE 0.1893 to 0.1894
-  (changelog). **`seeding: kmeans++`** draws a k-means++ start from the
+  any seed, making runs reproducible regardless of the seed.
+  **`seeding: kmeans++`** draws a k-means++ start from the
   seeded generator instead. Lloyd iterations then refine the centres
   (`train.rbf_kmeans_iters`, 20 by default).
 - **`placement: grid`** places the bumps on a grid of quantiles of each
@@ -88,12 +91,11 @@ $1/\text{width\_band}$ and $\text{width\_band}$ times its start. The bound
 is smooth, so unlike a hard clamp it keeps a gradient everywhere.
 
 The bound keeps every bump on the data. With `center_radius: null` the
-centres move freely; then the optimizer matters. With the LBFGS safeguards
-switched off (`max_step: null`, `curvature_eps: null`), 37 to 68% of the
-survivors' centres ended more than 5 standard deviations from the data on
-California housing, dead bumps with no data and no gradient; with the
-safeguards on, 0 to 6% did (changelog). With the safeguards on, bounded and
-unbounded centres reach the same accuracy (California housing README).
+centres move freely; then the optimizer matters, since an unconstrained
+centre can drift far into empty space and become a dead bump with no data
+and no gradient. The LBFGS safeguards (`max_step`, `curvature_eps`) guard
+against this; with them on, bounding the centres is a safety net rather than
+an accuracy trade-off.
 
 With `learn_centers: false` and `learn_widths: false`, the bumps stay where
 they were placed and only the weights are fitted: a fixed-basis RBF.
@@ -123,11 +125,11 @@ model:
         centers: 8
 ```
 
-On California housing, `rbf` with 8 centres matches Legendre's accuracy
-(test MSE 0.1853 ± 0.0014 against 0.1852 ± 0.0008 over four seeds), and 4
-to 16 centres all land within the seed noise. The RBF models are larger:
-the smallest pruned RBF model has 6,485 learned parameters, the best pruned
-Legendre model 801 (California housing README).
+An RBF neuron carries one weight per bump plus the linear part, so an RBF
+model tends to have many more parameters than a polynomial one of
+comparable accuracy. The number of centres trades capacity for size:
+more bumps fit finer local structure but enlarge the model, and past some
+point add little on smooth data.
 
 ## In the log
 

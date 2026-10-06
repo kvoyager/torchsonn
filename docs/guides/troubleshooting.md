@@ -38,14 +38,19 @@ see [Known problems](#known-problems)). The third comes from `train` and
 ### Building the model fails
 
 ```text
-TypeError: empty(): argument 'size' failed to unpack the object at pos 2 with error "type must be tuple of ints,but got NoneType"
 AssertionError: soft_binner and use_neuron_proj are mutually exclusive
 ```
 
-The first is a head with `model.num_out_neurons` and
-`model.max_neuron_models` both at null: set `num_out_neurons` to
-`nbest_neurons`. The second needs `model.soft_binner: false` next to
-`model.use_neuron_proj: true`.
+`model.use_neuron_proj: true` needs `model.soft_binner: false` next to it.
+
+### Building the trainer fails
+
+```text
+ValueError: train.checkpoint_dir is empty; set the folder that holds the run folders (the default is 'checkpoints', in the working directory).
+```
+
+Set `train.checkpoint_dir` to a folder, or leave the key out of the
+configuration for the default, `checkpoints` in the working directory.
 
 ### `gather(): Expected dtype int32/int64 for index`
 
@@ -81,22 +86,20 @@ the rest of the process. Run again with
 ### The test error is far above the dev error
 
 A few test rows far outside the range of the training rows can dominate the
-test error, because a polynomial extrapolates wildly there. On California
-housing without clipping, standardized test rows reach 208 standard
-deviations, and in two runs five such rows carried essentially all the
-error: a test MSE of 777.8 and of 1.4 million, against 0.53 without those
-five rows. Clip the standardized features, as the quickstarts do at ±5,
-or log-transform skewed ones (see [Data](data.md#preparing-features)).
+test error, because a polynomial extrapolates wildly there. Without
+clipping, a handful of extreme standardized rows can carry essentially all
+of the test error, so the figure swings wildly from run to run while the dev
+error stays low. Clip the standardized features, as the quickstarts do at
+±5, or log-transform skewed ones (see [Data](data.md#preparing-features)).
 
 ### Layer outputs hit the clamp
 
 Every layer's outputs are cut to ±`model.output_clamp_value` (1000) before
 the next layer reads them, and the fine-tune passes get no gradient through
 a cut output. On heavy-tailed features that are not clipped, a pair
-neuron's outputs can pass 1000 on the outliers: on California housing the
-product of two standardized features reaches about 7300 there. Clip the
-features, or raise the clamp as the California housing configs do
-(`1.0e+6`).
+neuron's outputs can pass 1000 on the outliers, since the product of two
+large standardized values grows fast. Clip the features, or raise the clamp
+(some configs use `1.0e+6`).
 
 ### Candidates diverge or turn NaN
 
@@ -111,9 +114,9 @@ clip the features, and keep gradient clipping on (see
 
 ### RBF centres leave the data
 
-With `center_radius: null` and the LBFGS safeguards off, 37 to 68% of the
-survivors' centres ended more than 5 standard deviations from the data on
-California housing. Keep the default `center_radius` and the LBFGS
+With `center_radius: null` and the LBFGS safeguards off, many of the
+survivors' centres can drift far from the data, well beyond the range the
+training rows cover. Keep the default `center_radius` and the LBFGS
 `max_step` and `curvature_eps` (see [Gaussian RBF](../concepts/neurons/rbf.md)
 and [Optimizers](optimizers.md#lbfgs)).
 
@@ -141,17 +144,12 @@ stops early by design. A small dev split makes the layer errors noisy, so a
 chance rise can end the search: `train.criterion_minimum_width` allows
 more layers without improvement.
 
-### A fit ignores `train.steps`
+### A resumed run continued the wrong run
 
-`train.steps` is checked only when the candidates are evaluated, every
-`train.eval_step_interval` steps, 1000 by default. A smaller `steps` has no
-effect until the interval is lowered too.
-
-### A resumed run picked up the wrong checkpoint
-
-`train(..., resume=True)` continues from the newest step checkpoint in
-`train.checkpoint_dir`, whichever configuration wrote it. Give every
-configuration its own folder.
+`train(..., resume=True)` continues the newest run folder in
+`train.checkpoint_dir` that holds a step checkpoint, whichever
+configuration wrote it. Give every configuration its own
+`train.checkpoint_dir`, or name the run: `resume="2026-10-04-10-15-30"`.
 
 ## Known problems
 
@@ -159,18 +157,10 @@ These are problems of the library as it stands, with a way around each.
 
 | Problem | Way around |
 |---|---|
-| `train.criterion_type: bias` leaves the survivors untrained | Use `validate` or `validate_bias` (see [Criteria](../concepts/criteria.md)). |
 | A `binary` model's criterion compares logits with the 0/1 labels, so selection picks poor neurons; on a synthetic task the model scored chance-level accuracy | Train a `regressor` on the 0/1 labels and threshold its prediction at 0.5 (see [Classification](../concepts/classification.md#binary-models)). |
-| `train.criterion_type: bias_retrain` raises `NotImplementedError` at the first layer | Use another criterion. |
-| The `newton` and `newton-lm` optimizers fail with `TypeError` at the first fit | Use `lbfgs` (see [Optimizers](optimizers.md)). |
-| The `warmup_flat` scheduler undoes the early stop's learning-rate drops, so every fit runs to `train.steps` | Leave `train.scheduler.name` at null. |
 | A binary model with `train.layer_finetune` or `train.layer_err_source: readout` fails with `ValueError: Target size ... must be the same as input size` | Use neither on binary models; they have no head. |
-| `Trainer.prune` changes the predictions of a multi-class model with `model.use_neuron_proj` and no head | Do not prune such a model, or give it a head. |
 | On a model with a head, a `Trainer.infer` call before `Trainer.train_finetune` makes the pass fail with `RuntimeError: Inference tensors cannot be saved for backward` | Run the pass first. To measure the model before it, call `model.infer(x)` inside `torch.no_grad()`. |
-| The end-to-end pass also moves the soft binner's class points, which are meant to stay fixed; on iris, the first class's point moved from 0.05 to 0.018 | None. The moved points are saved with the model and used for its predictions. |
-| `SONNLayer.describe` raises `AttributeError` | Use the loop in [Inspecting a model](inspecting.md#inside-a-layer). |
 | `Trainer.infer` does not apply the trainer's `batch_callback` | Give `infer` a loader that yields `(x, y)` pairs. |
-| An empty `train.checkpoint_dir` writes inside the installed package's environment | Set `train.checkpoint_dir`. |
-| The checkpoint cleanup deletes any file in `train.checkpoint_dir` that is not a step checkpoint, and fails with `PermissionError` (Windows) on a subfolder | Give each run a checkpoint folder that holds nothing else (see [Training](training.md#checkpoints)). |
+| Resuming a run that finished trains one more layer, even past `train.max_layer_count`; resuming it again can fail to create a layer | Resume only interrupted runs (see [Training](training.md#resuming)). |
 
 <small>Checked against TorchSONN 0.1.5.</small>

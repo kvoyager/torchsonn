@@ -31,10 +31,8 @@ and `Linear(num_out_neurons, C)` followed by the log-softmax for
 multi-class. Binary models have no head and ignore the key.
 
 The head reads the `model.num_out_neurons` survivors with the lowest
-criterion values. Set it to `model.nbest_neurons`. Left at null, it takes
-the value of `model.max_neuron_models` (the candidate cap, usually larger),
-and the head gets zeros for the inputs the layer cannot fill; with both at
-null, building the model fails with `TypeError`.
+criterion values. Left at null, it reads `model.nbest_neurons` of them,
+every survivor of the last layer.
 
 ### Fitting the head
 
@@ -48,16 +46,17 @@ trainer.train_out_proj(model, train_dl, dev_dl)
 
 `train_out_proj` freezes the rest of the network, computes its outputs once
 per split, fits the head on the train split and early-stops on dev. It
-then saves the model to `model_last.ckpt`. `train.out_proj_train` sets the
+ends on its last step (see
+[Last step or best evaluation](#last-step-or-best-evaluation)) and saves
+the model to `model_last.ckpt`. `train.out_proj_train` sets the
 optimizer (`adam` by default, `sgd` or `lbfgs`), the learning rate, the step
 limit, the evaluation interval and the early stop.
 
 Fitting the head is least squares for regression and logistic regression
 for multi-class: small convex problems that `lbfgs` with its line search
 solves in a few dozen steps. The default `adam` at a learning rate of 0.001
-can stop long before the optimum: on iris it left a test log loss of 0.2907,
-against 0.0089 with `lbfgs`. The California housing configs fit the head
-with:
+can stop well short of what `lbfgs` reaches, so an `lbfgs` block is usually
+the better choice for the head:
 
 ```yaml
 train:
@@ -69,10 +68,10 @@ train:
     early_stop_patience: 6
 ```
 
-A head on its own does not always help. On the regression quickstart, a
-head fitted this way over the 8 survivors lowered the dev error from 0.3143
-to 0.3040 but raised the test MSE from 0.4199 to 0.4316. The head pays off
-as the starting point of the end-to-end pass, below.
+A head on its own does not always help: fitting it can lower the dev error
+yet raise the test error, since it only optimizes the readout on the splits
+it sees. The head pays off mainly as the starting point of the end-to-end
+pass, below.
 
 ## The per-layer fine-tune
 
@@ -89,44 +88,36 @@ linear combination: together they fit better, each alone fits worse. That
 has two consequences.
 
 - **It needs an output head.** A model without one predicts with a single
-  survivor, which the pass has made worse: on CCPP that readout collapses
-  to a mean absolute error of about 13 MW, against 3.3 MW for the plain
-  model (CCPP README). Set `model.use_output_projection` and keep
-  `num_out_neurons` equal to `nbest_neurons`. A head over 6 of 8 survivors
-  cost 0.05 MW and doubled the spread across folds.
+  survivor, which the pass has made worse, so that readout collapses. Set
+  `model.use_output_projection` and let the head read every survivor
+  (`num_out_neurons` null); reading only some of them tends to cost
+  accuracy and widen the spread across folds.
 - **It changes where the search stops.** The growth rule compares the
   survivors' own criterion values by default, and those get worse, so the
   search stops early. `train.layer_err_source: readout` scores each layer
   by the temporary head's dev loss instead (see
   [Criteria](criteria.md#the-layers-error)).
 
-On California housing the per-layer fine-tune made the model worse
-(California housing fine-tune config):
-
-| Survivors | Per-layer fine-tune | Layers | Test MSE |
-|---|---|---|---|
-| 8 | on | 5 trained | 0.2160 |
-| 8 | off | 14 | 0.2048 |
-| 16 | on | 4 trained, 3 kept | 0.2102 |
-| 16 | on, with `layer_err_source: readout` | 5 trained, 3 kept | 0.2099 |
-| 16 | off | 15 | 0.1986 |
-
-On CCPP it is part of the stack that helps most (see below). The pass does
-not work on binary models: it fails with `ValueError` at the first layer.
+The per-layer fine-tune does not always pay off. On some data it stops the
+search earlier and ends up a little worse than leaving it off; on other data
+it is part of the stack that helps most (see
+[the end-to-end pass](#the-end-to-end-pass)). It is worth measuring both
+ways on your own data. The pass does not work on binary models: it fails
+with `ValueError` at the first layer.
 
 ## The end-to-end pass
 
 `Trainer.train_finetune(model, train_dl, dev_dl, cfg=None, val_dl=None)`
 trains every parameter of the network at once: all layers' coefficients,
-RBF centres and widths, the class map and the head. Its loss is the
-model's training loss on exactly what `infer` returns, so it optimizes the
-readout the model is scored on.
+RBF centres and widths, a learned class map (the shared projection or one
+per candidate; the soft binner's points stay fixed) and the head. Its loss
+is the model's training loss on exactly what `infer` returns, so it
+optimizes the readout the model is scored on.
 
 ```python
 trainer.train(model, train_dl, dev_dl, test_dl)
 trainer.train_out_proj(model, train_dl, dev_dl)
 trainer.train_finetune(model, train_dl, dev_dl)
-trainer.save_model_checkpoint(model)
 preds, targets = trainer.infer(model, test_dl)
 ```
 
@@ -136,8 +127,8 @@ learning rate, the plateau schedule, the step limit and the early stop.
 The early stop reads the dev split, or the validation split when
 `train.stop_source` is `val`.
 
-On the regression quickstart, with a head and this block, the pass stopped
-on its own after 1,375 to 2,925 steps, 1.5 to 3.5 minutes on a CPU:
+With a head and a block like the one below, the pass typically stops on its
+own within a couple of thousand steps, a few minutes on a CPU:
 
 ```yaml
 train:
@@ -152,35 +143,34 @@ train:
     lr_min: 1.0e-8
 ```
 
-| Regression quickstart readout | Test MSE |
-|---|---|
-| best neuron, no head | 0.4199 |
-| head fitted with `lbfgs` | 0.4316 |
-| head, then the end-to-end pass, three runs | 0.3839 to 0.3987 |
+The usual progression: the best neuron alone gives one test error, a fitted
+head on its own can be slightly worse, and the head followed by the
+end-to-end pass improves on both.
 
 Things to know before using it:
 
 - **Use a small learning rate.** Every weight moves at once, so the pass
-  wants a far gentler step than the head fit. The California housing
-  configs use AdamW at `1e-4`, the CCPP configs at `1e-5`.
+  wants a far gentler step than the head fit: AdamW at around `1e-4` to
+  `1e-5` is a good starting range.
 - **Check that it converged.** The log prints `finetune early stop at step
   ...` when the pass stops on its own. Without that line, it ran to
-  `max_steps` and its result is cut short. On CCPP,
-  `ccpp_legendre_finetune.yaml` needed `max_steps: 20000`: at 5000 only 6
-  of 10 folds converged, and the mean absolute error was 3.1916 MW instead
-  of 3.1748.
-- **Keep the head.** On CCPP, removing the head and fine-tuning the bare
-  network against its best neuron scored 3.4637 ± 0.2730 MW, worse than no
-  fine-tuning at all (3.3084 ± 0.0147). With the head, every fold's dev loss
-  improved or held.
-- **It does not repeat exactly.** The search and the head fit give the
-  same numbers run after run, but the pass does not: in three runs of the
-  quickstart example with the same seed, it stopped after 1,375, 2,925 and
-  1,375 steps, at a test MSE of 0.3978, 0.3839 and 0.3987.
-- **It widens the spread.** The fine-tuned CCPP models vary more from fold
-  to fold: ±0.05 to 0.07 MW, against ±0.013 to 0.016 without the pass.
-- **It keeps the last step's weights,** not those of its best evaluation,
-  and it does not save the model: call `trainer.save_model_checkpoint`.
+  `max_steps` and its result is cut short, which is worse and more variable;
+  raise `max_steps` until the early-stop line appears on every run.
+- **Keep the head.** Removing the head and fine-tuning the bare network
+  against its best neuron tends to do worse than no fine-tuning at all,
+  because a single readout neuron is a poor target. With the head,
+  fine-tuning reliably helps.
+- **It repeats only with the same calls.** Seeded, the pass gives the same
+  result on a CPU run after run. Every pass over a loader draws from the
+  random generator, so extra loops over a loader, to score the head along
+  the way for instance, change the pass's shuffling and its result. On a
+  GPU, set `train.use_deterministic_algorithms` (see
+  [Training](../guides/training.md#seeds)).
+- **It widens the spread.** Fine-tuned models vary more from run to run than
+  the plain search.
+- **It saves the model** to the run folder's `model_last.ckpt` when it
+  ends, on its last step unless `finetune_train.keep_best_weights` is on
+  (see [Last step or best evaluation](#last-step-or-best-evaluation)).
 - **Run it before `Trainer.infer`.** On a model with a head, a call to
   `Trainer.infer` before the pass makes the pass fail (see
   [Troubleshooting](../guides/troubleshooting.md#known-problems)).
@@ -188,54 +178,65 @@ Things to know before using it:
 On a CUDA device with `adam` or `adamw`, the pass runs as a captured CUDA
 graph, which is much faster (see [Performance](../guides/performance.md#the-end-to-end-pass-on-a-gpu)).
 
-### What the stack is worth on CCPP
-
-The CCPP tutorial's `*_finetune` configs add all three passes, the
-per-layer fine-tune, the head and the end-to-end pass, to four of its
-configurations and change nothing else. Mean absolute error over 10 folds
-(CCPP README):
-
-| Config | Without | With the three passes |
-|---|---|---|
-| `ccpp_legendre.yaml` | 3.3084 ± 0.0147 | 3.1748 ± 0.0520 |
-| `ccpp_legendre_poly.yaml` | 3.2782 ± 0.0135 | 3.1495 ± 0.0696 |
-| `ccpp_legendre_heavy.yaml` | 3.3035 ± 0.0162 | 3.1408 ± 0.0620 |
-| `ccpp_legendre_poly_heavy.yaml` | 3.2777 ± 0.0200 | 3.1284 ± 0.0485 |
-
-The gain, 0.13 to 0.16 MW, is larger than the difference between the
+The three passes together, the per-layer fine-tune, the head and the
+end-to-end pass, are what the tutorials' `*_finetune` configs add. On some
+tasks the gain from the full stack is larger than the difference between the
 cheapest and the most expensive search.
 
 ### In the tutorial scripts
 
-The California housing and CCPP scripts read three top-level flags:
-`finetune_end_to_end` runs the pass after the head fit,
-`finetune_drop_head` removes the head first, and `finetune_prune_first`
-prunes the network first. Pruning first leaves the accuracy unchanged,
-because the neurons it removes get no gradient anyway.
+The tutorial scripts read three top-level flags: `finetune_end_to_end`
+runs the pass after the head fit, `finetune_drop_head` removes the head
+first, and `finetune_prune_first` prunes the network first. Pruning first
+leaves the accuracy unchanged, because the neurons it removes get no
+gradient anyway.
+
+## Last step or best evaluation
+
+The head fit, the per-layer fine-tune and the end-to-end pass evaluate
+every `eval_interval` steps, and a last step that falls between two
+evaluations is evaluated too. By default each pass ends on its last step.
+`keep_best_weights: true` in `train.out_proj_train` (the head fit and the
+per-layer fine-tune) or `train.finetune_train` (the end-to-end pass) makes
+it end on the weights of its lowest evaluated loss instead: the pass copies
+the weights it trains on every new best and copies them back when it
+stops. `best_weights_copy` says where the copy is kept: `device`, next to
+the parameters, in GPU memory on CUDA; `cpu`, in host memory; or `disk`, in
+a file in the run folder that is deleted when the pass ends. The copy is as
+large as what the pass trains: the head, a layer's survivors, or the whole
+model.
+
+Neither setting is better everywhere. The last step's weights sometimes win
+on the test split even when the best evaluation's are lower on dev, and for
+the per-layer fine-tune the best weights can leave lower layer errors and
+let the search train more layers. Measure both on your data.
+
+With `keep_best_weights` on, the log says which step each pass kept:
+
+```text
+finetune: kept the weights of step 875 (dev loss 0.2704); the last evaluation, step 1375, gave 0.2715
+```
 
 ## Pruning
 
 `Trainer.prune(model)` deletes every neuron the prediction does not reach.
-It keeps the neurons the readout reads in the last layer, one without a
-head and all `out_proj.in_features` with one, then works down the layers,
-keeping whatever those neurons read. It follows any input layout,
-including inputs from older layers under `model.shortcut.prev_layers`, and
-deletes a layer that nothing reads any more. The predictions stay the
-same, with the one exception in the warning below.
+It keeps the neurons the readout reads in the last layer: the
+`out_proj.in_features` the head reads, every survivor of a multi-class
+model with a projection per candidate and no head, and one neuron
+otherwise. Then it works down the layers, keeping whatever those neurons
+read. It follows any input layout, including inputs from older layers
+under `model.shortcut.prev_layers`, and deletes a layer that nothing reads
+any more. The predictions stay the same.
 
-| Regression quickstart | Neurons per layer after `prune` |
-|---|---|
-| no head | 2, 1, 1, 1, 1, 1, 1, 1, 1, 1 |
-| head over 8 survivors | 3, 2, 2, 2, 2, 3, 5, 5, 4, 8 |
+A model built with `model.use_layer_norm` cannot be pruned: each of its
+LayerNorms normalizes a row over every column of a layer's input, so
+removing columns would change the predictions. `prune` raises `ValueError`
+and leaves such a model as it is.
 
-Without a head, 11 of the 80 trained neurons remain and the model uses 7 of
-the 8 features; with a head, 36 neurons remain and use all 8.
-
-!!! warning
-    A multi-class model with `model.use_neuron_proj` and no head predicts
-    from every survivor of its last layer, but `prune` keeps one, which
-    changes its predictions (see
-    [Classification](classification.md#a-projection-per-candidate)).
+Without a head, pruning typically leaves only a handful of neurons: the
+model collapses toward the single chain the best neuron depends on, and
+unused features drop out. With a head that reads every survivor, far more
+neurons survive, since the prediction reaches back into every layer.
 
 ## The knobs
 

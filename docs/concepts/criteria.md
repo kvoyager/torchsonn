@@ -10,7 +10,8 @@ them. `train.criterion_type` chooses the criterion:
 | `validate` (default) | the regularity error on the dev split |
 | `bias` | the minimum-bias error between two half-fits |
 | `validate_bias` | $(1 - \alpha)\cdot\text{bias} + \alpha\cdot\text{regularity}$, with $\alpha$ = `train.error_alpha` (0.5) |
-| `bias_retrain` | accepted by the configuration but not implemented: training raises `NotImplementedError` when the first layer selects its survivors |
+
+Any other value raises `ValueError` when the model is built.
 
 [GMDH](gmdh.md) explains the classical criteria these follow.
 
@@ -42,12 +43,15 @@ $$
 A candidate that captures real structure gives nearly the same predictions
 whichever half it was fitted on.
 
-!!! warning "`bias` on its own leaves the survivors untrained"
-    With `criterion_type: bias`, only the two half-fits are trained. The
-    survivors that selection keeps are the layer's own neurons, which keep
-    their random initial coefficients, so the network predicts like an
-    untrained one. `validate_bias` trains the layer's neurons on the full
-    train split and is not affected.
+The two half-fits only rank the candidates. Under every criterion the
+candidates are also fitted on the whole train split, with the early stop
+on dev, and those fits are the survivors the layer keeps; `bias` and
+`validate_bias` therefore run three fits per family instead of one.
+
+Ranking by agreement is not the same as ranking by accuracy: a candidate
+can be stable across the two half-fits without being the most accurate one,
+so `bias` on its own can select differently from `validate`. `validate_bias`
+blends the two, and `validate` is the default.
 
 ### Normalization
 
@@ -58,10 +62,10 @@ criteria and of the training loss:
   fraction of the target's variance, so it means the same on every dataset,
   and the absolute thresholds that compare errors (the early-stop and
   growth margins, `train.divergence_threshold`) do too.
-- **`energy`**: $\sum y^2$, Ivakhnenko's original and GmdhPy's. Its baseline
-  is the prediction 0, which suits targets centred on 0. For a target with
-  mean 454 and standard deviation 17, $\sum y^2$ is about 700 times the
-  variance, and every error collapses into a thin band near 0.
+- **`energy`**: $\sum y^2$, as in the original GMDH (and GmdhPy). Its
+  baseline is the prediction 0, which suits targets centred on 0. For a
+  target far from 0, $\sum y^2$ can be many times the variance, and the
+  errors collapse into a thin band near 0.
 
 Within one layer the denominator is the same for every candidate, so the
 choice does not change which candidates survive; it changes the reported
@@ -72,15 +76,6 @@ squared error divided by the variance of the training targets (their mean
 square under `energy`), measured once before the first layer. `train.ridge_alpha` adds an L2 penalty on the
 neuron's coefficients to the training loss only; criteria are computed
 without it.
-
-### Censored targets
-
-Some targets are recorded at a cap: California housing prices stop at 5.0
-for every house worth 5.0 or more, 4.8% of the rows. With
-`train.censor_target_at` set to the cap, the training loss clips the
-prediction to the cap on rows whose target sits at or above it, so
-predicting above the cap costs nothing there. The criteria are unchanged.
-Clip the predictions to the cap at inference as well.
 
 ## Classification
 
@@ -116,15 +111,6 @@ model trains with the binary cross-entropy on logits. With `variance`
 normalization the denominator is $N\,p(1-p)$, where $p$ is the share of
 positive labels.
 
-!!! warning "Binary models select poorly"
-    A logit far from 0 or 1 scores badly under this formula even when it is
-    confident and right, so selection favours neurons whose logits stay
-    small. On a synthetic two-class task with 4 inputs, a `binary` model's
-    layer errors stayed near 1.9, worse than the trivial prediction, and its
-    test accuracy was 0.467, chance level. A `regressor` trained on the same
-    0/1 labels and thresholded at 0.5 reached 0.943. Train two-class
-    problems as a regressor on the 0/1 labels instead.
-
 ## The layer's error
 
 After selection, each layer gets one error, which the growth rule
@@ -136,20 +122,19 @@ compares across layers:
   criterion values, as above. **`readout`**: the dev loss of a linear head
   fitted over all the layer's survivors, which is what a model with an
   output head is scored on. With `train.layer_finetune` on, that is the
-  fine-tune's own head; otherwise a temporary head is fitted over the
-  frozen survivors only to measure the layer. `readout` requires
+  fine-tune's own head, and the error is the dev loss of the weights the
+  layer keeps: its last evaluation's, or its best under
+  `train.out_proj_train.keep_best_weights`. Otherwise a temporary head is
+  fitted over the frozen survivors only to measure the layer, and the
+  error is its lowest dev loss. `readout` requires
   `model.use_output_projection: true` and works for regression models
   only: multi-class models reject it, and binary models, which have no
   head, fail with `ValueError` at the first layer.
 
-On California housing, `readout` together with `layer_finetune` stops the
-search at 3 layers with a test MSE of 0.2099, against 0.1972 for the
-15-layer search with the per-layer fine-tune off (changelog).
-
 ## The knobs
 
 `train.criterion_type`, `train.error_alpha`, `train.bias_ce_type`,
-`train.error_normalization`, `train.censor_target_at`, `train.ridge_alpha`,
+`train.error_normalization`, `train.ridge_alpha`,
 `train.layer_err_criterion`, `train.layer_err_source`. See
 [Configuration keys](../reference/config.md).
 

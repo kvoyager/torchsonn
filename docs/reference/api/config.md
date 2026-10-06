@@ -23,10 +23,6 @@ configuration from them.
     options:
       members: false
 
-::: torchsonn.config.schemas.SchedulerConfig
-    options:
-      members: false
-
 ::: torchsonn.config.schemas.OutProjTrainConfig
     options:
       members: false

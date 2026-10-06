@@ -29,13 +29,6 @@ probs = torch.sigmoid(logits)
 The criterion uses the regression formulas on the logit and the 0/1 labels
 (see [Criteria](criteria.md#binary-models)).
 
-!!! warning "Binary selection picks poor neurons"
-    On a synthetic two-class task, a `binary` model reached a test accuracy
-    of 0.467, chance level, and a `regressor` on the same 0/1 labels 0.943.
-    Train two-class problems as a regressor on the 0/1 labels, and read a
-    prediction above 0.5 as the positive class. `multi-class` does not
-    accept two classes.
-
 A binary model has no output head: `model.use_output_projection` has no
 effect on it, and the best neuron of the last layer always makes the
 prediction. The per-layer fine-tune and `train.layer_err_source: readout`
@@ -70,12 +63,14 @@ where $s$ is `model.soft_binner_scale` (100). The softmax of the scores
 gives the class probabilities. Each neuron therefore learns a regression
 onto the point of the right class. With three classes the points are 0.45
 apart, so an output that lands on a class's point gives it a lead of about
-20 in score over its neighbours, a probability close to 1.
+20 in score over its neighbours, a probability close to 1. The points never
+move: no pass trains them, the end-to-end pass included.
 
 The binner puts the classes on a line in label order: class 1 lies between
 classes 0 and 2. A neuron has to separate them by one number in that
-order, which suits labels with a natural order best. Iris is not ordered,
-and the quickstart still classifies every test flower correctly.
+order, which suits labels with a natural order best. Unordered labels can
+still be classified well, since the map and the neurons adapt to whatever
+order the binner imposes.
 
 ### The shared projection
 
@@ -101,13 +96,7 @@ candidate's coefficients. To predict, the model combines every survivor of
 the last layer: it multiplies each survivor's output by that survivor's
 weights, adds the products up, adds the mean of the survivors' biases and
 takes the log-softmax. The prediction therefore reads the whole last layer,
-not one neuron.
-
-!!! warning "Pruning changes this model's predictions"
-    `Trainer.prune` keeps one neuron in the last layer of a model without an
-    output head, but a per-candidate-projection model predicts from all of
-    them. On iris, pruning such a model moved its test log loss from 0.0001
-    to 0.0168. Do not prune a `use_neuron_proj` model that has no head.
+not one neuron, and `Trainer.prune` keeps all of it.
 
 ### A head over the survivors
 
@@ -118,23 +107,6 @@ drives the search; the head replaces it at prediction, once
 `Trainer.train_out_proj` has fitted it. The
 [Otto tutorial](../tutorials/otto.md) combines a projection per candidate
 during the search with a head over all 93 survivors.
-
-### On iris
-
-Each class map, on the classification quickstart's data and settings:
-
-| Class map | Layers kept | Test log loss |
-|---|---|---|
-| soft binner (the quickstart) | 4 | 0.0029 |
-| shared projection | 5 | 0.0071 |
-| projection per candidate | 3 | 0.0001 |
-| soft binner, plus a head fitted with `lbfgs` | 4 | 0.0089 |
-| soft binner, plus a head fitted with the default `adam` | 4 | 0.2907 |
-
-All five classify the 23 test flowers correctly. With so few rows, the log
-losses show that each variant works, not which one is better. The last row
-shows that the head fit needs its own settings: see
-[Fitting the head](heads-and-finetune.md#fitting-the-head).
 
 ## The criterion
 

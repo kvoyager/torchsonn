@@ -36,8 +36,34 @@ Both families follow a three-term recurrence from $P_0 = 1$ and $P_1 = u$:
   Chebyshev expansion is close to the best approximation in the maximum
   error.
 
-On California housing, Chebyshev in place of Legendre lands within the seed
-noise (California housing README).
+The first few, next to the plain powers they replace:
+
+| $k$ | power basis | Legendre $P_k$ | Chebyshev $T_k$ |
+|---|---|---|---|
+| 0 | $1$ | $1$ | $1$ |
+| 1 | $u$ | $u$ | $u$ |
+| 2 | $u^2$ | $\tfrac{1}{2}(3u^2 - 1)$ | $2u^2 - 1$ |
+| 3 | $u^3$ | $\tfrac{1}{2}(5u^3 - 3u)$ | $4u^3 - 3u$ |
+| 4 | $u^4$ | $\tfrac{1}{8}(35u^4 - 30u^2 + 3)$ | $8u^4 - 8u^2 + 1$ |
+
+Each $P_k$ and $T_k$ is a degree-$k$ polynomial, so a basis up to degree $d$
+spans exactly the same functions as the plain powers $1, u, \dots, u^d$. The
+families differ only in how the terms are combined, which is what keeps the
+design matrix well conditioned where the raw powers do not.
+
+On $[-1, 1]$ the two families look different. The Legendre polynomials
+spread their oscillation across the interior and shrink toward the edges;
+the Chebyshev polynomials keep a constant ripple all the way out, reaching
+$\pm 1$ at $u = \pm 1$. Both stay within $[-1, 1]$, which is why the inputs
+are squashed into that range first.
+
+![Legendre polynomials P_0 to P_4 on the interval minus one to one](legendre_basis.svg){ width="560" }
+
+![Chebyshev polynomials T_0 to T_4 on the interval minus one to one](chebyshev_basis.svg){ width="560" }
+
+Legendre and Chebyshev span the same function space; which fits a given
+dataset better is an empirical question, and on smooth data they often
+perform similarly.
 
 ## The squash
 
@@ -72,9 +98,9 @@ of every candidate.
 **`squash: false`** feeds the inputs unchanged, for inputs already inside
 $[-1, 1]$.
 
-On the CCPP power-plant data, switching the squash on leaves the mean
-error within one standard deviation, cuts the spread across folds by a third
-to a half, and makes the runs 1.2 to 2 times faster (CCPP README).
+Because the squash bounds the basis inputs, it mainly improves conditioning:
+it tends to tighten the run-to-run spread and speed up the per-neuron fits,
+usually with little effect on the central accuracy.
 
 ## Options
 
@@ -99,10 +125,11 @@ model:
         dim: 4
 ```
 
-On California housing, degree 4 or 5 lands within the seed noise of degree
-3 (California housing README). On CCPP, a four-input family (`dim: 4`) next
-to the pairs is the largest single gain among the Legendre configurations
-(CCPP README).
+Raising `degree` past 3 adds higher-order curvature but often brings little
+on smooth data. Raising `dim` lets a single neuron model joint interactions
+across more than two inputs, which the pairwise families reach only
+indirectly; whether it helps depends on how much of the signal lives in
+those interactions.
 
 ## In logs and plots
 

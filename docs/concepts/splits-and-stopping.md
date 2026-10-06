@@ -42,19 +42,16 @@ All candidates of a family are fitted together, and each stops on its own:
 
 The fit of a family ends when every candidate has stopped, when more than
 `train.early_stop_completion_percentage` percent of them have (100, so
-never before all, by default), or when the step count passes
-`train.steps`. These are checked only at evaluations, so a fit
-runs to the first evaluation past `train.steps`; with the default
-`eval_step_interval` of 1000, any `steps` below 1000 has no effect. The
+never before all, by default), or when it has run `train.steps`
+optimizer steps. The first two are checked at evaluations, every
+`train.eval_step_interval` steps; the step budget after every step. The
 names read the other way round from their roles: `early_stop_patience` is
 the minimum improvement, and `early_stop_tolerance_steps` the patience,
 counted in evaluations.
 
 With `early_stop_source: train`, the fits stop on the training loss, and
 the dev split is used once per layer, by selection: least squares on train, ranking on
-dev, the classical GMDH arrangement. On the California housing Legendre
-configuration, both settings stop the fits at 81 steps and give test errors
-within 0.0012 of each other over three runs each (changelog).
+dev, the classical GMDH arrangement.
 
 ## The growth rule
 
@@ -138,11 +135,9 @@ pass's early stop read the validation split instead of dev; `stop_source:
 val` without a `val_dl` raises an error. Validation errors are not computed
 for multi-class models.
 
-The extra split has a cost: its rows fit nothing. On California
-housing, a 10% validation split cost the fits 0.006 in test MSE, and
-reading the stop rules from its 1,239 rows cost another 0.003 to 0.010, while
-the dev-validation gap narrowed with depth (changelog). The tutorial
-therefore leaves it off (`tutorial.val_split: 0`).
+The extra split has a cost: its rows fit nothing, and reading the stop
+rules from a smaller split adds noise of its own. The tutorial therefore
+leaves it off (`tutorial.val_split: 0`).
 
 ## The knobs
 

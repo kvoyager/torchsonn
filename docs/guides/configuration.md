@@ -110,9 +110,9 @@ Error merging override model.nbest_neurons=eight
 python -m tutorials.ccpp.ccpp -m train.ridge_alpha=0.001,0.01,0.05
 ```
 
-Hydra gives every run its own output folder. The checkpoint folder is
-whatever `train.checkpoint_dir` says, so runs of a sweep that share it
-write into the same folder unless the script separates them.
+Hydra gives every run its own output folder, and the trainer gives every
+training run its own folder inside `train.checkpoint_dir`, so the runs of a
+sweep never overwrite each other's checkpoints.
 
 ## Neuron family entries
 

@@ -17,14 +17,6 @@ and [End-to-end pass](../reference/config.md#end-to-end-pass).
 | `lbfgs` | limited-memory quasi-Newton | the default choice for every family, and the tutorials' choice; the candidates are small least-squares problems it solves in tens to hundreds of steps |
 | `adam` | Adam | a first-order alternative; needs more steps and a tuned learning rate |
 | `sgd` | SGD with Nesterov momentum | the same, with plain momentum |
-| `newton` | dense quasi-Newton matrix per candidate | tiny neurons only: memory grows with the square of the parameter count. Currently unusable, see below |
-| `newton-lm` | damped Newton step with a diagonal Hessian estimate | the same. Currently unusable, see below |
-
-!!! warning "`newton` and `newton-lm` currently fail"
-    The default `optimizer_params` contain `clip_value` and `clip_norm`,
-    which these two optimizers do not accept, and `SONN` merges the
-    defaults into every configuration. Selecting either one raises
-    `TypeError` at the first fit.
 
 ## The learning rate and the early stop
 
@@ -64,16 +56,14 @@ Two safeguards keep it stable:
   clearly positive ($y \cdot s > \varepsilon \lVert s \rVert \lVert y \rVert$),
   so the curvature estimate stays positive definite.
 
-`null` turns either off. How often they act depends on the model. On the
-California housing Legendre configuration they cap about 0.1% of updates
-and reject no pairs (changelog); on the regression quickstart's
-`linear_cov` model they cap 1 to 4% of updates and reject up to about 20%
-of the pairs per layer. They matter most for the RBF family, where a bump
-that loses its data has a gradient and a curvature that vanish together.
-There they reject about 15% of the pairs, and with unbounded centres 0 to
-6% of the survivors' centres end more than 5 standard deviations from the
-data, against 37 to 68% without the safeguards (changelog). The log reports
-both after every family's fit:
+`null` turns either off. How often they act depends on the model. On
+well-conditioned power-basis fits they rarely bind, capping only a small
+fraction of updates and rejecting few curvature pairs. They matter most for
+the RBF family, where a bump that loses its data has a gradient and a
+curvature that vanish together: there they reject a much larger share of the
+pairs, and with unbounded centres many of the survivors' centres can drift
+far from the data, which the safeguards prevent. The log reports both after
+every family's fit:
 
 ```text
 LinearCovPolynomNeuron fit: 81 optimizer steps; 1.5% of updates capped at max_step, 0.0% of curvature pairs rejected
@@ -89,15 +79,5 @@ one with few.
 (0.9), `nesterov` (true) and `weight_decay` (0.0). Both converge more slowly
 than LBFGS on these small problems, so they need more steps and a learning
 rate tuned to the data.
-
-## Schedulers
-
-`train.scheduler.name: warmup_flat` raises the learning rate linearly from
-near 0 to `lr` over `scheduler_params.warmup_steps` steps, then holds it.
-
-!!! warning "A scheduler overrides the early stop's learning-rate drops"
-    The scheduler sets the learning rate on every step, which undoes the
-    drops of the early stop. A candidate's learning rate then never reaches
-    `min_lr`, and every fit runs to `train.steps`.
 
 <small>Checked against TorchSONN 0.1.5.</small>

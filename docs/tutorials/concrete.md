@@ -13,8 +13,9 @@ The script is `tutorials/concrete/concrete.py`, its configuration
 `tutorials/concrete/concrete.yaml`. The configuration's own
 `checkpoint_dir`, `../concrete/checkpoints`, is relative to the tutorial
 folder, so from the repository root it points outside the repository; the
-command above sets it. The script draws the network with Graphviz, so it
-needs the `viz` extra.
+command above sets it. Each run writes its checkpoints and `train.log` to a
+folder of its own inside it, which the script prints at the end. The script
+draws the network with Graphviz, so it needs the `viz` extra.
 
 ## Data
 

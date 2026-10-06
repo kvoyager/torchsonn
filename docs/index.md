@@ -1,29 +1,34 @@
 # TorchSONN
 
-TorchSONN is a Python library for self-organizing neural networks, built on
-PyTorch. It implements the Group Method of Data Handling (GMDH): the network
-is grown one layer at a time. Each layer builds candidate neurons, small
-functions of two or more inputs taken from the previous layers' outputs and
-the original features. Every candidate is fitted on the training split, and
-the ones with the lowest error on a separate dev split survive into the next
+TorchSONN is a PyTorch library for building and training self-organizing
+deep neural networks. The network grows one layer at a time. Each layer
+builds candidate neurons, small functions of two or more inputs taken from
+the previous layers' outputs and the original features. Every candidate is
+fitted on the training split, and the ones with the lowest error on a
+held-out split (by default, a separate dev split) survive into the next
 layer. The search stops when adding layers stops lowering that error.
+
+The neurons come from three families: plain polynomials, orthogonal
+polynomials and Gaussian radial basis functions. Once the network has
+grown, it can be refined: a linear output head combines the last layer's
+survivors, and an end-to-end pass trains every parameter of the network at
+once by gradient descent.
 
 The result is a network you can read: every neuron is an explicit formula
 over a few named inputs, and the whole network can be drawn as a graph.
-TorchSONN is a GPU-accelerated extension of
-[GmdhPy](https://github.com/kvoyager/GmdhPy), a scikit-learn-style GMDH
-library.
 
 ## Neuron families
 
-- **Power-basis polynomials**: `linear`, `linear_cov`, `quadratic`, `cubic`
-  and the multi-input `polyquad`. A `linear_cov` neuron over the inputs
-  $x_i$ and $x_j$ is $y = w_0 + w_1 x_i + w_2 x_j + w_3 x_i x_j$.
-- **Orthogonal polynomials**: `legendre` and `chebyshev`, with a
-  configurable degree and number of inputs. They stay well conditioned at
-  higher degrees, where the raw power basis does not.
-- **Gaussian radial basis functions**: `rbf`, local bumps whose centres and
-  widths start from k-means and are then learned.
+- **[Plain polynomials](concepts/neurons/polynomial.md)** in the power
+  basis: `linear`, `linear_cov`, `quadratic`, `cubic` and the multi-input
+  `polyquad`.
+- **[Orthogonal polynomials](concepts/neurons/orthogonal.md)**: `legendre`
+  and `chebyshev`, with a configurable degree and number of inputs. They
+  stay well conditioned at higher degrees, where the raw power basis does
+  not.
+- **[Gaussian radial basis functions](concepts/neurons/rbf.md)**: `rbf`,
+  local bumps whose centres and widths start from k-means and are then
+  learned.
 
 ## How a model grows
 
@@ -34,12 +39,40 @@ flowchart LR
     F --> L1
     L1 --> L2[...]
     F --> L2
-    L2 --> P[Prediction: best neuron or a linear head]
+    L2 --> P[Prediction]
 ```
 
 Each layer fits its candidates on the train split and keeps the
 `nbest_neurons` with the lowest dev error. Growth stops when the dev error
-stops improving, and the model keeps the layers up to the best one.
+stops improving, and the model keeps the layers up to the best one. The
+prediction is read off the grown network in one of two ways:
+
+- **Best neuron** (default): the single last-layer survivor with the lowest
+  dev error becomes the output. This is the classic GMDH read-out, and it
+  keeps the model reducible to one explicit formula.
+- **Linear head**: with `use_output_projection`, a linear layer combines
+  several of the last layer's survivors into the prediction, which an
+  end-to-end pass can then refine by training every parameter at once. This
+  usually fits better, at the cost of the single-formula reading.
+
+## A grown network
+
+The network of the [CCPP tutorial](tutorials/ccpp.md), pruned to the
+neurons that reach the output. Each box is a neuron, and its incoming edges
+are the inputs it reads. `PlotModel` draws it (see
+[Inspecting a model](guides/inspecting.md)); click the image for full size.
+
+[![The pruned network of the CCPP tutorial](assets/img/ccpp_pruned_model.svg){ width="80%" }](assets/img/ccpp_pruned_model.svg)
+
+## Relation to GMDH
+
+TorchSONN builds on the Group Method of Data Handling (GMDH) and on
+[GmdhPy](https://github.com/kvoyager/GmdhPy), a scikit-learn-style GMDH
+library. Two parts come from GMDH: the plain-polynomial neurons, and the
+growth itself, which fits candidates layer by layer and keeps the best by
+their error on a separate split. The orthogonal-polynomial and RBF neurons,
+the output head, the fine-tuning passes and the training on a GPU go beyond
+it. [GMDH](concepts/gmdh.md) describes the method.
 
 ## Example
 
@@ -98,8 +131,8 @@ config = OmegaConf.merge(SONN.default_config(), {
     },
 })
 
+Trainer.set_seed(config.train.seed)
 model, trainer = SONN(config, d_model=x.shape[1]), Trainer(config)
-trainer.set_seed(config.train.seed)
 trainer.train(model, train_dl, dev_dl, test_dl)
 trainer.load_model_checkpoint(model, "cpu")
 preds, targets = trainer.infer(model, test_dl)

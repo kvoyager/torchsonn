@@ -79,7 +79,7 @@ skip the pass.
 All candidates of one family train together as one batch: every
 candidate's coefficients form one row of a batched parameter tensor, and
 `torch.func.vmap` evaluates the loss for all of them at once. The batched
-optimizers (`lbfgs`, `adam`, `sgd`, `newton`, `newton-lm`) update each
+optimizers (`lbfgs`, `adam`, `sgd`) update each
 candidate independently. The loss is the squared error divided by the
 variance of the training targets for regression, the negative
 log-likelihood for multi-class and the binary cross-entropy for binary
@@ -105,8 +105,9 @@ $$
 and for classification the cross-entropy divided by the entropy of the
 class frequencies. Both are 1 for a model no better than the trivial
 prediction and 0 for a perfect one. The `bias` criterion instead fits each
-candidate twice, on the even and on the odd rows of the train split, and
-measures how much the two fits disagree; `validate_bias` mixes the two.
+candidate twice more, on the even and on the odd rows of the train split,
+and measures how much those two fits disagree; the candidate itself is
+still fitted on the whole train split. `validate_bias` mixes the two.
 [Criteria](criteria.md) gives every variant.
 
 ### 6. Selection
@@ -142,7 +143,7 @@ The search stops after `train.criterion_minimum_width` layers in a row
 without an improvement, or at `train.max_layer_count` layers. The model
 then keeps the layers up to the one with the lowest error, whether or not
 that layer cleared the margin, and saves itself as `model_last.ckpt` in the
-checkpoint folder. The rule reads the dev error, or the validation split's
+run's folder. The rule reads the dev error, or the validation split's
 under `train.stop_source: val`. [Splits and stopping](splits-and-stopping.md)
 has worked examples.
 

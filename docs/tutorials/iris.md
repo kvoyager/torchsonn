@@ -39,9 +39,11 @@ centimetres, unscaled.
 | `train.max_layer_count` | 5 | |
 | `train.criterion_minimum_width` | 5 | the search runs all five layers and keeps the best |
 
-`train.checkpoint_dir` is empty in this file, so the checkpoints go to the
-default folder (see [Training](../guides/training.md#checkpoints)). Set it
-on the command line to keep them elsewhere:
+`train.checkpoint_dir` is `checkpoints` in this file, so each run's folder
+goes into `checkpoints/` in the folder the script is launched from, the
+repository root with the command above (see
+[Training](../guides/training.md#checkpoints)). Set it on the command line
+to keep them elsewhere:
 
 ```bash
 python -m tutorials.iris.iris_recognition train.checkpoint_dir=checkpoints/iris
@@ -82,8 +84,8 @@ comes from a single neuron that reads sepal length and petal length:
 
 ![The pruned iris network: one LinearCov neuron reading sepal length and petal length](../assets/tutorials/iris/iris_pruned_model.svg)
 
-The script prints the selected features before it prunes, so it lists all
-four measurements. [Inspecting a model](../guides/inspecting.md) shows how
-to read the network after pruning.
+After pruning, the script prints the features the prediction uses: sepal
+length and petal length. [Inspecting a model](../guides/inspecting.md)
+shows how to read the network.
 
 <small>Checked against TorchSONN 0.1.5.</small>

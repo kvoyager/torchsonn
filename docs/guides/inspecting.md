@@ -25,9 +25,10 @@ plot_neuron_name=False, view=False)` takes two options:
 `view=True` opens the drawing once it is written. Without the Graphviz
 `dot` program on the PATH, `plot()` raises `RuntimeError`.
 
-This is the quickstart's model after pruning:
+This is the quickstart's model after pruning, a California housing network
+built from `linear_cov` reference functions:
 
-![The regression quickstart's network after pruning: ten layers of one or two LinearCov neurons between the feature ovals and OUTPUT](quickstart-network.svg){ width="440" }
+![The regression quickstart's California housing network after pruning: ten layers of one or two LinearCov neurons between the feature ovals and OUTPUT](quickstart-network.svg){ width="440" }
 
 - The orange ovals at the top are the input features: `F<i>` and the
   feature's name. The orange `OUTPUT` oval is the prediction.
@@ -38,7 +39,9 @@ This is the quickstart's model after pruning:
   `model.shortcut.prev_layers`, arrows also skip from older layers.
 - The last arrow runs from the neuron that makes the prediction to
   `OUTPUT`. A model with an output head draws an `out_proj` box instead,
-  with an arrow from every survivor it reads.
+  with an arrow from every survivor it reads. A multi-class model with a
+  projection per candidate and no head draws a `per-neuron projections`
+  box, with an arrow from every survivor of its last layer.
 
 Here each layer's neuron combines the neuron of the layer before with one
 feature, a chain ten layers deep. `F4 Population` has no arrows: the model
@@ -127,9 +130,10 @@ On the pruned quickstart model:
 
 ## The training log
 
-`torchsonn.logger.setup_logger("train.log")` sends the library's log to
-the console and to a file, which each call overwrites. Each layer of the
-quickstart logs:
+Every run writes its log to `train.log` in its run folder,
+`trainer.run_dir` (see [Training](training.md#the-runs-log)), and
+`torchsonn.logger.setup_logger()` also shows it on the console. Each layer
+of the quickstart logs:
 
 ```text
 All models of LinearCovPolynomNeuron early stopped at step 80
@@ -141,8 +145,8 @@ Layer #0: error 0.4879, best 0.4879 at layer 0; first layer; 0 of 5 layers witho
 ```
 
 - **`All models of ... early stopped at step`** marks the end of a
-  family's fit, whether every candidate stopped or the fit reached
-  `train.steps`.
+  family's fit by the early stop; **`... reached train.steps (N)`** marks a
+  fit that the step budget ended.
 - **`fit:`** counts the optimizer steps and, for LBFGS, how often its
   safeguards acted (see [Optimizers](optimizers.md#lbfgs)).
 - **`Current layer error`** and **`Layer errors`** give the layer's error
@@ -161,6 +165,7 @@ Some settings add lines:
 | `train.log_layer_diagnostics` | the survivors' correlations and effective rank (see [Survivor selection](../concepts/selection.md)) |
 | `Trainer.train_out_proj` | `out_proj early stop at step ...` (`out_proj (lbfgs) ...` under LBFGS) when the head fit stops early |
 | `Trainer.train_finetune` | how the end-to-end pass runs and `finetune early stop at step ...` |
+| `keep_best_weights` | after each head fit, per-layer fine-tune or end-to-end pass, the step whose weights it kept (see [Heads and fine-tuning](../concepts/heads-and-finetune.md#last-step-or-best-evaluation)) |
 
 A head fit or end-to-end pass whose log has no early-stop line ran to its
 `max_steps`, and its result may not have converged.

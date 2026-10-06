@@ -11,7 +11,7 @@ pass, and a few smaller settings.
 | Run | Device | Wall-clock |
 |---|---|---|
 | [Regression quickstart](../getting-started/quickstart-regression.md): 28 candidates per layer, 10 layers | CPU | about 2 min |
-| The regression quickstart's end-to-end pass: 1,375 to 2,925 steps without the CUDA graph | CPU | 1.5 to 3.5 min |
+| The regression quickstart's end-to-end pass: 1,400 steps without the CUDA graph | CPU | about 2.5 min |
 | California housing, Legendre with head and end-to-end pass | GPU | about 40 to 45 s |
 | CCPP `ccpp_legendre.yaml`: 8 survivors, 60 candidates per family, 10 folds | CPU | about 12 min |
 | CCPP `ccpp.yaml`: three families, same pools | CPU | about 19 min |

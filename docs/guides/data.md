@@ -38,10 +38,10 @@ A run reads three loaders, plus an optional fourth:
 | validation | `train(..., val_dl=...)` | reported per layer; optional (see [Splits and stopping](../concepts/splits-and-stopping.md#the-validation-split)) |
 
 The dev split decides a lot, so its rows must not appear in the test split.
-The quickstarts use 50% / 25% / 25%; the California housing tutorial holds
-out 20% for test and splits the rest 3:1 into train and dev. Shuffle the
-rows before cutting when the data is stored in a meaningful order, as
-California housing is by location.
+The quickstarts use 50% / 25% / 25%, and holding out around 20% for test and
+splitting the rest 3:1 into train and dev is a reasonable default. Shuffle
+the rows before cutting when the data is stored in a meaningful order, such
+as by location or by time.
 
 ## Preparing features
 
@@ -90,7 +90,7 @@ columns. `split_dataset` assigns each row to train or to dev (called
 | `sqMode1`, `sqMode3_1`, `sqMode4_1` | every 2nd, 3rd or 4th row |
 | `sqMode2`, `sqMode3_2`, `sqMode4_2` | all but every 2nd, 3rd or 4th row |
 
-The California housing tutorial uses `sqMode4_1`: a 3:1 train/dev split.
+`sqMode4_1`, for example, gives a 3:1 train/dev split.
 
 ## Custom batch formats
 

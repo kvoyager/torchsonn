@@ -25,7 +25,6 @@ base install does not have.
 | [Losses and criteria](loss.md) | the training loss and the criterion functions |
 | [Modules](modules.md) | the squash and the soft binner |
 | [Optimizers](optimizers.md) | the batched optimizers of the candidate fit |
-| [Schedulers](schedulers.md) | the learning-rate scheduler of the candidate fit |
 | [Plotting](plot_model.md) | the network diagram |
 | [Configuration](config.md) | the configuration schema's classes |
 

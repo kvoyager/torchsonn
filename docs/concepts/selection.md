@@ -15,10 +15,6 @@ More survivors give later layers more to combine, at the cost of more
 candidates in every later layer: with 16 survivors and 16 features, the next
 layer has 32 inputs and 496 pairs.
 
-On California housing (four seeds, test MSE), 32 survivors beat 16 on every
-seed, 24 give the same mean as 32 with the smallest spread, and 48 are worse
-(California housing README).
-
 ## The three methods
 
 `train.neuron_selection_method` chooses how the survivors are picked:
@@ -45,14 +41,10 @@ criterion values of the survivors actually kept.
 
 `plain` keeps the best candidates, which are often near-copies of each
 other: the same strong pair of inputs, fitted by slightly different neurons.
-On California housing, a linear head over the 16 survivors of a `plain`
-layer beats the best survivor alone by only 0.002 in dev error (0.149
-against 0.151), so the head has little to combine (header of
-`california_housing_legendre_finetune.yaml`). `omp_mixed` keeps survivors
-that differ from each other while still preferring good ones. Over four
-seeds, `plain` and `omp` cost 0.009 to 0.015 in test MSE against
-`omp_mixed`, the largest effect of any setting tested there (California
-housing README).
+A linear head over such survivors has little to combine, since they carry
+much the same signal. `omp_mixed` keeps survivors that differ from each
+other while still preferring good ones, giving the head more distinct inputs
+to work with.
 
 ## Diagnostics
 

@@ -20,7 +20,7 @@ $x_j$:
 but not the mixed terms $x_i^2 x_j$ and $x_i x_j^2$. These families take no
 options besides `activation`.
 
-## `polyquad`: more than two inputs
+## polyquad: more than two inputs
 
 `polyquad` is a degree-2 polynomial over `dim` inputs:
 
@@ -28,7 +28,7 @@ $$
 y = w_0 + \sum_{k} w_k x_k + \sum_{k \le l} w_{kl}\, x_k x_l
 $$
 
-with $1 + \text{dim} + \text{dim}(\text{dim}+1)/2$ weights: 21 at `dim: 5`.
+with `1 + dim + dim(dim+1)/2` weights: 21 at `dim: 5`.
 With `squares: false`, the squares $x_k^2$ are left out and only the
 cross products remain, which saves `dim` weights.
 
@@ -65,11 +65,16 @@ come, so this falls on the data preparation: standardize, and clip or
 transform the far tails (see the
 [regression quickstart](../../getting-started/quickstart-regression.md#2-standardize-and-clip-the-features)).
 
-The California housing tutorial shows the cost. With everything else equal,
-`linear_cov` in place of Legendre raises the test MSE by 0.014 and
-`quadratic` by 0.018. `quadratic` has more terms than `linear_cov` but is no
-better, and it is the least stable across seeds (0.2027 ± 0.0054). Its
-searches stop after 4 to 5 layers, against 7 to 10 for Legendre. The
+Both effects show up in the powers themselves. Near the origin the curves
+bunch together, so their columns carry almost the same information; away
+from it the high powers climb steeply, so a single far-out row can swamp
+the rest.
+
+![The powers 1, x, x squared, x cubed and x to the fourth on the interval minus two to two](power_basis.svg){ width="560" }
+
+The higher-degree families (`quadratic`, `cubic`) feel this most: the extra
+terms they add are the ill-conditioned ones, so they can be less stable
+across runs without being more accurate. The
 [orthogonal families](orthogonal.md) avoid the problem by squashing each
 input into $[-1, 1]$ and using a basis that stays well conditioned there.
 

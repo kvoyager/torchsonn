@@ -40,6 +40,11 @@ python -m tutorials.ccpp.ccpp
 python tutorials/otto/otto_classification.py
 ```
 
+Every training run writes its checkpoints and `train.log` to a folder of
+its own, named after its start time, inside the configuration's
+`train.checkpoint_dir`; each script prints that folder at the end (see
+[Training](../guides/training.md#checkpoints)).
+
 Iris loads its data from scikit-learn. The others download theirs on the
 first run and cache it: California housing through scikit-learn, the
 others into a `data` folder next to the script.
@@ -56,7 +61,7 @@ python -m tutorials.ccpp.ccpp --config-name ccpp_legendre train.device=cuda
 Every tutorial except Otto draws its network with Graphviz, which needs
 the `viz` extra and the Graphviz programs. Iris, Concrete and CCPP draw
 into `.svg` files next to the script, overwriting the copies in the
-repository; California housing draws into its checkpoint folder. Each
+repository; California housing draws into its run folder. Each
 tutorial page explains its command's extra settings.
 
 <small>Checked against TorchSONN 0.1.5.</small>

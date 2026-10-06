@@ -18,10 +18,12 @@ It does not plot, so it runs on a base install. A notebook version,
 `tutorials/otto/otto.ipynb`, draws the confusion matrix and the layer
 errors inline with matplotlib.
 
-The script writes its checkpoints to `tutorials/otto/checkpoints/`. Keep
-that folder for this script's checkpoints alone: the trainer's checkpoint
-cleanup deletes other files in it and fails on subfolders (see
-[Training](../guides/training.md#checkpoints)).
+Each run writes its checkpoints and its `train.log` to a folder of its
+own, `tutorials/otto/checkpoints/YYYY-MM-DD-HH-MM-SS/`, and the script
+prints it at the end. With `resume: true` in `otto.yaml`, the script
+continues the newest run folder there that holds a step checkpoint (see
+[Training](../guides/training.md#resuming)), so move away run folders of
+another configuration first. `resume` is off as shipped.
 
 ## Data
 
@@ -52,7 +54,7 @@ class weights: [3.565 0.426 0.859 2.554 2.511 0.486 2.422 0.812 1.387]
 | `model.use_output_projection`, `model.num_out_neurons` | true, 93 | a head over all 93 survivors makes the prediction |
 | `train.layer_finetune` | true | each layer's survivors train together through a temporary head (see [Heads and fine-tuning](../concepts/heads-and-finetune.md#the-per-layer-fine-tune)) |
 | `train.out_proj_train` | `lbfgs`, `weight_decay` 2.5e-5 | the head fit and the per-layer fine-tune; the small L2 penalty keeps the head's weights finite on nearly separable classes |
-| `train.optimizer` | `adam`, `lr` 1e-3, `min_lr` 1e-4 | batches of 512 rows, evaluated every 100 steps, up to 1,000 steps |
+| `train.optimizer`, `train.steps` | `adam`, `lr` 1e-3, `min_lr` 1e-4; 1101 | batches of 512 rows, evaluated every 100 steps; no candidate fit stops early, so each runs 1,101 steps |
 | `train.neuron_selection_method` | `omp_mixed`, threshold 0.2 | survivors whose outputs differ |
 | `train.log_layer_diagnostics` | true | logs the survivors' correlations and effective rank |
 | `train.max_layer_count` | 3 | |
@@ -71,9 +73,9 @@ After the head fit:
 
 | Split | Log loss | Accuracy |
 |---|---|---|
-| Train | 0.6143 | 0.7591 |
-| Dev | 0.7258 | 0.7271 |
-| Test | 0.7298 | 0.7329 |
+| Train | 0.6144 | 0.7587 |
+| Dev | 0.7257 | 0.7271 |
+| Test | 0.7317 | 0.7334 |
 
 The script also prints a per-class report and the test confusion matrix.
 The class weights trade precision on the large classes for recall on the

@@ -127,11 +127,11 @@ default filled in. The dictionary holds only what this model changes:
   5 steps, the fit evaluates each candidate on the dev split. A drop in the
   smoothed dev loss of less than 1e-4 does not count as an improvement.
   After 3 evaluations without one, the candidate's learning rate halves.
-  Once the learning rate is down to `min_lr`, the candidate stops. The step
-  limit is checked at the same evaluations, so a fit ends at the first
-  evaluation after step 500 at the latest.
-- **`checkpoint_dir`**: where training saves its checkpoints and the
-  final model, relative to the working directory.
+  Once the learning rate is down to `min_lr`, the candidate stops. A fit
+  runs 500 steps at most.
+- **`checkpoint_dir`**: where training saves its checkpoints, the final
+  model and the log, relative to the working directory. Every run gets a
+  folder of its own inside it, named after its start time.
 - **`optimizer`**: LBFGS with a step size of 0.1, a floor of 0.01 and the
   last 10 steps kept for its curvature estimate. Each candidate is a small
   least-squares problem, 4 coefficients here, which a quasi-Newton method
@@ -143,16 +143,19 @@ default filled in. The dictionary holds only what this model changes:
 from torchsonn import Trainer
 from torchsonn.logger import setup_logger
 
-setup_logger("train.log")
+setup_logger()
+Trainer.set_seed(config.train.seed)
 model = SONN(config, d_model=x.shape[1], feature_names=feature_names)
 trainer = Trainer(config, feature_names=feature_names)
-trainer.set_seed(config.train.seed)
 trainer.train(model, train_dl, dev_dl, test_dl)
 ```
 
-`setup_logger` sends the training log to the console and to `train.log`.
-`set_seed` fixes the random draws (the sampled candidate pairs and the
-initial weights), so a rerun on the same machine gives the same model.
+`setup_logger` shows the training log on the console. The run also writes
+it to `train.log` in its folder, `trainer.run_dir`, such as
+`checkpoints/california/2026-10-04-10-15-30/`.
+`set_seed`, called before the model is built, fixes the random draws (the
+sampled candidate pairs and the initial weights), so a rerun on the same
+machine gives the same model.
 `train` builds layers until the growth rule stops it. It takes the test
 loader as an argument but does not use it.
 
@@ -210,9 +213,10 @@ dev error per layer: [0.4879, 0.3758, 0.3496, 0.3444, 0.3391, 0.3281, 0.3195, 0.
 ```
 
 Training ends by saving the model, the layers up to the best one, as
-`model_last.ckpt` in the checkpoint folder. `load_model_checkpoint`
-rebuilds that model into a fresh `SONN` built from the same config, which is
-how a trained model is used in a later session. `layer_err` holds the dev
+`model_last.ckpt` in the run's folder. `load_model_checkpoint` rebuilds
+that model into a fresh `SONN` built from the same config. In a later
+session, a new trainer loads the newest run's model the same way (see
+[Training](../guides/training.md#loading-a-saved-model)). `layer_err` holds the dev
 error of every layer trained, including any trained past the best one.
 
 ## 7. Evaluate on the test split

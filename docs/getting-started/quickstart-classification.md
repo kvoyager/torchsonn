@@ -111,10 +111,10 @@ with one loss weight per class. Iris is balanced and needs none.
 from torchsonn import Trainer
 from torchsonn.logger import setup_logger
 
-setup_logger("train.log")
+setup_logger()
+Trainer.set_seed(config.train.seed)
 model = SONN(config, d_model=x.shape[1], feature_names=feature_names)
 trainer = Trainer(config, feature_names=feature_names)
-trainer.set_seed(config.train.seed)
 trainer.train(model, train_dl, dev_dl, test_dl)
 ```
 

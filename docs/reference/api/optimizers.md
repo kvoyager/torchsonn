@@ -11,7 +11,3 @@ See [Optimizers](../../guides/optimizers.md).
 ::: torchsonn.optimizers.adam.BatchedAdam
 
 ::: torchsonn.optimizers.sgd.BatchedSGD
-
-::: torchsonn.optimizers.newton.BatchedNewton
-
-::: torchsonn.optimizers.newton_lm.BatchedNewtonLM

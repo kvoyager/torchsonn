@@ -7,7 +7,7 @@ YAML, `null` stands for no value.
 
 Two tables at the end list what the schema leaves open: the options of a
 `model.ref_functions` entry, and the keys of
-`train.optimizer.optimizer_params` and `train.scheduler.scheduler_params`.
+`train.optimizer.optimizer_params`.
 
 ## Model type and output
 
@@ -16,9 +16,9 @@ Two tables at the end list what the schema leaves open: the options of a
 | `model.type` | str | `multi-class` | `regressor`, `binary` or `multi-class`. Sets the training loss, the criterion and what `infer` returns. |
 | `model.num_classes` | int | 3 | Number of classes. Must be 2 for `binary` and more than 2 for `multi-class`. |
 | `model.use_output_projection` | bool | false | Add a linear head over the last layer's survivors; fit it with `Trainer.train_out_proj`. Regression and multi-class only: a binary model ignores it. See [Heads and fine-tuning](../concepts/heads-and-finetune.md). |
-| `model.num_out_neurons` | int | null | How many of the last layer's survivors the head reads, best first. Null takes the value of `model.max_neuron_models`, and building the model fails with `TypeError` when that is null too. Set it to `model.nbest_neurons`: a head that reads more columns than the layer has gets zeros for the rest. |
+| `model.num_out_neurons` | int | null | How many of the last layer's survivors the head reads, best first. Null reads `model.nbest_neurons`, every survivor. A head that reads more columns than the layer has gets zeros for the rest. |
 | `model.output_clamp_value` | float | 1000.0 | Every layer's outputs are clamped to ±this value before the next layer reads them. |
-| `model.use_layer_norm` | bool | false | Apply a LayerNorm without learned parameters to each layer's input, after the outputs and features are concatenated. |
+| `model.use_layer_norm` | bool | false | Apply a LayerNorm without learned parameters to each layer's input, after the outputs and features are concatenated. `Trainer.prune` refuses such a model (see [Pruning](../concepts/heads-and-finetune.md#pruning)). |
 
 ## Neuron families and layer inputs
 
@@ -60,7 +60,7 @@ See [Criteria](../concepts/criteria.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.criterion_type` | str | `validate` | `validate`: regularity error on dev. `bias`: disagreement between fits on the even and odd training rows (its survivors stay untrained; see the warning on the Criteria page). `validate_bias`: a mix of the two. `bias_retrain`: accepted but not implemented; training raises `NotImplementedError` at the first layer. |
+| `train.criterion_type` | str | `validate` | `validate`: regularity error on dev. `bias`: disagreement between fits on the even and odd training rows; the survivors are fitted on the whole train split, as under the others. `validate_bias`: a mix of the two. Any other value raises `ValueError` when the model is built. See [Criteria](../concepts/criteria.md). |
 | `train.error_alpha` | float | 0.5 | Weight of the regularity error in `validate_bias`; the bias error gets 1 minus this. |
 | `train.bias_ce_type` | str | `js` | Multi-class bias error: `js` (Jensen-Shannon divergence) or `l2` (squared difference of the class scores). |
 | `train.error_normalization` | str | `variance` | Denominator of the regression criteria and training loss: `variance` (spread around the mean) or `energy` (sum of squared targets). |
@@ -97,12 +97,10 @@ How each candidate's coefficients are fitted on the train split. See
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.optimizer.name` | str | `adam` | The batched optimizer: `adam`, `sgd`, `lbfgs`, `newton` or `newton-lm`. `newton` and `newton-lm` currently fail at the first fit; see [Optimizer parameters](#optimizer-parameters). |
+| `train.optimizer.name` | str | `adam` | The batched optimizer: `adam`, `sgd` or `lbfgs`. Any other name raises `ValueError` when the `Trainer` is built. |
 | `train.optimizer.optimizer_params` | mapping | `{lr: 1e-4, min_lr: 1e-5, gamma: 0.5, clip_value: 1.0, clip_norm: 5.0}` | Learning-rate schedule of the early stop and the optimizer's own arguments; see [Optimizer parameters](#optimizer-parameters). |
 | `train.optimizer.verbose` | bool | true | Show a progress bar for each family's fit. |
-| `train.scheduler.name` | str | null | A learning-rate scheduler for the candidate fit: `warmup_flat`, or null for none. |
-| `train.scheduler.scheduler_params` | mapping | null | The scheduler's arguments; see [Scheduler parameters](#scheduler-parameters). |
-| `train.steps` | int | 1000 | The most optimizer steps per family fit. Checked only at evaluations, so a fit runs to the first evaluation past it. |
+| `train.steps` | int | 1000 | The most optimizer steps per family fit; a fit that does not stop early runs exactly this many. |
 | `train.ridge_alpha` | float | 0.0 | L2 penalty on each candidate's neuron coefficients, added to the training loss only. |
 | `train.censor_target_at` | float | null | Regression targets at or above this value count as "at least this much": the training loss clips the prediction to it on those rows. The criteria are unchanged. |
 | `train.divergence_threshold` | float | infinity | A candidate whose evaluated loss exceeds this stops at once. Infinity turns the check off; a NaN loss always stops the candidate. |
@@ -113,7 +111,7 @@ See [Splits and stopping](../concepts/splits-and-stopping.md#stopping-a-candidat
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.eval_step_interval` | int | 1000 | Evaluate every candidate every this many steps; -1 evaluates at the end of each pass over the loader. With the default, any `train.steps` below 1000 has no effect. |
+| `train.eval_step_interval` | int | 1000 | Evaluate every candidate every this many steps; -1 evaluates at the end of each pass over the loader. The early stop acts only at evaluations. |
 | `train.eval_smoothing_factor` | float | 0.2 | Weight of the newest evaluation in the exponential moving average of the loss. |
 | `train.early_stop_source` | str | `dev` | The loss the early stop reads: the dev split (`dev`) or the current training batch (`train`). |
 | `train.early_stop_patience` | float | 1e-4 | The smallest drop in the smoothed loss that counts as an improvement, in absolute units. |
@@ -148,6 +146,8 @@ and the per-layer fine-tune. See
 | `train.out_proj_train.eval_interval` | int | 100 | Evaluate on the dev split every this many steps. |
 | `train.out_proj_train.early_stop_patience` | int | 10 | Stop after this many evaluations without an improvement. |
 | `train.out_proj_train.early_stop_min_delta` | float | 1e-4 | The smallest drop in dev loss that counts as an improvement. |
+| `train.out_proj_train.keep_best_weights` | bool | false | End the head fit and the per-layer fine-tune on the weights of their lowest dev loss instead of their last step. See [Last step or best evaluation](../concepts/heads-and-finetune.md#last-step-or-best-evaluation). |
+| `train.out_proj_train.best_weights_copy` | str | `device` | Where `keep_best_weights` keeps the copy of the best weights: `device` (next to the parameters, in GPU memory on CUDA), `cpu` (host memory) or `disk` (a file in the run folder, deleted when the pass ends). |
 | `train.out_proj_train.lr_patience` | int | 5 | Evaluations without improvement before the plateau schedule cuts the learning rate. Not used by `lbfgs`. |
 | `train.out_proj_train.lr_factor` | float | 0.5 | Factor of each cut. Not used by `lbfgs`. |
 | `train.out_proj_train.lr_min` | float | 1e-5 | Lowest learning rate of the plateau schedule. Not used by `lbfgs`. |
@@ -172,6 +172,8 @@ the optimizers differ and two keys only matter here.
 | `train.finetune_train.eval_interval` | int | 100 | Evaluate every this many steps, on dev (or the validation split under `train.stop_source: val`). |
 | `train.finetune_train.early_stop_patience` | int | 10 | Stop after this many evaluations without an improvement. |
 | `train.finetune_train.early_stop_min_delta` | float | 1e-4 | The smallest drop in loss that counts as an improvement. |
+| `train.finetune_train.keep_best_weights` | bool | false | End the pass on the parameters of its lowest evaluated loss instead of its last step. See [Last step or best evaluation](../concepts/heads-and-finetune.md#last-step-or-best-evaluation). |
+| `train.finetune_train.best_weights_copy` | str | `device` | Where `keep_best_weights` keeps the copy of the whole model's parameters: `device`, `cpu` or `disk`, as for the head fit. |
 | `train.finetune_train.lr_patience` | int | 5 | Evaluations without improvement before the plateau schedule cuts the learning rate. |
 | `train.finetune_train.lr_factor` | float | 0.5 | Factor of each cut. |
 | `train.finetune_train.lr_min` | float | 1e-5 | Lowest learning rate of the plateau schedule. |
@@ -185,19 +187,19 @@ the optimizers differ and two keys only matter here.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.checkpoint_dir` | str | empty | Folder for step checkpoints and the final `model_last.ckpt`. Empty means a `checkpoints` folder three levels above `trainer.py`: the repository root in a source checkout, inside the Python environment for an installed package, so set it. |
+| `train.checkpoint_dir` | str | `checkpoints` | Parent of the run folders: every `Trainer.train` run writes its step checkpoints, `model_last.ckpt` and its log to `<checkpoint_dir>/<YYYY-MM-DD-HH-MM-SS>/` (see [Training](../guides/training.md#checkpoints)). A relative path, the default included, is taken from the working directory. Empty raises `ValueError` when the `Trainer` is built. |
 | `train.save_interval` | int | 1000 | Save a step checkpoint every this many steps of a family fit; -1 turns this off. |
 | `train.skip_saving_at_epoch_end` | bool | true | Do not also save at the end of each pass over the training loader. |
-| `train.save_last_layer` | bool | true | At the end of each family fit, also save a copy marked `_last`, which cleanup never deletes. |
-| `train.keep_last_n` | int | 10 | Keep this many of the most recent step checkpoints in the folder, not counting the `_last` copies and `model_last.ckpt`. |
+| `train.save_last_layer` | bool | true | At the end of each family fit, also save a copy marked `_last`, which the step-checkpoint cleanup keeps. |
+| `train.keep_last_n` | int | 10 | Keep this many of a run folder's most recent step checkpoints; nothing else in the folder is counted or deleted. |
 
 ## Runtime
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `train.device` | str | `cpu` | Where neurons are created and computed: `cpu`, `cuda`, `cuda:1` and so on. |
-| `train.dtype` | str | `float32` | Data type of class weights and of the input statistics the squash and RBF neurons use. Neuron parameters keep PyTorch's default type. |
-| `train.seed` | int | 10 | Seed of the input pass's sampling and k-means. Pass it to `Trainer.set_seed` to seed the rest. |
+| `train.seed` | int | 10 | Seed of the input pass's sampling and k-means, and of the output head's starting weights. Pass it to `Trainer.set_seed`, before building the model, to seed the rest. |
+| `train.use_deterministic_algorithms` | bool | false | When the `Trainer` is built, switch PyTorch to deterministic kernels for the whole process (and set `CUBLAS_WORKSPACE_CONFIG` if it is unset), so runs on a GPU repeat; slower, and an operation without a deterministic kernel raises. False leaves PyTorch's setting alone. See [Training](../guides/training.md#seeds). |
 | `train.precompute_features` | bool | false | Run the frozen layers over each split once per layer and cache the result, instead of on every step. Faster; costs memory for the cached features. |
 | `train.verbose` | bool | true | Show progress bars for the head fit, the per-layer fine-tune and the end-to-end pass. |
 
@@ -210,24 +212,11 @@ the schema so that tutorial YAML files can set them.
 |---|---|---|---|
 | `train.batch_size` | int | 1 | Batch size of the data loaders the scripts build. |
 | `train.shuffle` | bool | false | Whether the scripts shuffle the training loader. |
-| `resume` | bool | false | Passed to `Trainer.train(resume=...)`: continue from the latest step checkpoint. |
+| `resume` | bool | false | Passed to `Trainer.train(resume=...)`: continue the newest run folder that holds a step checkpoint. |
 | `finetune_end_to_end` | bool | false | After the search and the head fit, run `Trainer.train_finetune`. |
 | `finetune_drop_head` | bool | false | With `finetune_end_to_end`, remove the head first. |
 | `finetune_prune_first` | bool | false | With `finetune_end_to_end`, prune the network first. |
 | `tutorial` | mapping | empty | Free-form settings of one tutorial script, such as its data split and feature engineering; each tutorial page lists its own. |
-
-## Not read by the code
-
-These keys are in the schema but nothing reads them; setting them has no
-effect.
-
-| Key | Type | Default |
-|---|---|---|
-| `train.manual_best_neurons_selection` | bool | false |
-| `train.min_best_neurons_count` | int | 0 |
-| `train.max_best_neurons_count` | int | 0 |
-| `train.train_loss_tol` | float | 0.001 |
-| `train.train_loss_window` | int | 20 |
 
 ## Neuron family options
 
@@ -307,30 +296,9 @@ The keys of `train.optimizer.optimizer_params`.
 | `history_size` | `lbfgs` | 10 | Correction pairs kept per candidate. |
 | `max_step` | `lbfgs` | 1.0 | The largest update norm per candidate and parameter; null for no cap. |
 | `curvature_eps` | `lbfgs` | 1e-8 | Keep a correction pair only when its curvature passes this test; null keeps every pair. |
-| `damping` | `newton`, `newton-lm` | 0.001, 0.01 | Damping added to the Hessian. |
-| `max_damping` | `newton-lm` | 1000.0 | Accepted and stored, but not used: the damping stays fixed. |
 
 The trainer sets two more arguments itself: `lr`, from the key above, and
 `shared_param_lr_multiplier`, from `train.shared_proj_lr_multiplier`. Do not
 put `shared_param_lr_multiplier` in `optimizer_params`.
-
-!!! warning "`newton` and `newton-lm` currently fail"
-    The default `optimizer_params` contain `clip_value` and `clip_norm`,
-    which `newton` and `newton-lm` do not accept, and `SONN` merges the
-    defaults into every configuration, so the keys cannot be removed.
-    Selecting either optimizer raises `TypeError` at the first fit.
-
-## Scheduler parameters
-
-The keys of `train.scheduler.scheduler_params`.
-
-| Scheduler | Key | Meaning |
-|---|---|---|
-| `warmup_flat` | `warmup_steps` | Raise the learning rate linearly from 0 to `lr` over this many steps, then hold it. |
-
-!!! warning "A scheduler overrides the early stop's learning-rate drops"
-    `warmup_flat` sets the learning rate on every step, which undoes the
-    drops of the early stop. A candidate's learning rate then never reaches
-    `min_lr`, so its fit runs to `train.steps`.
 
 <small>Checked against TorchSONN 0.1.5.</small>
