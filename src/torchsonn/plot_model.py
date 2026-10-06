@@ -41,7 +41,7 @@ def run_dot_without_conda(args: Sequence[str]) -> subprocess.CompletedProcess:
 
 
 class PlotModel:
-    """Plot self-organizing polynomial neural network (multilayered GMDH)
+    """Plot self-organizing neural network (multilayered GMDH)
     """
     def __init__(
         self,
@@ -89,7 +89,7 @@ class PlotModel:
                                  'fillcolor': self.io_node_color, 'fontsize': '11',
                                  'fontcolor': self.io_font_color})
         self.g.node(self.output, **self.io_node_param)
-        self.g.graph_attr.update(label='Self-organizing deep learning polynomial neural network\n ', labelloc='t', center='true',
+        self.g.graph_attr.update(label='Self-organizing deep learning neural network\n ', labelloc='t', center='true',
                                  fontsize='18')
 
     def _get_feature_name(self, index: int) -> str:

@@ -138,7 +138,7 @@ def _linear_from_seed(in_features: int, out_features: int, seed: int) -> nn.Line
 
 
 class SONN(SONNModule):
-    """Self-organizing deep learning polynomial neural network (GMDH) as a PyTorch module.
+    """Self-organizing deep learning neural network (GMDH) as a PyTorch module.
 
     The model starts with no layers; `Trainer.train` grows them, and `infer`
     predicts with the trained network.
@@ -398,7 +398,7 @@ class SONN(SONNModule):
         return OmegaConf.structured(SONNConfig)
 
     def __str__(self) -> str:
-        return "Self-organizing deep learning polynomial neural network"
+        return "Self-organizing deep learning neural network"
 
     @property
     def device(self) -> torch.device:

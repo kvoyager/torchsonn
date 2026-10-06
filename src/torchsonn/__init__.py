@@ -1,4 +1,4 @@
-"""TorchSONN — self-organizing polynomial neural network on PyTorch.
+"""TorchSONN — self-organizing neural network on PyTorch.
 
 Everything needed for a full train / infer loop is re-exported here:
 

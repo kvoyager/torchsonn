@@ -559,13 +559,13 @@ protocol, TorchSONN's strongest configs land right in the published range:
 |-------|--------|----------|:--------:|:---------:|
 | Tüfekci (2014) | Bagging REP-tree | 5×2 CV | **3.22** | — |
 | Torre et al. (2019) | data-driven PCE (polynomial) | 5×2 CV (same splits) | **3.11 ± 0.03** | — |
-| **TorchSONN — Legendre poly heavy + fine-tune** (`ccpp_legendre_poly_heavy_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.13 ± 0.05** | 4.09 ± 0.07 |
-| **TorchSONN — Legendre heavy + fine-tune** (`ccpp_legendre_heavy_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.14 ± 0.06** | 4.09 ± 0.07 |
-| **TorchSONN — Legendre poly + fine-tune** (`ccpp_legendre_poly_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.15 ± 0.07** | 4.09 ± 0.08 |
-| **TorchSONN — Legendre + fine-tune** (`ccpp_legendre_finetune.yaml`) | self-organizing polynomial net | 5×2 CV | **3.17 ± 0.05** | 4.12 ± 0.05 |
-| **TorchSONN — heavy** (`ccpp_heavy.yaml`) | self-organizing polynomial net | 5×2 CV | **3.26 ± 0.04** | 4.18 ± 0.05 |
-| **TorchSONN — Legendre poly** (`ccpp_legendre_poly.yaml`) | self-organizing polynomial net | 5×2 CV | **3.28 ± 0.01** | 4.22 ± 0.03 |
-| **TorchSONN — default** (`ccpp.yaml`) | self-organizing polynomial net | 5×2 CV | **3.34 ± 0.03** | 4.26 ± 0.05 |
+| **TorchSONN — Legendre poly heavy + fine-tune** (`ccpp_legendre_poly_heavy_finetune.yaml`) | self-organizing neural net | 5×2 CV | **3.13 ± 0.05** | 4.09 ± 0.07 |
+| **TorchSONN — Legendre heavy + fine-tune** (`ccpp_legendre_heavy_finetune.yaml`) | self-organizing neural net | 5×2 CV | **3.14 ± 0.06** | 4.09 ± 0.07 |
+| **TorchSONN — Legendre poly + fine-tune** (`ccpp_legendre_poly_finetune.yaml`) | self-organizing neural net | 5×2 CV | **3.15 ± 0.07** | 4.09 ± 0.08 |
+| **TorchSONN — Legendre + fine-tune** (`ccpp_legendre_finetune.yaml`) | self-organizing neural net | 5×2 CV | **3.17 ± 0.05** | 4.12 ± 0.05 |
+| **TorchSONN — heavy** (`ccpp_heavy.yaml`) | self-organizing neural net | 5×2 CV | **3.26 ± 0.04** | 4.18 ± 0.05 |
+| **TorchSONN — Legendre poly** (`ccpp_legendre_poly.yaml`) | self-organizing neural net | 5×2 CV | **3.28 ± 0.01** | 4.22 ± 0.03 |
+| **TorchSONN — default** (`ccpp.yaml`) | self-organizing neural net | 5×2 CV | **3.34 ± 0.03** | 4.26 ± 0.05 |
 | Siddiqui et al. (2021) | GBRT (450 trees) | single 90/10 split | — | 2.58 † |
 
 **Reading the table:**
@@ -595,9 +595,9 @@ protocol, TorchSONN's strongest configs land right in the published range:
   the searches they are built on.
 - **Torre et al.** run their polynomial method on Tüfekci's *exact* CV splits
   and beat the tree ensemble with lower variance — direct evidence that a
-  polynomial model is SOTA-competitive on CCPP. TorchSONN, being a
-  self-organizing polynomial network, lands in the same regime, a good sanity
-  check that its discovered polynomial structure is doing real work.
+  polynomial model is SOTA-competitive on CCPP. TorchSONN's polynomial
+  configurations land in the same regime, a good sanity check that their
+  discovered polynomial structure is doing real work.
 - **† Siddiqui et al.'s RMSE 2.58 is not comparable.** It comes from a single
   90/10 train/test split with a 450-tree gradient-boosted ensemble — a
   different, more optimistic protocol than 5×2 CV, and reported as RMSE rather
