@@ -51,9 +51,9 @@ model:
   # without ever binding the clamp inside the regular operating range.
   output_clamp_value: 1.0e+4
 
-  # Build a Linear(num_out, 1) head on top of the survivor pool. The head
-  # is trained against NormMSE in `train_out_proj` (called by
-  # `concrete.py` after `trainer.train`). `num_out_neurons` is the size of
+  # A Linear(num_out, 1) head on top of the survivor pool, off as shipped.
+  # When on, `train_out_proj` (called by `concrete.py` after
+  # `trainer.train`) fits it against NormMSE. `num_out_neurons` is the size of
   # the last-layer survivor pool the head consumes — top-k by err_values,
   # zero-padded if fewer survived. nbest_neurons = num_out_neurons means
   # the head sees the full survivor width.
@@ -63,8 +63,8 @@ model:
 # --- Training ----------------------------------------------------------------
 train:
   seed: 10
-  # 1030 train samples → batches=1030 makes every LBFGS step a true
-  # full-batch Newton-ish update with stable curvature pairs.
+  # Larger than the 659 training rows, so every LBFGS step sees the whole
+  # training split, which keeps its curvature pairs consistent.
   batch_size: 8192
   device: cpu
 
@@ -73,26 +73,26 @@ train:
   layer_err_criterion: top
   criterion_minimum_width: 2
   stop_train_epsilon_condition: 0.001
-  # Concrete strength is a relatively shallow nonlinearity — 5 layers is
-  # plenty. Early-stop on validate-error plateau usually triggers at 2-3.
+  # A high cap: the growth rule above decides the depth. As shipped it
+  # trains 32 layers and keeps 30 (two CPU runs, 2026-10-04, test RMSE
+  # 5.37 MPa).
   max_layer_count: 50
 
-  # Decorrelate survivors so the per-layer fine-tune head sees an
-  # independent basis. 0.2 keeps any candidate whose residual norm survives
-  # at ≥20 % of its centered norm after Gram-Schmidt.
+  # Decorrelated survivors: a candidate is kept only if at least 20 % of its
+  # centered norm on dev survives Gram-Schmidt against the survivors kept
+  # so far.
   neuron_selection_method: omp_mixed
   neuron_selection_orth_threshold: 0.2
 
   # L2 (ridge) penalty on each neuron's polynomial coefficient fit.
-  # PolyQuadratic(dim=5) has 1 + 5 + 5·6/2 = 21 weights per neuron, and
-  # 824 train samples isn't a lot of room to fit that many degrees of
-  # freedom — without regularization the highest-arity primitives over-
-  # fit. 0.05 lands in the recommended 0.01–0.1 range. Tune via Hydra
-  # multirun:
-  #   python -m tutorials.concrete.concrete -m train.ridge_alpha=0.01,0.05,0.1
-  # and pick whichever value gives the lowest dev RMSE in report().
-  # `eval_loss_fn_vmapped` is pinned to alpha=0 internally, so the dev
-  # number you compare is the *unpenalised* one — apples to apples.
+  # PolyQuadratic(dim=5) has 1 + 5 + 5·6/2 = 21 weights per neuron, fitted
+  # on 659 training rows, so a small penalty keeps the highest-arity
+  # family from overfitting. Tune it with a Hydra multirun:
+  #   python -m tutorials.concrete.concrete -m train.ridge_alpha=0.0001,0.001,0.01
+  # and compare the dev errors in each run's log (the `Layer #k: error`
+  # lines). The criterion that scores candidates on dev is unpenalized
+  # (`eval_loss_fn_vmapped` is pinned to alpha=0), so the runs compare
+  # like with like.
   ridge_alpha: 0.001
 
   # LBFGS — convex weight fit per neuron-model.
@@ -122,17 +122,16 @@ train:
   skip_saving_at_epoch_end: True
   checkpoint_dir: "../concrete/checkpoints"
 
-  # Per-layer joint fine-tune (surviving neurons' polynomial weights + a
-  # temporary (d_layer, 1) head trained against NormMSE on the dev split).
-  # Runs after neuron_selection on each layer except the planned last one
-  # (max_layer_count - 1) — the subsequent train_out_proj pass below fits
-  # the real (D, 1) head against that layer's outputs, so the temporary
-  # head fit on it would just be thrown away. Uses out_proj_train's
-  # hyperparameters (below) so both passes share one place to tune.
+  # Per-layer joint fine-tune, off: after selection on every layer, the
+  # surviving neurons' coefficients and a temporary (d_layer, 1) head train
+  # together against NormMSE on the training split, with an early stop on
+  # dev. Uses out_proj_train's hyperparameters (below) so both passes share
+  # one place to tune.
   layer_finetune: False
 
-  # Trains the regression out_proj head (Linear(num_out, 1)) against
-  # NormMSE on dev. LBFGS is appropriate because the per-head fit is a
+  # Fits the regression out_proj head (Linear(num_out, 1)) against NormMSE
+  # on the training split, with an early stop on dev, when
+  # use_output_projection is on. LBFGS is appropriate because the fit is a
   # convex linear regression on top of the frozen survivor outputs —
   # converges in O(50–200) outer steps.
   out_proj_train:

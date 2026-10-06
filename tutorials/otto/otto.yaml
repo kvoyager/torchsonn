@@ -85,14 +85,12 @@ train:
     lbfgs_history_size: 20
     lbfgs_max_iter: 20
     lbfgs_line_search: strong_wolfe
-  # Per-layer joint fine-tune (surviving neurons' polynomial weights + a
-  # temporary (D, K) head, trained against class-weighted CE on the dev
-  # split). Runs after neuron_selection on each layer EXCEPT the planned
-  # last one (layer_index == max_layer_count - 1) — there's no point doing
-  # it on the last layer because train_out_proj fits the real (D, K) head
-  # against the same outputs immediately afterward. Uses out_proj_train's
-  # hyperparameters (above) so there's a single place to tune optimizer /
-  # max_steps / weight_decay for both passes.
+  # Per-layer joint fine-tune: after selection on every layer, the last one
+  # included, the surviving neurons' coefficients and a temporary (D, K)
+  # head train together against class-weighted CE on the training split,
+  # with an early stop on dev. Uses out_proj_train's hyperparameters
+  # (above) so there's a single place to tune optimizer / max_steps /
+  # weight_decay for both passes.
   layer_finetune: true
   # Optimizer steps per family fit. No candidate fit here stops early, so
   # every fit runs exactly this many steps. The recorded results come from

@@ -56,6 +56,16 @@ viz = [
     "graphviz",
     "matplotlib",
 ]
+# Documentation site: `mkdocs serve` to preview, `mkdocs build --strict` to
+# check. mkdocstrings reads the API docstrings from src/ without importing
+# the package, so this extra does not need the others. MkDocs is capped below
+# 2.0, which removes the plugin system the site depends on (mkdocstrings, the
+# Material theme's plugins).
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9",
+    "mkdocstrings[python]>=0.26",
+]
 
 [project.urls]
 Homepage = "https://github.com/kvoyager/torchsonn"

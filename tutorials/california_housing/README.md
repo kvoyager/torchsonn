@@ -1,10 +1,11 @@
 # California housing: torchsonn against gradient boosting
 
-This tutorial fits a self-organizing neural network (SONN, a GMDH-style
-polynomial network) to the California housing regression task. It then
+This tutorial fits a self-organizing neural network TorchSONN 
+to the California housing regression task. It then
 compares the result with gradient-boosted trees on the same features and
-the same split. This page covers the dataset, the published results, how
-the tutorial's score improved, and where it stands against XGBoost.
+the same split. This page covers the dataset, the published results, what
+each of the tutorial's settings is worth, and where it stands against
+XGBoost.
 
 ## The dataset
 
@@ -106,11 +107,54 @@ in the last section.
   training range.
 - **Metrics.** Test MSE and MAE on the 4,128 held-out rows, in (\$100k)²
   and \$100k.
+- **Candidate early stop.** The results below stop each candidate's fit on
+  its training loss, `train.early_stop_source=train` on the command line,
+  which the config files leave at `dev`. With it, the Legendre config's
+  seed-10 run keeps 6 layers; without it, the search stops after 4 layers
+  at a test MSE of about 0.187.
 
-Every setting is documented in `tutorial_params()` in
-`california_housing.py`.
+## Running it
 
-## How the score improved
+From the repo root, with one of the two configs the results below come
+from and the candidate early stop they use:
+
+```bash
+python -m tutorials.california_housing.california_housing --config-name california_housing_legendre_finetune \
+    train.early_stop_source=train train.checkpoint_dir=checkpoints/california_legendre
+python -m tutorials.california_housing.california_housing --config-name california_housing_rbf \
+    train.early_stop_source=train train.checkpoint_dir=checkpoints/california_rbf
+```
+
+Both configs set `train.checkpoint_dir` relative to the tutorial folder,
+which from the repo root points outside it, so the commands set it. Each
+run writes its checkpoints, `train.log` and network diagrams to a folder
+of its own inside it, which the script logs; the diagrams need the `viz`
+extra. Both configs run on the CPU as shipped, and `train.device=cuda`
+moves a run to a GPU: the Legendre command took 46 s on an RTX 5080 and
+scored a test MSE of 0.1843.
+
+### Tutorial settings
+
+The `tutorial` section of the configuration holds the script's own
+settings, read by `tutorial_params()` in `california_housing.py`. A key the
+script does not know stops the run with `KeyError`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `tutorial.test_size` | 0.2 | Fraction of the rows held out as the test set. |
+| `tutorial.dev_split` | `sqMode4_1` | How the remaining rows split into train and dev, a `SequenceTypeSet` name; `sqMode4_1` sends every 4th row to dev. |
+| `tutorial.val_split` | 0.0 | Fraction of the training rows set aside as a validation split; 0 for none. |
+| `tutorial.n_ensemble` | 1 | Number of models to train, each with its own seed and, after the first, its own shuffle of the non-test rows; the script reports each and the mean of their predictions. |
+| `tutorial.z_clip` | 5.0 | Standardized features are clipped to ±this value. |
+| `tutorial.feature_engineering` | false | Master switch for the two feature groups below; off, the model sees the eight raw columns. Every config in the folder turns it on. |
+| `tutorial.log_features` | true | Log-transform the skewed features and add the bedrooms-per-room and rooms-per-person ratios. |
+| `tutorial.location_features` | true | Add the rotated coordinates, the log distances to four cities and the kNN price feature. |
+| `tutorial.knn_price_k` | 20 | Neighbours averaged by the kNN price feature. |
+| `tutorial.log_target` | false | Fit the log of the price instead of the price. |
+| `tutorial.clip_predictions` | true | Clip predictions to the range of the training targets. |
+| `tutorial.censor_cap` | true | Treat targets at the \$500k cap as censored in the training loss (`train.censor_target_at`). |
+
+## What each setting is worth
 
 All numbers are single-model test results, as recorded in the config
 headers [[6]](#ref-6). Each row adds one change to
@@ -157,7 +201,7 @@ finding.
 
 | configuration | mean MSE ± sd | mean MAE |
 |---|---|---|
-| Legendre-3, 16 survivors (old reference) | 0.1890 ± 0.0031 | 0.2793 |
+| Legendre-3, 16 survivors | 0.1890 ± 0.0031 | 0.2793 |
 | RBF-8, 16 survivors | 0.1909 ± 0.0016 | 0.2793 |
 | Legendre + RBF-8, 16 survivors | 0.1898 ± 0.0022 | 0.2797 |
 | Legendre-3, 32 survivors | 0.1851 ± 0.0023 | 0.2764 |
@@ -165,8 +209,8 @@ finding.
 | Legendre degree 5 | 0.1868 ± 0.0027 | 0.2788 |
 | `linear_cov` instead of Legendre, 24 survivors | 0.1990 ± 0.0021 | 0.2924 |
 | `quadratic` instead of Legendre, 24 survivors | 0.2027 ± 0.0054 | 0.2941 |
-| **Legendre-3, 24 survivors (current default)** | **0.1852 ± 0.0008** | 0.2775 |
-| **RBF-8, 24 survivors (current default)** | **0.1853 ± 0.0014** | 0.2772 |
+| **Legendre-3, 24 survivors (as shipped)** | **0.1852 ± 0.0008** | 0.2775 |
+| **RBF-8, 24 survivors (as shipped)** | **0.1853 ± 0.0014** | 0.2772 |
 
 What the experiments found:
 
@@ -194,7 +238,7 @@ What the experiments found:
   - a strong ridge on RBF weights;
   - a fixed RBF basis.
 
-Legendre-3 and RBF-8 now tie at 0.185.
+Legendre-3 and RBF-8 tie at 0.185.
 
 ## Against gradient boosting, same data
 
@@ -435,8 +479,9 @@ On identical features and splits:
 That is a gap of 0.015 MSE, or about 0.018 RMSE (0.412 vs 0.430). No
 seed of either torchsonn model reaches the trees' worst seed.
 
-Over this project, torchsonn has closed most of that gap. The tutorial
-started at 0.348 and now sits within 9% of the trees. Its 0.430 RMSE is
+The settings in [What each setting is worth](#what-each-setting-is-worth)
+take the tutorial from 0.348, for the plain Legendre setup, to within 9% of
+the trees. Its 0.430 RMSE is
 on a par with the tuned XGBoost and LightGBM numbers published for this
 dataset (0.432 and 0.434, on their split and features) [[2]](#ref-2).
 
@@ -470,7 +515,7 @@ ensembles are not:
 5. <a id="ref-5"></a>Kaggle Playground Series S3E1, *Regression with a Tabular
    California Housing Dataset*:
    <https://www.kaggle.com/competitions/playground-series-s3e1>
-6. <a id="ref-6"></a>Tutorial history: the headers of
+6. <a id="ref-6"></a>The results tables in the headers of
    [`california_housing_legendre_finetune.yaml`](california_housing_legendre_finetune.yaml)
    and [`california_housing_rbf.yaml`](california_housing_rbf.yaml).
 7. <a id="ref-7"></a>J. Yan et al., *T2G-Former: Organizing Tabular Features into

@@ -138,7 +138,27 @@ def _linear_from_seed(in_features: int, out_features: int, seed: int) -> nn.Line
 
 
 class SONN(SONNModule):
-    """Base class for self-organizing deep learning polynomial neural network
+    """Self-organizing deep learning polynomial neural network (GMDH) as a PyTorch module.
+
+    The model starts with no layers; `Trainer.train` grows them, and `infer`
+    predicts with the trained network.
+
+    Parameters
+    ----------
+    config : DictConfig or mapping
+        The configuration. It is merged into `default_config()`, so it may
+        hold only the keys that differ from the defaults.
+    d_model : int
+        Number of input features.
+    feature_names : list of str or ndarray, optional
+        Feature names, used in logs, by `get_selected_features` and in the
+        network diagrams.
+    preprocessing : nn.Module, optional
+        A module applied to every input batch before the first layer.
+    class_weights : tensor, optional
+        Per-class loss weights for a multi-class model, or the weight of the
+        positive class for a binary one. `Trainer` sets them when it is
+        given class weights.
     """
     model_class = None
 

@@ -40,7 +40,7 @@ confined to [-1, 1].
     mean/std measured on the training set, pass the bulk through linearly, and
     saturate only the tail. Needs calibrating, which `fit_input_stats` does once per
     layer before that layer trains (see Trainer.fit_layer_inputs).
-  * "tanh" — the historical stateless squash, and the standard trick in
+  * "tanh" — a stateless squash, and the standard trick in
     Chebyshev-KAN. Needs no statistics, but spends its useful slope on the bulk
     of the data: tanh is already at 0.76 by 1 sigma, so typical samples get
     compressed together before the polynomial basis resolves them.

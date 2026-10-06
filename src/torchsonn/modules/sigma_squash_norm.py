@@ -76,20 +76,26 @@ from torchsonn.modules.base import SONNModule
 class SigmaSquashNorm(SONNModule):
     """Standardize by mean/std, then squash onto (-1, 1) with a rational tail.
 
-    Args:
-        mean: Per-feature centers. Scalar, or any shape broadcastable against
-            the trailing axes of the input (typically `[num_features]`).
-        std: Per-feature scales, same shape as `mean`. Must be non-negative;
-            entries at or below `eps` are treated as constant features and
-            given a unit scale, so they map to a constant 0.
-        n_sigma: Half-width of the linear core, in standard deviations.
-            Inputs within `mean +/- n_sigma * std` are mapped linearly onto
-            `+/-core_range`; everything beyond is squashed by the rational
-            tail. Larger values keep more of the distribution linear at the
-            cost of resolution in the core.
-        core_range: Output magnitude reached at exactly `n_sigma`. Must lie in
-            (0, 1) — at 1 the tail would have no room left to saturate into.
-        eps: Threshold below which a `std` entry counts as a constant feature.
+    Parameters
+    ----------
+    mean : float, sequence of float or torch.Tensor
+        Per-feature centers. Scalar, or any shape broadcastable against
+        the trailing axes of the input (typically `[num_features]`).
+    std : float, sequence of float or torch.Tensor
+        Per-feature scales, same shape as `mean`. Must be non-negative;
+        entries at or below `eps` are treated as constant features and
+        given a unit scale, so they map to a constant 0.
+    n_sigma : float
+        Half-width of the linear core, in standard deviations.
+        Inputs within `mean +/- n_sigma * std` are mapped linearly onto
+        `+/-core_range`; everything beyond is squashed by the rational
+        tail. Larger values keep more of the distribution linear at the
+        cost of resolution in the core.
+    core_range : float
+        Output magnitude reached at exactly `n_sigma`. Must lie in
+        (0, 1) — at 1 the tail would have no room left to saturate into.
+    eps : float
+        Threshold below which a `std` entry counts as a constant feature.
     """
 
     def __init__(self,

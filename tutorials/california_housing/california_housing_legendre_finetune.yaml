@@ -133,6 +133,10 @@
 #   16 survivors (the rows above)        MSE 0.1890 +- 0.0031   MAE 0.2793
 #   24 survivors                         MSE 0.1852 +- 0.0008   MAE 0.2775 <- current
 #   (seed 10 alone: 0.1841 / 0.2762; 9, 9, 10, 7 layers)
+#   Timing of a whole run of this file, RTX 5080, 2026-10-04: 38-39 s as
+#   shipped (candidate stop on dev, 4 layers kept, MSE 0.1867-0.1872); 46 s
+#   with train.early_stop_source=train as above (6 layers kept, MSE 0.1843).
+#   The "about 90 s" further up was the 16-survivor file of 2026-09-30.
 # The one change in this project that moved the number beyond the seed
 # noise: -0.004 on every seed, and a quarter of the seed spread. 32
 # survivors give the same mean (0.1851) with a wider spread; 48 lose.
@@ -164,7 +168,7 @@
 #
 # Compose against the SONNConfig schema first (filled-in defaults), then layer
 # this tutorial's overrides on top via `_self_`. The schema is registered by
-# `src/config/schemas.py` and exposed under the name `default`.
+# `src/torchsonn/config/schemas.py` and exposed under the name `default`.
 defaults:
   - default
   - _self_

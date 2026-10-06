@@ -23,7 +23,15 @@ class BatchedAdam(BaseOptimizer):
     ----------
     params : dict of str -> (B, ...) tensor
         Initial parameters; they set the shapes of the moment buffers.
-    shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier
+    shared_param_names : iterable of str
+        See `BaseOptimizer`.
+    lr : float or (B,) tensor
+        See `BaseOptimizer`.
+    clip_value : float or None
+        See `BaseOptimizer`.
+    clip_norm : float or None
+        See `BaseOptimizer`.
+    shared_param_lr_multiplier : float
         See `BaseOptimizer`.
     betas : (float, float)
         Decay rates b1, b2 of the moment estimates. Default (0.9, 0.999).
@@ -57,9 +65,23 @@ class BatchedAdam(BaseOptimizer):
         active_mask: torch.Tensor | None = None,
         b: Any = None,
     ) -> dict[str, torch.Tensor]:
-        """
-        params, grads: dicts of tensors with leading batch dimension
-        active_mask: tensor of shape (batch,) bool, True if model active
+        """Take one optimizer step for every active member.
+
+        Parameters
+        ----------
+        params : dict of str -> (B, ...) tensor
+            Current parameters, with the members on the leading dimension.
+        grads : dict of str -> (B, ...) tensor
+            Their gradients, with the same keys and shapes.
+        active_mask : (B,) bool tensor, optional
+            True for the members that step; None steps every member.
+        b : any, optional
+            Not used.
+
+        Returns
+        -------
+        dict of str -> (B, ...) tensor
+            The new parameters, with the same keys and shapes.
         """
         self.t += 1
         batch_size = next(iter(params.values())).shape[0]

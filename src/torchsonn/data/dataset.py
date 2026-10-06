@@ -18,7 +18,9 @@ class SONNDataset(Dataset):
     x : (N, d) array or tensor
         Input rows.
     target : (N, ...) array or tensor, or None
-        Targets; None yields `(x, None)` items (inference).
+        Targets. None yields `(x, None)` items, which PyTorch's default
+        collate function cannot batch; predict unlabeled rows with
+        `SONN.infer` on a tensor instead.
     split : {None, 0, 1}
         None uses every row; 0 the even rows (0, 2, 4, ...); 1 the odd rows.
         The trainer uses the two halves as subsets A and B of one loader.

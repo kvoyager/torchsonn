@@ -9,7 +9,7 @@ temp/
 tmp/
 dist/*
 build/*
-docs/site/*
+site/
 docs/theme/*
 tags
 src/torchsonn.egg-info/

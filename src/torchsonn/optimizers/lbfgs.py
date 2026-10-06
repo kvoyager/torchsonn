@@ -28,18 +28,48 @@ class BatchedLBFGS(BaseOptimizer):
     ----------
     params : dict of str -> (B, ...) tensor
         Initial parameters.
-    shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier
+    shared_param_names : iterable of str
+        See `BaseOptimizer`.
+    lr : float or (B,) tensor
+        See `BaseOptimizer`.
+    clip_value : float or None
+        See `BaseOptimizer`.
+    clip_norm : float or None
+        See `BaseOptimizer`.
+    shared_param_lr_multiplier : float
         See `BaseOptimizer`.
     history_size : int
         Correction pairs kept per member. Default 10.
     max_step : float or None
-        Cap on the norm of one member's update of one parameter tensor.
-        Default 1.0.
+        Cap on the norm of one member's update of one parameter tensor, in
+        parameter units (a crude trust region); None for no cap. Default
+        1.0.
     curvature_eps : float or None
-        Store a pair only if y.s > curvature_eps*|s|*|y|. Default 1e-8.
+        Store a pair only if y.s > curvature_eps*|s|*|y| (the BFGS
+        curvature condition, with the standard skipping rule); None stores
+        every pair with s != 0. Default 1e-8.
 
-    `__init__` explains why the two guards exist and how the history is
-    stored.
+    Notes
+    -----
+    Why the two guards. The two-loop recursion scales its direction by
+    s.y / y.y and takes a fixed step. On a direction whose gradient and
+    curvature vanish together (an RBF bump losing its mass) that scale is
+    a ratio of two vanishing numbers and the step does not shrink with the
+    gradient: one step can throw centres tens of standard units off the
+    data. A pair with y.s <= 0 makes the inverse-Hessian estimate
+    indefinite and the direction can point uphill. The cap bounds the
+    damage of any single step; the curvature test keeps the estimate
+    positive definite. Neither changes a well-conditioned convex fit (the
+    polynomial families) beyond its first steps.
+
+    Storage. For the batched (per-member) parameters the correction
+    history is a pair of tensors `s_hist[k]`, `y_hist[k]` of shape
+    (B, history_size, P) plus a per-member fill count `hist_count[k]`; the
+    newest pair sits in the last slot and the valid slots are the last
+    `hist_count` ones. The two-loop recursion runs as `history_size`
+    batched operations over the whole ensemble instead of a Python loop
+    over its members. Shared parameters keep a single deque history and
+    the single-vector recursion.
     """
 
     def __init__(
@@ -54,40 +84,6 @@ class BatchedLBFGS(BaseOptimizer):
         max_step: float | None = 1.0,
         curvature_eps: float | None = 1e-8,
     ) -> None:
-        """
-        params: dict of batched tensors (shape [B, ...])
-        shared_param_names: iterable of keys that are shared parameters
-        lr: torch.Tensor of shape (B,) or scalar
-        history_size: number of (s,y) correction pairs to keep
-        clip_value / clip_norm: forwarded to BaseOptimizer.gradient_clipping
-        max_step: cap on the norm of one member's update of one parameter
-            tensor, in parameter units (a crude trust region); None = no cap.
-        curvature_eps: a correction pair (s, y) is stored only if
-            y.s > curvature_eps * |s| |y| (the BFGS curvature condition, with
-            the standard skipping rule); None = store every pair with s != 0,
-            the historical behaviour.
-
-        Why the two guards. The two-loop recursion scales its direction by
-        s.y / y.y and takes a fixed step. On a direction whose gradient and
-        curvature vanish together (an RBF bump losing its mass) that scale
-        is a ratio of two vanishing numbers and the step does not shrink
-        with the gradient: one step threw centres tens of standard units
-        off the data. A pair with y.s <= 0 makes the inverse-Hessian
-        estimate indefinite and the direction can point uphill. The cap
-        bounds the damage of any single step; the curvature test keeps the
-        estimate positive definite. Neither changes a well-conditioned
-        convex fit (the polynomial families) beyond its first steps.
-
-        Storage. For the batched (per-member) parameters the correction
-        history is a pair of tensors `s_hist[k]`, `y_hist[k]` of shape
-        (B, history_size, P) plus a per-member fill count `hist_count[k]`;
-        the newest pair sits in the last slot and the valid slots are the
-        last `hist_count` ones. The two-loop recursion then runs as
-        `history_size` batched operations over the whole ensemble instead
-        of a Python loop over its members, which was most of a layer's time.
-        Shared parameters keep a single deque history and the single-vector
-        recursion.
-        """
         super().__init__(shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier)
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -243,10 +239,21 @@ class BatchedLBFGS(BaseOptimizer):
         grads: dict[str, torch.Tensor],
         active_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        """
-        params, grads: dicts mapping param name -> tensor of shape [B, ...]
-        active_mask: optional boolean tensor shape (B,) where True indicates active models
-        returns new_params: dict with same keys and shapes
+        """Take one optimizer step for every active member.
+
+        Parameters
+        ----------
+        params : dict of str -> (B, ...) tensor
+            Current parameters, with the members on the leading dimension.
+        grads : dict of str -> (B, ...) tensor
+            Their gradients, with the same keys and shapes.
+        active_mask : (B,) bool tensor, optional
+            True for the members that step; None steps every member.
+
+        Returns
+        -------
+        dict of str -> (B, ...) tensor
+            The new parameters, with the same keys and shapes.
         """
         device = next(iter(params.values())).device
         if active_mask is None:

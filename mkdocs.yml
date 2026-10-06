@@ -1,0 +1,154 @@
+site_name: TorchSONN
+site_description: Self-organizing neural network (GMDH) on PyTorch.
+repo_url: https://github.com/kvoyager/torchsonn
+repo_name: kvoyager/torchsonn
+
+docs_dir: docs
+site_dir: site
+
+# docs/drafts holds local working notes and is ignored by git. MkDocs renders
+# every Markdown file under docs_dir whether git tracks it or not, and
+# `mkdocs gh-deploy` publishes the local build, so the folder is excluded here.
+exclude_docs: |
+  drafts/
+  hooks/
+
+# docs/hooks/assets.py publishes the tutorial diagrams and includes the
+# tutorial READMEs, which live next to the tutorial code (see its docstring).
+hooks:
+  - docs/hooks/assets.py
+
+# Under `mkdocs build --strict` every warning fails the build, so these make
+# broken links, missing anchors and pages left out of the nav into errors.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            show_source: false
+            filters: ["!^_"]
+            members_order: source
+            merge_init_into_class: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            separate_signature: true
+            show_signature_annotations: true
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      # Paths in --8<-- includes resolve from the repo root, so a page can
+      # include a tutorial README where it lives; a missing file fails the build.
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js
+
+extra_css:
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - "Quickstart: regression": getting-started/quickstart-regression.md
+      - "Quickstart: classification": getting-started/quickstart-classification.md
+  - Concepts:
+      - GMDH: concepts/gmdh.md
+      - The Kolmogorov-Gabor polynomial: concepts/kolmogorov-gabor.md
+      - The algorithm: concepts/algorithm.md
+      - Neuron families:
+          - concepts/neurons/index.md
+          - Power-basis polynomials: concepts/neurons/polynomial.md
+          - Orthogonal polynomials: concepts/neurons/orthogonal.md
+          - Gaussian RBF: concepts/neurons/rbf.md
+      - Criteria: concepts/criteria.md
+      - Splits and stopping: concepts/splits-and-stopping.md
+      - Survivor selection: concepts/selection.md
+      - Heads and fine-tuning: concepts/heads-and-finetune.md
+      - Classification: concepts/classification.md
+  - Guides:
+      - Configuration: guides/configuration.md
+      - Data: guides/data.md
+      - Training: guides/training.md
+      - Optimizers: guides/optimizers.md
+      - Inspecting a model: guides/inspecting.md
+      - Performance: guides/performance.md
+      - Troubleshooting: guides/troubleshooting.md
+  - Reference:
+      - Configuration keys: reference/config.md
+      # A section, not a page: with navigation.indexes an index.md is shown
+      # only as the landing page of its section. Patch 10 adds pages here.
+      - API:
+          - reference/api/index.md
+          - SONN: reference/api/model.md
+          - Trainer: reference/api/trainer.md
+          - Data: reference/api/data.md
+          - Neurons: reference/api/neurons.md
+          - Losses and criteria: reference/api/loss.md
+          - Modules: reference/api/modules.md
+          - Optimizers: reference/api/optimizers.md
+          - Plotting: reference/api/plot_model.md
+          - Configuration: reference/api/config.md
+  - Tutorials:
+      - tutorials/index.md
+      - Iris: tutorials/iris.md
+      - California housing: tutorials/california-housing.md
+      - Concrete: tutorials/concrete.md
+      - CCPP: tutorials/ccpp.md
+      - Otto: tutorials/otto.md
