@@ -37,7 +37,7 @@ over a few named inputs, and the whole network can be drawn as a graph.
 ## How a model grows
 
 ```mermaid
-flowchart LR
+flowchart TB
     F[Features] --> L0[Layer 0]
     L0 --> L1[Layer 1]
     F --> L1
