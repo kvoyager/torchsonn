@@ -1,53 +1,79 @@
 # TorchSONN
 
-TorchSONN is a Python library implementing a self-organizing neural
-network built on PyTorch. Layers of small neurons are grown one at a time;
-each layer tries every pair (or tuple) of the previous layer's outputs
-against a set of reference functions and keeps the top-k that minimize a
-validation criterion. Training stops automatically when adding a layer no
-longer reduces the criterion error. Three families of reference functions
-are available:
+TorchSONN is a PyTorch library for building and training self-organizing
+deep neural networks. The network grows one layer at a time. Each layer
+builds candidate neurons, small functions of two or more inputs taken from
+the previous layers' outputs and the original features. Every candidate is
+fitted on the training split, and the ones with the lowest error on a
+held-out split (by default, a separate dev split) survive into the next
+layer. The search stops when adding layers stops lowering that error.
 
-- **Power-basis polynomials**: `linear`, `linear_cov`, `quadratic`,
-  `cubic` and multi-input `polyquad`;
-- **Orthogonal polynomials**: `legendre` and `chebyshev`, with a
-  configurable degree and number of inputs. They stay well conditioned at
-  higher degrees, where the raw power basis breaks down;
-- **Gaussian radial basis functions**: `rbf`, local bumps whose centres and
-  widths are initialized by k-means and then learned.
+The neurons come from three families: plain polynomials, orthogonal
+polynomials and Gaussian radial basis functions. Once the network has
+grown, it can be refined: a linear output head combines the last layer's
+survivors, and an end-to-end pass trains every parameter of the network at
+once by gradient descent.
 
-It is a GPU-accelerated extension of
-[GmdhPy](https://github.com/kvoyager/GmdhPy), an earlier scikit-learn-style
-library implementing the iterative Group Method of Data Handling (GMDH).
-TorchSONN reimplements the same self-organizing algorithm on PyTorch,
-bringing GPU acceleration to model training and inference.
+The result is a network you can read: every neuron is an explicit formula
+over a few named inputs, and the whole network can be drawn as a graph.
 
-## Plotting a model
+## Neuron families
 
-A trained network can be drawn as a diagram with `torchsonn.plot_model`.
-Each box is a neuron, and its incoming edges are the inputs it reads:
+- **[Plain polynomials](docs/concepts/neurons/polynomial.md)** in the power
+  basis: `linear`, `linear_cov`, `quadratic`, `cubic` and the multi-input
+  `polyquad`.
+- **[Orthogonal polynomials](docs/concepts/neurons/orthogonal.md)**:
+  `legendre` and `chebyshev`, with a configurable degree and number of
+  inputs. They stay well conditioned at higher degrees, where the raw power
+  basis does not.
+- **[Gaussian radial basis functions](docs/concepts/neurons/rbf.md)**:
+  `rbf`, local bumps whose centres and widths start from k-means and are
+  then learned.
 
-```python
-from torchsonn.plot_model import PlotModel
+## How a model grows
 
-PlotModel(model, filename="model", plot_neuron_name=True).plot()  # writes model.svg
+```mermaid
+flowchart LR
+    F[Features] --> L0[Layer 0]
+    L0 --> L1[Layer 1]
+    F --> L1
+    L1 --> L2[...]
+    F --> L2
+    L2 --> P[Prediction]
 ```
 
-This example is the pruned network from the
-[CCPP tutorial](tutorials/ccpp/README.md), cut down to the neurons that
-reach the output:
+Each layer fits its candidates on the train split and keeps the
+`nbest_neurons` with the lowest dev error. Growth stops when the dev error
+stops improving, and the model keeps the layers up to the best one. The
+prediction is read off the grown network in one of two ways:
 
-<details open>
-<summary>Pruned CCPP network (click to collapse; click the image for full size)</summary>
+- **Best neuron** (default): the single last-layer survivor with the lowest
+  dev error becomes the output. This is the classic GMDH read-out, and it
+  keeps the model reducible to one explicit formula.
+- **Linear head**: with `use_output_projection`, a linear layer combines
+  several of the last layer's survivors into the prediction, which an
+  end-to-end pass can then refine by training every parameter at once. This
+  usually fits better, at the cost of the single-formula reading.
 
-<br>
+## A grown network
 
-<a href="img/ccpp_pruned_model.svg"><img src="img/ccpp_pruned_model.svg" alt="Pruned network from the CCPP tutorial" width="80%"></a>
+The network of the [CCPP tutorial](tutorials/ccpp/README.md), pruned to the
+neurons that reach the output. Each box is a neuron, and its incoming edges
+are the inputs it reads. `PlotModel` draws it (see
+[Inspecting a model](docs/guides/inspecting.md)); click the image for full
+size.
 
-</details>
+<a href="img/ccpp_pruned_model.svg"><img src="img/ccpp_pruned_model.svg" alt="The pruned network of the CCPP tutorial" width="100%"></a>
 
-Plotting needs the `viz` extra and the system Graphviz binaries (see
-below).
+## Relation to GMDH
+
+TorchSONN builds on the Group Method of Data Handling (GMDH) and on
+[GmdhPy](https://github.com/kvoyager/GmdhPy), a scikit-learn-style GMDH
+library. Two parts come from GMDH: the plain-polynomial neurons, and the
+growth itself, which fits candidates layer by layer and keeps the best by
+their error on a separate split. The orthogonal-polynomial and RBF neurons,
+the output head, the fine-tuning passes and the training on a GPU go beyond
+it. [GMDH](docs/concepts/gmdh.md) describes the method.
 
 ## Install
 
