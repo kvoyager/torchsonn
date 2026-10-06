@@ -62,7 +62,7 @@ neurons that reach the output. Each box is a neuron, and its incoming edges
 are the inputs it reads. `PlotModel` draws it (see
 [Inspecting a model](guides/inspecting.md)); click the image for full size.
 
-[![The pruned network of the CCPP tutorial](assets/img/ccpp_pruned_model.svg){ width="80%" }](assets/img/ccpp_pruned_model.svg)
+[![The pruned network of the CCPP tutorial](assets/img/ccpp_pruned_model.svg){ width="100%" }](assets/img/ccpp_pruned_model.svg)
 
 ## Relation to GMDH
 
