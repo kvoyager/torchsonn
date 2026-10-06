@@ -22,7 +22,9 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
 3. Update the version the README and the docs state:
    - the README citation's `version`;
    - `docs/getting-started/install.md`: "These pages describe version
-     X.Y.Z".
+     X.Y.Z", "install X.Y.Z from GitHub", and the tag (`@vX.Y.Z`) in its
+     two GitHub install commands, so a reader of the published pages
+     installs the version they describe.
 
    A page's "Checked against TorchSONN X.Y.Z" footer records the version
    the page was last checked against; change it when the page is checked

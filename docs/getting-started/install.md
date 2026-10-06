@@ -1,12 +1,12 @@
 # Install
 
-TorchSONN needs Python 3.12 or later. These pages describe version 0.1.5,
-the `main` branch on GitHub. The latest release on PyPI is 0.1.1, which does
-not have everything described here (the `rbf` neuron family, for example),
-so install from GitHub:
+TorchSONN needs Python 3.12 or later. These pages describe version 0.1.6.
+The latest release on PyPI is 0.1.1, which does not have everything
+described here (the `rbf` neuron family, for example), so install 0.1.6
+from GitHub:
 
 ```bash
-pip install "git+https://github.com/kvoyager/torchsonn.git"
+pip install "git+https://github.com/kvoyager/torchsonn.git@v0.1.6"
 ```
 
 The PyPI release installs with:
@@ -24,7 +24,7 @@ Network diagrams and the layer-error plot need the `viz` extra, which adds
 `graphviz` and `matplotlib`:
 
 ```bash
-pip install "torchsonn[viz] @ git+https://github.com/kvoyager/torchsonn.git"
+pip install "torchsonn[viz] @ git+https://github.com/kvoyager/torchsonn.git@v0.1.6"
 ```
 
 The `graphviz` Python package only drives the Graphviz programs, which are

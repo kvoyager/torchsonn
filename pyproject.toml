@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchsonn"
-version = "0.1.5"
+version = "0.1.6"
 description = "Self-organizing neural network on PyTorch."
 readme = "README.md"
 license = "MIT"

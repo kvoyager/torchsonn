@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.6
 
 ### Removed — compatibility code for older names, entry forms and checkpoints
 
