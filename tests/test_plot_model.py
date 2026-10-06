@@ -52,6 +52,22 @@ def fake_model():
     return _FakeModel([layer0], d_model=3)
 
 
+class TestPlotModelTitle:
+    def test_default_title(self, fake_model, tmp_path):
+        p = PlotModel(fake_model, filename=tmp_path / "x")
+        assert p.g.graph_attr["label"] == "Self-organizing deep learning neural network\n "
+        assert p.g.graph_attr["labelloc"] == "t"
+
+    def test_own_title(self, fake_model, tmp_path):
+        p = PlotModel(fake_model, filename=tmp_path / "x", title="California housing, pruned")
+        assert p.g.graph_attr["label"] == "California housing, pruned\n "
+
+    @pytest.mark.parametrize("title", [None, ""])
+    def test_no_title(self, fake_model, tmp_path, title):
+        p = PlotModel(fake_model, filename=tmp_path / "x", title=title)
+        assert "label" not in p.g.graph_attr
+
+
 class TestPlotModelHelpers:
     def test_get_feature_name_indexed(self, fake_model, tmp_path):
         p = PlotModel(fake_model, filename=tmp_path / "x")

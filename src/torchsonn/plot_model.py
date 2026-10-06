@@ -42,6 +42,21 @@ def run_dot_without_conda(args: Sequence[str]) -> subprocess.CompletedProcess:
 
 class PlotModel:
     """Plot self-organizing neural network (multilayered GMDH)
+
+    Parameters
+    ----------
+    model : SONN
+        The model to draw.
+    filename : str or Path
+        Where `plot` writes, without the extension: the drawing goes to
+        `<filename>.svg` and its Graphviz source to `<filename>`.
+    plot_neuron_name : bool, default False
+        Write each neuron's family into its box.
+    view : bool, default False
+        Open the drawing once it is written.
+    title : str or None, default "Self-organizing deep learning neural network"
+        The line at the top of the drawing. None or an empty string leaves
+        it out.
     """
     def __init__(
         self,
@@ -49,6 +64,7 @@ class PlotModel:
         filename: str | Path,
         plot_neuron_name: bool = False,
         view: bool = False,
+        title: str | None = "Self-organizing deep learning neural network",
     ) -> None:
         self.g = gv.Digraph(format='svg')
         self.output = 'OUTPUT'
@@ -56,6 +72,7 @@ class PlotModel:
         self.plot_neuron_name = plot_neuron_name
         self.filename = filename
         self.view = view
+        self.title = title
 
         '''
         # custom palette
@@ -89,8 +106,10 @@ class PlotModel:
                                  'fillcolor': self.io_node_color, 'fontsize': '11',
                                  'fontcolor': self.io_font_color})
         self.g.node(self.output, **self.io_node_param)
-        self.g.graph_attr.update(label='Self-organizing deep learning neural network\n ', labelloc='t', center='true',
-                                 fontsize='18')
+        self.g.graph_attr.update(center='true')
+        if title:
+            # The trailing line keeps a gap between the title and the inputs.
+            self.g.graph_attr.update(label=f'{title}\n ', labelloc='t', fontsize='18')
 
     def _get_feature_name(self, index: int) -> str:
         s = f"F{index}"

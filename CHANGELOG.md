@@ -108,6 +108,13 @@ in a source checkout, but inside the Python environment for an installed
 package. An empty `checkpoint_dir` now raises `ValueError` when the
 `Trainer` is built. The iris and Otto tutorial configs set `checkpoints`.
 
+### Added — `PlotModel(title=...)`
+
+The line at the top of a network diagram is the `title` argument,
+"Self-organizing deep learning neural network" by default; None or an
+empty string leaves it out. The default no longer says "polynomial", which
+an RBF network is not.
+
 ## 0.1.5
 
 ### Added — `shortcut.prev_layers`: older layers' outputs as layer inputs

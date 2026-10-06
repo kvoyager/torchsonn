@@ -20,9 +20,11 @@ PlotModel(model, "california", plot_neuron_name=True).plot()
 
 `plot()` writes the drawing to `california.svg` and its Graphviz source to
 `california`, in the current folder. `PlotModel(model, filename,
-plot_neuron_name=False, view=False)` takes two options:
-`plot_neuron_name=True` writes each neuron's family into its box, and
-`view=True` opens the drawing once it is written. Without the Graphviz
+plot_neuron_name=False, view=False, title=...)` takes three options:
+`plot_neuron_name=True` writes each neuron's family into its box,
+`view=True` opens the drawing once it is written, and `title` sets the line
+at the top of the drawing, "Self-organizing deep learning neural network"
+by default (`None` leaves it out). Without the Graphviz
 `dot` program on the PATH, `plot()` raises `RuntimeError`.
 
 This is the quickstart's model after pruning, a California housing network
