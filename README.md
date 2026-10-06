@@ -1,5 +1,9 @@
 # TorchSONN
 
+[![docs](https://github.com/kvoyager/torchsonn/actions/workflows/docs.yml/badge.svg)](https://github.com/kvoyager/torchsonn/actions/workflows/docs.yml)
+
+Documentation: <https://kvoyager.github.io/torchsonn/>
+
 TorchSONN is a PyTorch library for building and training self-organizing
 deep neural networks. The network grows one layer at a time. Each layer
 builds candidate neurons, small functions of two or more inputs taken from
@@ -77,8 +81,9 @@ it. [GMDH](docs/concepts/gmdh.md) describes the method.
 
 ## Install
 
-TorchSONN needs Python 3.12 or later. This README and the documentation
-describe the `main` branch on GitHub; install it with:
+TorchSONN needs Python 3.12 or later. This README describes the `main`
+branch on GitHub, and the [documentation](https://kvoyager.github.io/torchsonn/)
+the latest version tag. Install `main` with:
 
 ```bash
 pip install "git+https://github.com/kvoyager/torchsonn.git"

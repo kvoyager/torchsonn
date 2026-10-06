@@ -1,5 +1,6 @@
 site_name: TorchSONN
 site_description: Self-organizing neural network (GMDH) on PyTorch.
+site_url: https://kvoyager.github.io/torchsonn/
 repo_url: https://github.com/kvoyager/torchsonn
 repo_name: kvoyager/torchsonn
 
@@ -17,6 +18,7 @@ exclude_docs: |
 # tutorial READMEs, which live next to the tutorial code (see its docstring).
 hooks:
   - docs/hooks/assets.py
+  - docs/hooks/version.py
 
 # Under `mkdocs build --strict` every warning fails the build, so these make
 # broken links, missing anchors and pages left out of the nav into errors.

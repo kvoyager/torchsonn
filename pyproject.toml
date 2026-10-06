@@ -71,6 +71,7 @@ docs = [
 Homepage = "https://github.com/kvoyager/torchsonn"
 Repository = "https://github.com/kvoyager/torchsonn"
 Issues = "https://github.com/kvoyager/torchsonn/issues"
+Documentation = "https://kvoyager.github.io/torchsonn/"
 
 [tool.setuptools.packages.find]
 where = ["src"]

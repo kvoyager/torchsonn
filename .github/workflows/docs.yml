@@ -1,0 +1,54 @@
+# Builds the documentation site and publishes it to GitHub Pages.
+#
+# Runs when a version tag (v*) is pushed, so the site describes a released
+# version, and on demand from the Actions tab for any branch or tag. The build
+# job checks out that commit alone, runs the configuration drift test and the
+# strict MkDocs build, and only then hands the site to the deploy job.
+#
+# One-time setup on GitHub (see RELEASING.md): Pages source "GitHub Actions",
+# and a "v*" tag rule on the github-pages environment.
+name: docs
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer run waits rather than cancelling one that
+# is deploying.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The drift test imports torchsonn; the CPU wheel keeps torch small.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install ".[docs]" pytest
+      - run: pytest tests/test_docs.py
+      - run: mkdocs build --strict
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
