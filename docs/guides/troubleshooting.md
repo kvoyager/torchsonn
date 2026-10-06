@@ -123,8 +123,8 @@ and [Optimizers](optimizers.md#lbfgs)).
 ### A model with the per-layer fine-tune predicts badly
 
 Without an output head, a model trained with `train.layer_finetune`
-predicts with one survivor, which the fine-tune has made worse on its own:
-on CCPP, a mean absolute error of about 13 MW instead of about 3.3. Add the
+predicts with one survivor, which the fine-tune has made worse on its own,
+so the readout can collapse to far worse than the plain model. Add the
 head (see [Heads and fine-tuning](../concepts/heads-and-finetune.md#the-per-layer-fine-tune)).
 
 ### The end-to-end pass made the model worse

@@ -108,13 +108,12 @@ quickstart's 10 layers.
 
 With $\delta = 0$ the margin is relative: 0.1% of the best error, 0.00017
 at an error of 0.17. That is below what a dev evaluation on a few thousand
-rows can resolve, so rounding noise decides whether a layer counts. On the
-California housing tutorial, the order of float32 summation alone moved the
-search between 9 and 11 layers and the test MSE by 0.005 (comment on
-`train.stop_train_min_delta`). With `stop_train_min_delta: 0.002` and
-`criterion_minimum_width: 3`, the same configuration repeats over three
-runs to within 0.0002 at a fixed depth (changelog). Set $\delta$ near the
-noise level of the dev error.
+rows can resolve, so rounding noise decides whether a layer counts: the
+order of float32 summation alone can shift how many layers the search keeps
+and move the test error slightly from run to run. A small absolute
+`stop_train_min_delta` together with a wider `criterion_minimum_width` makes
+the depth and the result repeatable instead. Set $\delta$ near the noise
+level of the dev error.
 
 ## The validation split
 
