@@ -1,5 +1,5 @@
 site_name: TorchSONN
-site_description: Self-organizing neural network (GMDH) on PyTorch.
+site_description: "Self-organizing deep neural networks on PyTorch: polynomial, orthogonal-polynomial and RBF neurons grown layer by layer, in the GMDH family."
 site_url: https://kvoyager.github.io/torchsonn/
 repo_url: https://github.com/kvoyager/torchsonn
 repo_name: kvoyager/torchsonn
