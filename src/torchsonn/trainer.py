@@ -498,19 +498,25 @@ class _JointPool:
 
     The model's single trained layer of candidate neurons and a linear head
     over all of its columns, in the layer's column order. Each column is
-    multiplied by a fixed `scale`, one over its standard deviation on the
-    training split, before the head, so the head's weights compare the
-    neurons on one scale; under 'gates' a hard-concrete gate multiplies the
-    scaled column too, and the gate rather than the weight scale carries a
-    neuron's importance. Under 'group_lasso' neuron j's group is its
-    coefficient row together with its column of the head: zeroing the group
-    removes the neuron from the prediction.
+    standardized with fixed statistics of the training split, (output -
+    `center`) * `scale`, before the head, so the head's weights compare the
+    neurons on one scale and the level of the prediction sits in the head's
+    bias; under 'gates' a hard-concrete gate multiplies the standardized
+    column, and the gate rather than the weight scale carries a neuron's
+    importance. Every candidate predicts the target on its own, so the raw
+    columns share a large common level: a gate on a raw column would scale
+    that level, and the gate noise would move the whole prediction. Under
+    'group_lasso' neuron j's group is its coefficient row together with its
+    column of the head: zeroing the group removes the neuron's deviation
+    from its mean from the prediction.
     """
 
-    def __init__(self, model: SONN, head: nn.Linear, scale: torch.Tensor, js: Any) -> None:
+    def __init__(self, model: SONN, head: nn.Linear, center: torch.Tensor, scale: torch.Tensor,
+                 js: Any) -> None:
         self.model = model
         self.layer = model.layers[-1]
         self.head = head
+        self.center = center
         self.scale = scale
         self.kind = str(js.kind)
         self.multiclass = model.param.model.type == "multi-class"
@@ -580,7 +586,7 @@ class _JointPool:
     def predict(self, x: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
         """The pool's prediction, shaped like `SONN.infer`'s: (B,) for a
         regressor, (B, C) log-probabilities for a multi-class model."""
-        u = self.model(x) * self.scale
+        u = (self.model(x) - self.center) * self.scale
         if z is not None:
             u = u * z
         out = self.head(u)
@@ -3555,10 +3561,11 @@ class Trainer:
     def _joint_pool(self, model: SONN, train_dl: DataLoader, js: Any) -> _JointPool:
         """The pool over the model's trained layer and its fitted wide head.
 
-        Measures each column's standard deviation on the training split and
-        moves the head's weights into the layer's column order (the fitted
-        head reads the columns in ascending-error order), divided by the
-        columns' scale so the prediction is unchanged.
+        Measures each column's mean and standard deviation on the training
+        split and moves the head's weights into the layer's column order (the
+        fitted head reads the columns in ascending-error order), rescaled to
+        the standardized columns, with the means moved into the bias, so the
+        prediction is unchanged.
         """
         layer = model.layers[-1]
         k = len(layer)
@@ -3579,15 +3586,18 @@ class Trainer:
         # A constant column gets the scale of a column 1e6 times quieter than
         # the loudest, not an infinite one.
         std = std.clamp_min(1e-6 * float(std.max().clamp_min(1e-12)))
-        scale = (1.0 / std).to(dtype=model.out_proj.weight.dtype)
+        dtype = model.out_proj.weight.dtype
+        scale = (1.0 / std).to(dtype=dtype)
+        center = mean.to(dtype=dtype)
 
         cols = torch.as_tensor(model._best_neuron_columns(layer, k), dtype=torch.long, device=device)
         head = _linear_from_seed(k, int(model.out_proj.out_features), int(model.param.train.seed)).to(device=device)
         with torch.no_grad():
+            w = model.out_proj.weight
             head.weight.zero_()
-            head.weight[:, cols] = model.out_proj.weight / scale[cols]
-            head.bias.copy_(model.out_proj.bias)
-        return _JointPool(model, head, scale, js)
+            head.weight[:, cols] = w / scale[cols]
+            head.bias.copy_(model.out_proj.bias + w @ center[cols])
+        return _JointPool(model, head, center, scale, js)
 
     def _sparsify_joint_pool(self, model: SONN, pool: _JointPool, train_dl: DataLoader,
                              stop_dl: DataLoader, stop_split: str, target: int, verbose: bool) -> None:
@@ -3705,7 +3715,7 @@ class Trainer:
         s2 = torch.zeros(pool.size, dtype=torch.float64, device=device)
         for batch in dl:
             x, _ = self.batch_callback(batch) if self.batch_callback else batch
-            u = model(x.to(device=device)) * pool.scale
+            u = (model(x.to(device=device)) - pool.center) * pool.scale
             if z is not None:
                 u = u * z
             u = u.double()
@@ -3742,12 +3752,14 @@ class Trainer:
     @torch.no_grad()
     def _fold_joint_pool(self, model: SONN, pool: _JointPool, keep: torch.Tensor, head_width: int) -> None:
         """Cut the layer to the columns `keep` and give the model a head of
-        width `head_width` over them, with the scale and the deterministic
-        gates folded into its weights (zero weights on the inputs no neuron
-        fills)."""
+        width `head_width` over them, with the standardization and the
+        deterministic gates folded into its weights and bias (zero weights on
+        the inputs no neuron fills). A removed neuron takes its deviation from
+        its mean with it; its mean stays in the bias."""
         layer = pool.layer
         factor = pool.scale if pool.gate is None else pool.scale * pool.gate.deterministic()
         weight = pool.head.weight * factor
+        bias = pool.head.bias - weight[:, keep] @ pool.center[keep]
         self._keep_columns(layer, keep)
         layer.d_model = len(layer)
         crit = model.param.train.layer_err_criterion
@@ -3759,7 +3771,7 @@ class Trainer:
         head = _linear_from_seed(head_width, weight.shape[0], int(model.param.train.seed)).to(device=weight.device)
         head.weight.zero_()
         head.weight[:, :new_cols.numel()] = weight[:, keep[new_cols]]
-        head.bias.copy_(pool.head.bias)
+        head.bias.copy_(bias)
         model.out_proj = head
 
     def _train_layer_finetune(

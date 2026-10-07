@@ -15,8 +15,10 @@ pool, head and gates are trained together with a penalty that removes whole
 neurons (`kind: gates`, hard-concrete gates with an expected-L0 penalty, or
 `kind: group_lasso`, each neuron's coefficients and head column as one
 group with the proximal step). The neurons left active are kept, at most as
-many as the head reads, the gates and a per-column scale are folded into
-the head, and the head is refitted over them.
+many as the head reads, the gates and the pool's column standardization
+(fixed training-split mean and standard deviation, so a gate scales a
+neuron's deviation from its mean rather than the level every candidate
+shares) are folded into the head, and the head is refitted over them.
 
 The number of neurons a penalty leaves depends on its weight only
 indirectly, and a closed neuron does not come back, so by default

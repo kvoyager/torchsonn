@@ -196,6 +196,34 @@ def test_fold_keeps_the_prediction_of_the_gated_pool(tmp_path):
         assert torch.allclose(model.infer(x), gated, atol=1e-5)
 
 
+def test_fold_keeps_a_removed_neurons_mean_in_the_bias(tmp_path):
+    """Neurons whose gate is closed are cut; the folded model matches the gated
+    pool, whose closed columns contribute nothing (the columns are centred)."""
+    cfg = _cfg(tmp_path, model={"nbest_neurons": 10})
+    torch.manual_seed(0)
+    model = SONN(cfg, d_model=5)
+    trainer = Trainer(config=cfg)
+    train_dl, dev_dl = _dl(512, 0), _dl(128, 1)
+    trainer._fit_target_scale(model, train_dl)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+    trainer.fit_layer_inputs(model, layer, train_dl)
+    trainer.train_layer(model, layer, train_dl, dev_dl, None, nbest=10, selection_method="plain")
+    model.out_proj = torch.nn.Linear(10, 1)
+    trainer.train_out_proj(model, train_dl, dev_dl)
+    pool = trainer._joint_pool(model, train_dl, cfg.train.joint_sparsity)
+    pool.eval()
+    x = torch.randn(16, 5)
+    with torch.no_grad():
+        pool.gate.log_alpha.copy_(torch.tensor([3.0, -9.0, 1.0, -9.0, 2.0, 0.5, -9.0, 3.0, 1.5, -9.0]))
+        gated = pool.predict(x, pool.eval_gates())
+    keep = torch.tensor([0, 2, 4, 5, 7, 8])
+    trainer._fold_joint_pool(model, pool, keep, 6)
+    assert len(model.layers[0]) == 6
+    with torch.no_grad():
+        assert torch.allclose(model.infer(x), gated, atol=1e-5)
+
+
 def test_joint_multiclass(tmp_path):
     cfg = _cfg(tmp_path, model={"type": "multi-class", "num_classes": 3, "soft_binner": True})
     model, _ = _train(cfg, classes=3)
