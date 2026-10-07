@@ -183,6 +183,19 @@ the optimizers differ and two keys only matter here.
 | `train.finetune_train.cuda_graph` | bool | true | On a CUDA device with `adam` or `adamw`, capture the training step once as a CUDA graph and replay it; much faster for these small models. |
 | `train.finetune_train.data_on_device` | str | `auto` | With the CUDA graph: keep the training split on the device (`true`), stream it from the loader (`false`), or keep it when it fits in a quarter of the free memory (`auto`). |
 
+## Joint selection
+
+`train.joint_sparsity` sets the sparsity penalty that removes whole neurons
+from a pool trained together with the output head.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `train.joint_sparsity.kind` | str | `gates` | `gates`: a hard-concrete gate on each neuron's output, with the expected number of open gates as the penalty (Louizos, Welling and Kingma, 2018). `group_lasso`: the sum over neurons of the L2 norm of each neuron's parameters, with the proximal step that sets whole neurons to zero. |
+| `train.joint_sparsity.beta` | float | 0.66 | `gates` only: temperature of the gate distribution. Must be positive. |
+| `train.joint_sparsity.gamma` | float | -0.1 | `gates` only: lower end of the interval the gate's sigmoid is stretched to before it is clamped to [0, 1]. Must be negative. |
+| `train.joint_sparsity.zeta` | float | 1.1 | `gates` only: upper end of that interval. Must be above 1. |
+| `train.joint_sparsity.init_open` | float | 0.9 | `gates` only: starting probability of the gate's sigmoid sample, in (0, 1). At 0.9 every gate starts nearly open. |
+
 ## Checkpoints
 
 | Key | Type | Default | Meaning |

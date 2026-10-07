@@ -141,6 +141,30 @@ class OptimizerConfig:
     optimizer_params: Dict[str, Any] = field(default_factory=_default_optimizer_params)
 
 
+@dataclass
+class JointSparsityConfig:
+    """The `train.joint_sparsity:` section: how a pool of neurons is made sparse.
+
+    Read by the joint selection mode, which trains a pool of candidate
+    neurons and an output head together and removes whole neurons with a
+    sparsity penalty. The comments next to the fields document them.
+    """
+    # 'gates'       - a hard-concrete gate per neuron (modules/sparsity.py,
+    #                 HardConcreteGate) and its expected-L0 penalty.
+    # 'group_lasso' - the L2 norm of each neuron's parameters, summed, with
+    #                 the proximal step that zeroes whole neurons.
+    kind: str = "gates"
+    # Hard-concrete gate shape (Louizos, Welling and Kingma 2018): the
+    # temperature, and the interval (gamma, zeta) the sigmoid is stretched to
+    # before the clamp to [0, 1]; gamma < 0, zeta > 1. 'gates' only.
+    beta: float = 0.66
+    gamma: float = -0.1
+    zeta: float = 1.1
+    # Starting probability of the gate's underlying sigmoid sample, in (0, 1);
+    # 0.9 starts every gate nearly open (deterministic gate 0.98). 'gates' only.
+    init_open: float = 0.9
+
+
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
@@ -465,6 +489,9 @@ class TrainConfig:
     # its own (usually much smaller) learning rate. `train_finetune` reads this
     # block by default; pass an explicit config to override.
     finetune_train: OutProjTrainConfig = field(default_factory=OutProjTrainConfig)
+
+    # The sparsity penalty of the joint selection mode; see JointSparsityConfig.
+    joint_sparsity: JointSparsityConfig = field(default_factory=JointSparsityConfig)
 
     # When True, train_layer runs an extra per-layer fine-tune pass after
     # neuron_selection, on every layer, the last one included: it trains the

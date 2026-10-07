@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added — hard-concrete gates, group lasso and `train.joint_sparsity`
+
+`torchsonn.modules` has the building blocks for removing whole neurons
+from a pool with a penalty. `HardConcreteGate` holds one gate per neuron in
+[0, 1]: it samples the stretched concrete gate in training (from the
+generator it is given, so seeded runs repeat), returns the deterministic
+gate in eval mode, and has the expected number of open gates,
+`expected_l0()`, as a differentiable penalty (Louizos, Welling and Kingma,
+2018). `group_lasso_penalty` sums the L2 norm of each neuron's parameters,
+spread over several tensors that share the neuron axis, and
+`group_soft_threshold` is its proximal step, which sets whole neurons to
+exactly zero. The new `train.joint_sparsity` section picks one of them
+(`kind`: `gates` or `group_lasso`) and holds the gate's shape (`beta`,
+`gamma`, `zeta`, `init_open`); the `Trainer` rejects values the gate
+cannot use. Nothing reads the section yet.
+
 ## 0.1.6
 
 ### Removed — compatibility code for older names, entry forms and checkpoints

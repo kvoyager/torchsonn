@@ -480,6 +480,7 @@ class Trainer:
         self._validate_best_weights_copy(config)
         self._validate_optimizer_name(config)
         self._validate_checkpoint_dir(config)
+        self._validate_joint_sparsity(config)
         self._apply_deterministic_algorithms(config)
 
     @staticmethod
@@ -570,6 +571,25 @@ class Trainer:
         train_cfg = getattr(config, "train", None) if config is not None else None
         if getattr(train_cfg, "checkpoint_dir", None) is not None:
             Trainer._checkpoint_root(config)
+
+    @staticmethod
+    def _validate_joint_sparsity(config: Any) -> None:
+        """Reject a `train.joint_sparsity` block the gates or the group lasso cannot use."""
+        train_cfg = getattr(config, "train", None) if config is not None else None
+        js = getattr(train_cfg, "joint_sparsity", None)
+        if js is None:
+            return
+        kind = str(js.kind)
+        if kind not in ("gates", "group_lasso"):
+            raise ValueError(f"train.joint_sparsity.kind={kind!r}; expected 'gates' or 'group_lasso'.")
+        if not (float(js.gamma) < 0.0 and float(js.zeta) > 1.0):
+            raise ValueError(
+                f"train.joint_sparsity needs gamma < 0 and zeta > 1, got gamma={js.gamma}, zeta={js.zeta}."
+            )
+        if not float(js.beta) > 0.0:
+            raise ValueError(f"train.joint_sparsity.beta={js.beta}; expected a positive temperature.")
+        if not 0.0 < float(js.init_open) < 1.0:
+            raise ValueError(f"train.joint_sparsity.init_open={js.init_open}; expected a value in (0, 1).")
 
     @staticmethod
     def _split_loader(dl: DataLoader, split: int) -> DataLoader:
