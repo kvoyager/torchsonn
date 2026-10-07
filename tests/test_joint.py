@@ -73,7 +73,8 @@ def test_joint_repeats_with_a_seed(tmp_path):
 
 def test_gates_close_under_the_penalty(tmp_path, caplog):
     caplog.set_level("INFO", logger="torchsonn.trainer")
-    cfg = _cfg(tmp_path, model={"nbest_neurons": 10}, joint={"lam": 1.0, "gate_lr": 0.2, "max_steps": 80})
+    cfg = _cfg(tmp_path, model={"nbest_neurons": 10},
+               joint={"lam": 1.0, "gate_lr": 0.2, "max_steps": 80, "lam_control": "fixed"})
     model, _ = _train(cfg)
     # C(5, 2) = 10 candidates, a head of 10: only the penalty removes neurons.
     assert len(model.layers[0]) < 10
@@ -83,7 +84,7 @@ def test_gates_close_under_the_penalty(tmp_path, caplog):
 
 def test_group_lasso_zeroes_whole_neurons(tmp_path):
     cfg = _cfg(tmp_path, model={"nbest_neurons": 10},
-               joint={"kind": "group_lasso", "lam": 200.0, "lr": 1e-2, "max_steps": 80})
+               joint={"kind": "group_lasso", "lam": 200.0, "lr": 1e-2, "max_steps": 80, "lam_control": "fixed"})
     model, _ = _train(cfg)
     assert len(model.layers[0]) < 10
 
@@ -104,8 +105,65 @@ def test_prefilter_sizes_the_pool(tmp_path, monkeypatch):
 
 
 def test_a_head_as_wide_as_the_pool_keeps_every_neuron_without_a_penalty(tmp_path):
-    model, _ = _train(_cfg(tmp_path, model={"nbest_neurons": 12}, joint={"lam": 0.0}))
+    model, _ = _train(_cfg(tmp_path, model={"nbest_neurons": 12}, joint={"lam": 0.0, "lam_control": "fixed"}))
     assert len(model.layers[0]) == 10
+
+
+def test_a_steered_pass_is_skipped_when_the_pool_fits_the_head(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(Trainer, "_sparsify_joint_pool", lambda *a, **kw: called.append(1))
+    model, _ = _train(_cfg(tmp_path, model={"nbest_neurons": 12}))
+    assert not called and len(model.layers[0]) == 10
+
+
+@pytest.mark.parametrize("kind, lam", [("gates", 0.05), ("group_lasso", 20.0)])
+def test_adaptive_control_lands_on_the_target(tmp_path, caplog, kind, lam):
+    caplog.set_level("INFO", logger="torchsonn.trainer")
+    cfg = _cfg(tmp_path, model={"nbest_neurons": 4},
+               joint={"kind": kind, "lam": lam, "gate_lr": 0.05, "lr": 1e-2, "max_steps": 1500,
+                      "eval_interval": 10, "count_patience": 2, "lam_step": 1.3})
+    model, _ = _train(cfg)
+    assert len(model.layers[0]) == 4
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("joint pass:") and ("stopping at step" in m or "rolling back" in m) for m in msgs)
+
+
+def test_an_overshoot_rolls_back_to_the_closest_state_from_above(tmp_path, monkeypatch, caplog):
+    """Counts 10, 10, 6, 2, 2 against a target of 3: the pass rolls back to the
+    state of the third evaluation (6 active) and the cut keeps 3 of those 6."""
+    from torchsonn import trainer as trainer_mod
+    caplog.set_level("INFO", logger="torchsonn.trainer")
+    script = iter([10, 10, 6, 2, 2])
+    masks = {}
+    loads = []
+    original_load = trainer_mod._JointPool.load
+    original_observe = trainer_mod._CountControl.observe
+
+    def observe(self, step, active, loss, adjust):
+        count = next(script)
+        imp = torch.zeros(10)
+        imp[:count] = 1.0
+        masks["imp"] = imp
+        masks["at"] = step
+        return original_observe(self, step, count, loss, adjust)
+
+    def load(self, state):
+        loads.append(masks["at"])
+        masks["imp"] = torch.zeros(10)
+        masks["imp"][:6] = 1.0
+        return original_load(self, state)
+
+    monkeypatch.setattr(trainer_mod._CountControl, "observe", observe)
+    monkeypatch.setattr(trainer_mod._JointPool, "load", load)
+    monkeypatch.setattr(trainer_mod._JointPool, "importance",
+                        lambda self: masks.get("imp", torch.ones(10)))
+    cfg = _cfg(tmp_path, joint={"max_steps": 100, "eval_interval": 10, "count_patience": 2,
+                                "lam_warmup_frac": 0.0})
+    model, _ = _train(cfg)
+    assert loads == [50]
+    assert any("rolling back to step 30 (6 active)" in r.getMessage() for r in caplog.records)
+    assert any("keeping the 3 with the largest contribution" in r.getMessage() for r in caplog.records)
+    assert len(model.layers[0]) == 3
 
 
 def test_fold_keeps_the_prediction_of_the_gated_pool(tmp_path):
@@ -179,3 +237,59 @@ def test_joint_does_not_resume(tmp_path):
     cfg = _cfg(tmp_path)
     with pytest.raises(ValueError, match="resume"):
         Trainer(config=cfg).train(SONN(cfg, d_model=5), _dl(64, 0), _dl(32, 1), _dl(32, 2), resume=True)
+
+
+class TestCountControl:
+    @staticmethod
+    def _control(mode="adaptive", target=10, margin=0.2, patience=2):
+        from torchsonn.trainer import _CountControl
+        return _CountControl(mode, target, margin, patience, lam_step=2.0, lam=1.0)
+
+    def test_band_from_the_margin(self):
+        assert (self._control().target, self._control().hi) == (10, 12)
+        assert self._control(target=3, margin=0.1).hi == 3
+
+    def test_lam_grows_above_the_band_only_while_the_count_stalls(self):
+        c = self._control()
+        c.observe(1, 30, 0.5, adjust=True)      # first look: not falling -> x2
+        assert c.lam == 2.0
+        c.observe(2, 25, 0.5, adjust=True)      # falling -> hold
+        assert c.lam == 2.0
+        c.observe(3, 25, 0.5, adjust=True)      # stalled -> x2
+        assert c.lam == 4.0
+        c.observe(4, 25, 0.5, adjust=False)     # warm-up -> never moves
+        assert c.lam == 4.0
+
+    def test_adaptive_lowers_lam_below_the_target_and_anneal_does_not(self):
+        a, n = self._control("adaptive", patience=5), self._control("anneal", patience=5)
+        for c in (a, n):
+            c.observe(1, 8, 0.5, adjust=True)
+        assert a.lam == 0.5 and n.lam == 1.0
+
+    def test_holds_in_the_band_and_stops_after_patience(self):
+        c = self._control()
+        assert c.observe(1, 12, 0.5, adjust=True) == (True, None)
+        assert c.lam == 1.0
+        assert c.observe(2, 11, 0.4, adjust=True) == (True, "band")
+
+    def test_stops_below_after_patience(self):
+        c = self._control()
+        c.observe(1, 20, 0.5, adjust=True)
+        assert c.observe(2, 9, 0.5, adjust=True) == (False, None)
+        assert c.observe(3, 9, 0.5, adjust=True) == (False, "below")
+        assert (c.best_count, c.best_step) == (20, 1)
+
+    def test_copy_is_the_closest_count_from_above_and_the_lower_loss_on_a_tie(self):
+        c = self._control(patience=99)
+        assert c.observe(1, 20, 0.5, adjust=True)[0]
+        assert c.observe(2, 15, 0.6, adjust=True)[0]
+        assert not c.observe(3, 15, 0.7, adjust=True)[0]
+        assert c.observe(4, 15, 0.4, adjust=True)[0]
+        assert not c.observe(5, 9, 0.1, adjust=True)[0]
+        assert (c.best_count, c.best_loss, c.best_step) == (15, 0.4, 4)
+
+    def test_fixed_never_stops_or_moves(self):
+        c = self._control("fixed")
+        for step, count in enumerate([30, 11, 11, 11, 3, 3, 3]):
+            assert c.observe(step, count, 0.5, adjust=True)[1] is None
+        assert c.lam == 1.0

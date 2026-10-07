@@ -435,6 +435,64 @@ class _BestWeights:
             self.path.unlink(missing_ok=True)
 
 
+class _CountControl:
+    """lam control toward a target number of active neurons (`train.joint_sparsity.lam_control`).
+
+    The joint pass calls `observe` at every evaluation with the number of
+    active neurons and the dev loss. It tracks the state to roll back to,
+    the one with the fewest active neurons not below `target` (on equal
+    counts, the lower loss), and moves `lam` after the warm-up: times
+    `lam_step` while more than `hi` = max(target, floor(target x (1 +
+    margin))) neurons are active and the count has not fallen since the
+    previous evaluation (the gates lag behind lam, so a falling count gets
+    time), divided by it while fewer than `target` are ('adaptive' only),
+    held otherwise. A sparsity penalty almost never brings a closed neuron
+    back, so the count only falls: the band stops the pass before it falls
+    through the target, and the copy undoes an overshoot.
+    """
+
+    def __init__(self, mode: str, target: int, margin: float, patience: int,
+                 lam_step: float, lam: float) -> None:
+        self.mode = mode
+        self.target = int(target)
+        self.hi = max(self.target, int(math.floor(self.target * (1.0 + float(margin)))))
+        self.patience = int(patience)
+        self.lam_step = float(lam_step)
+        self.lam = float(lam)
+        self.best_count: int | None = None
+        self.best_loss = float("inf")
+        self.best_step: int | None = None
+        self.in_band = 0
+        self.below = 0
+        self.prev_active: int | None = None
+
+    def observe(self, step: int, active: int, loss: float, adjust: bool) -> tuple[bool, str | None]:
+        """Record an evaluation. Returns (whether this state is the new copy to
+        roll back to, 'band' / 'below' when the pass should stop, else None).
+        `adjust` lets lam move (False during the warm-up)."""
+        better = active >= self.target and (
+            self.best_count is None or active < self.best_count
+            or (active == self.best_count and loss < self.best_loss))
+        if better:
+            self.best_count, self.best_loss, self.best_step = active, loss, step
+        self.in_band = self.in_band + 1 if self.target <= active <= self.hi else 0
+        self.below = self.below + 1 if active < self.target else 0
+        falling = self.prev_active is not None and active < self.prev_active
+        self.prev_active = active
+        if self.mode == "fixed":
+            return better, None
+        if self.in_band >= self.patience:
+            return better, "band"
+        if self.below >= self.patience:
+            return better, "below"
+        if adjust:
+            if active > self.hi and not falling:
+                self.lam *= self.lam_step
+            elif active < self.target and self.mode == "adaptive":
+                self.lam /= self.lam_step
+        return better, None
+
+
 class _JointPool:
     """The pool of the joint selection mode (`Trainer.train_joint`).
 
@@ -471,6 +529,22 @@ class _JointPool:
     @property
     def size(self) -> int:
         return int(self.head.in_features)
+
+    def tensors(self) -> list[torch.Tensor]:
+        """Everything the pass trains: the model's parameters, the head and the gates."""
+        gate = [self.gate.log_alpha] if self.gate is not None else []
+        return list(self.model.parameters()) + list(self.head.parameters()) + gate
+
+    @torch.no_grad()
+    def state(self) -> list[torch.Tensor]:
+        """A copy of `tensors()`, for `load`."""
+        return [t.detach().clone() for t in self.tensors()]
+
+    @torch.no_grad()
+    def load(self, state: list[torch.Tensor]) -> None:
+        """Copy a `state()` back in place."""
+        for t, saved in zip(self.tensors(), state):
+            t.copy_(saved)
 
     def groups(self) -> list[list[torch.Tensor]]:
         """Per neuron module, the parts of its neurons' groups: the coefficient
@@ -688,6 +762,11 @@ class Trainer:
             raise ValueError(f"train.joint_sparsity.beta={js.beta}; expected a positive temperature.")
         if not 0.0 < float(js.init_open) < 1.0:
             raise ValueError(f"train.joint_sparsity.init_open={js.init_open}; expected a value in (0, 1).")
+        control = str(js.lam_control)
+        if control not in ("fixed", "anneal", "adaptive"):
+            raise ValueError(
+                f"train.joint_sparsity.lam_control={control!r}; expected 'fixed', 'anneal' or 'adaptive'."
+            )
         prefilter = str(js.prefilter)
         if prefilter not in ("none", "plain", "omp_mixed", "omp"):
             raise ValueError(
@@ -703,6 +782,9 @@ class Trainer:
             ("weight_decay", float(js.weight_decay) >= 0.0, "a value >= 0"),
             ("max_steps", int(js.max_steps) >= 1, "at least 1"),
             ("eval_interval", int(js.eval_interval) >= 1, "at least 1"),
+            ("lam_step", float(js.lam_step) > 1.0, "a value above 1"),
+            ("count_margin", float(js.count_margin) >= 0.0, "a value >= 0"),
+            ("count_patience", int(js.count_patience) >= 1, "at least 1"),
         ):
             if not ok:
                 raise ValueError(f"train.joint_sparsity.{key}={getattr(js, key)}; expected {what}.")
@@ -3368,12 +3450,18 @@ class Trainer:
            (`train.joint_sparsity`). Every `eval_interval` steps the log
            shows lam, both terms, the loss on dev (or the validation split
            under `train.stop_source: val`) and the number of active neurons.
-        4. The active neurons are kept, at most as many as the head reads
-           (`model.num_out_neurons`, by default `model.nbest_neurons`; more
-           are cut to the most important); the layer is cut to them, the
-           scale and the deterministic gates are folded into the head's
-           weights, the head is rebuilt at its configured width and refitted
-           over the survivors (`train_out_proj`).
+           Under `lam_control` 'anneal' / 'adaptive' lam is steered toward
+           the target, the head's width (`model.num_out_neurons`, by default
+           `model.nbest_neurons`): the pass stops once the count holds just
+           above it, and rolls back to the closest state from above if the
+           count falls below it (`_CountControl`).
+        4. The active neurons are kept, at most as many as the head reads;
+           if more remain, the ones contributing most to the prediction (the
+           norm of their head column times the standard deviation of their
+           gated, scaled output on dev). The layer is cut to them, the scale
+           and the deterministic gates are folded into the head's weights,
+           the head is rebuilt at its configured width and refitted over the
+           survivors (`train_out_proj`).
 
         The model is then an ordinary one-layer SONN with a head, saved as
         `model_last.ckpt`; `train_finetune` polishes it like any other.
@@ -3430,10 +3518,14 @@ class Trainer:
         pool = self._joint_pool(model, train_dl, js)
         model.out_proj = None
 
-        self._sparsify_joint_pool(model, pool, train_dl, stop_dl, stop_split, verbose)
+        if pool.size <= head_width and str(js.lam_control) != "fixed":
+            logger.info(f"joint pool: {pool.size} neurons, no more than the head reads; "
+                        "nothing to select, so no pass")
+        else:
+            self._sparsify_joint_pool(model, pool, train_dl, stop_dl, stop_split, head_width, verbose)
         pool.eval()
         before = self._mean_loss(model, stop_dl, lambda x: pool.predict(x, pool.eval_gates()))
-        keep = self._joint_survivors(pool, head_width)
+        keep = self._joint_survivors(pool, head_width, stop_dl)
         self._fold_joint_pool(model, pool, keep, head_width)
         cut = self._mean_loss(model, stop_dl, model.infer)
         # The pass trained the head over every neuron; the survivors alone
@@ -3498,17 +3590,18 @@ class Trainer:
         return _JointPool(model, head, scale, js)
 
     def _sparsify_joint_pool(self, model: SONN, pool: _JointPool, train_dl: DataLoader,
-                             stop_dl: DataLoader, stop_split: str, verbose: bool) -> None:
+                             stop_dl: DataLoader, stop_split: str, target: int, verbose: bool) -> None:
         """Train the pool, the head and the gates together under the sparsity penalty.
 
         AdamW over every parameter of the model and the head (`lr`,
-        `weight_decay`) and over the gates (`gate_lr`, no decay), for
+        `weight_decay`) and over the gates (`gate_lr`, no decay), for at most
         `max_steps` steps. lam rises linearly from 0 over the first
-        `lam_warmup_frac` of the steps. Under 'gates' the loss is data loss +
-        lam * expected open gates, with one gate sample per step from a
-        generator seeded by `train.seed`; under 'group_lasso' the loss is the
-        data loss and every step is followed by the proximal step with
-        threshold lam * lr.
+        `lam_warmup_frac` of the steps, then follows `lam_control` against
+        `target` (`_CountControl`), which can also stop the pass early or
+        roll it back. Under 'gates' the loss is data loss + lam * expected
+        open gates, with one gate sample per step from a generator seeded by
+        `train.seed`; under 'group_lasso' the loss is the data loss and every
+        step is followed by the proximal step with threshold lam * lr.
         """
         js = model.param.train.joint_sparsity
         device = model.device
@@ -3527,15 +3620,23 @@ class Trainer:
         threshold = float(js.prune_threshold)
         lam_max = float(js.lam)
         warmup = float(js.lam_warmup_frac) * max_steps
+        control = _CountControl(str(js.lam_control), target, float(js.count_margin),
+                                int(js.count_patience), float(js.lam_step), lam_max)
+        # The state to roll back to; the pool as it starts has every neuron.
+        best_state = pool.state()
+        control.best_count, control.best_step = pool.size, 0
 
         def lam_at(step: int) -> float:
-            return lam_max if warmup <= 0 else lam_max * min(1.0, step / warmup)
+            return control.lam if step >= warmup else lam_max * step / warmup
 
-        logger.info(f"joint pass: {js.kind}, lam {lam_max:g} (warm-up {int(warmup)} steps), "
-                    f"{pool.size} neurons, {max_steps} steps")
+        steer = "" if control.mode == "fixed" else (
+            f", steered to {control.target}-{control.hi} active ({control.mode}, x{control.lam_step:g} per evaluation)")
+        logger.info(f"joint pass: {js.kind}, lam {lam_max:g} (warm-up {int(warmup)} steps){steer}, "
+                    f"{pool.size} neurons, at most {max_steps} steps")
         tbar = tqdm(total=max_steps, desc="joint", file=sys.stdout, ncols=140,
                     disable=not (verbose and model.param.train.verbose))
         step = 0
+        active = pool.size
         data_sum, data_n = 0.0, 0
         while step < max_steps:
             x, y = next(batches)
@@ -3571,13 +3672,56 @@ class Trainer:
             tbar.n = step
             tbar.refresh()
             data_sum, data_n = 0.0, 0
+            better, stop = control.observe(step, active, val_loss, adjust=step >= warmup)
+            if better:
+                best_state = pool.state()
+            if stop == "band":
+                logger.info(f"joint pass: {active} active, in [{control.target}, {control.hi}] for "
+                            f"{control.patience} evaluations; stopping at step {step}")
+                break
+            if stop == "below":
+                logger.info(f"joint pass: fewer than {control.target} active for {control.patience} "
+                            f"evaluations; rolling back to step {control.best_step} "
+                            f"({control.best_count} active)")
+                pool.load(best_state)
+                break
+        else:
+            if control.mode != "fixed" and active < control.target:
+                logger.info(f"joint pass: {active} active at the last step, fewer than {control.target}; "
+                            f"rolling back to step {control.best_step} ({control.best_count} active)")
+                pool.load(best_state)
         tbar.close()
 
     @torch.no_grad()
-    def _joint_survivors(self, pool: _JointPool, head_width: int) -> torch.Tensor:
+    def _joint_contribution(self, pool: _JointPool, dl: DataLoader) -> torch.Tensor:
+        """How much each pool neuron moves the prediction: the norm of its head
+        column times the standard deviation, over the loader, of its scaled
+        and (deterministically) gated output."""
+        model = pool.model
+        device = model.device
+        z = pool.eval_gates()
+        n = 0
+        s1 = torch.zeros(pool.size, dtype=torch.float64, device=device)
+        s2 = torch.zeros(pool.size, dtype=torch.float64, device=device)
+        for batch in dl:
+            x, _ = self.batch_callback(batch) if self.batch_callback else batch
+            u = model(x.to(device=device)) * pool.scale
+            if z is not None:
+                u = u * z
+            u = u.double()
+            s1 += u.sum(dim=0)
+            s2 += (u * u).sum(dim=0)
+            n += u.shape[0]
+        mean = s1 / n
+        std = (s2 / n - mean * mean).clamp_min(0.0).sqrt()
+        return pool.head.weight.detach().double().norm(dim=0) * std
+
+    @torch.no_grad()
+    def _joint_survivors(self, pool: _JointPool, head_width: int, dl: DataLoader) -> torch.Tensor:
         """The pool columns to keep, sorted: the active neurons, cut to the
-        `head_width` most important when there are more (and the most
-        important one when none is active)."""
+        `head_width` with the largest contribution on `dl` when there are
+        more (`_joint_contribution`), and the most important one when none
+        is active."""
         threshold = float(pool.model.param.train.joint_sparsity.prune_threshold)
         imp = pool.importance()
         keep = (imp > threshold).nonzero().squeeze(1)
@@ -3586,9 +3730,12 @@ class Trainer:
                            "keeping the most important one")
             keep = imp.argmax().view(1)
         if keep.numel() > head_width:
+            contrib = self._joint_contribution(pool, dl)[keep]
+            order = torch.argsort(contrib, descending=True, stable=True)
             logger.info(f"joint selection: {keep.numel()} active neurons, more than the head reads; "
-                        f"keeping the {head_width} most important")
-            order = torch.argsort(imp[keep], descending=True, stable=True)
+                        f"keeping the {head_width} with the largest contribution (head weight x output std "
+                        f"on dev: kept >= {float(contrib[order[head_width - 1]]):.4g}, "
+                        f"cut <= {float(contrib[order[head_width]]):.4g})")
             keep = keep[order[:head_width]]
         return keep.sort().values
 

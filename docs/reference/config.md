@@ -189,8 +189,10 @@ With `model.selection_mode: joint`, `Trainer.train` builds a single layer:
 it fits the candidates on their own, trains a pool of them together with
 the output head under a sparsity penalty that removes whole neurons, cuts
 the layer to the neurons left, at most `model.num_out_neurons` (by default
-`model.nbest_neurons`), and refits the head over them. `train.joint_sparsity`
-configures the penalty and the pass.
+`model.nbest_neurons`), and refits the head over them. By default the
+penalty's weight is steered so that the pass ends with that many neurons
+active, or a few more. `train.joint_sparsity` configures the penalty and
+the pass.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -202,7 +204,11 @@ configures the penalty and the pass.
 | `train.joint_sparsity.init_open` | float | 0.9 | `gates` only: starting probability of the gate's sigmoid sample, in (0, 1). At 0.9 every gate starts nearly open. |
 | `train.joint_sparsity.lam` | float | 0.001 | Weight of the penalty: the loss is the data loss plus `lam` times the expected number of open gates (`gates`), or the data loss followed by the proximal step with threshold `lam` × `lr` after every step (`group_lasso`). The two kinds need different values. |
 | `train.joint_sparsity.lam_warmup_frac` | float | 0.1 | `lam` rises linearly from 0 over this fraction of `max_steps`, so the pool fits before the penalty presses on it. |
-| `train.joint_sparsity.prune_threshold` | float | 0.05 | A neuron counts as active while its deterministic gate (`gates`), or its group norm over the norm it started the pass with (`group_lasso`), is above this. When the pass ends the others are removed, and the most important active ones are kept if more remain than the head reads. |
+| `train.joint_sparsity.lam_control` | str | `adaptive` | How `lam` moves after the warm-up, against the target, the head's width. `fixed`: it stays at `lam` and the pass runs `max_steps`. `anneal`: at every evaluation where more than target × (1 + `count_margin`) neurons are active and the count has not fallen since the previous one, it is multiplied by `lam_step`. `adaptive`: as `anneal`, and divided by `lam_step` while fewer than the target are active. Under both the pass stops once the count has stayed between the target and target × (1 + `count_margin`) for `count_patience` evaluations; if it stays below the target that long, or is below it at `max_steps`, the pass goes back to the state with the fewest active neurons not below the target. |
+| `train.joint_sparsity.lam_step` | float | 1.2 | Factor by which `anneal` and `adaptive` change `lam` at an evaluation. Above 1. |
+| `train.joint_sparsity.count_margin` | float | 0.1 | How far above the target the active count may end, as a fraction of the target: the pass stops in [target, target × (1 + `count_margin`)] (rounded down). |
+| `train.joint_sparsity.count_patience` | int | 3 | Evaluations in a row the count must stay in that band, or below the target, before the pass stops or goes back. |
+| `train.joint_sparsity.prune_threshold` | float | 0.05 | A neuron counts as active while its deterministic gate (`gates`), or its group norm over the norm it started the pass with (`group_lasso`), is above this. When the pass ends the others are removed. If more remain active than the head reads, the ones kept move the prediction most: the largest norm of their head column times the standard deviation of their output on dev. |
 | `train.joint_sparsity.prefilter` | str | `omp_mixed` | Which of the candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `omp_mixed` or `omp` the `prefilter_mult` × head width chosen by that selection method (see `train.neuron_selection_method`). |
 | `train.joint_sparsity.prefilter_mult` | float | 10.0 | Pool size as a multiple of the head's width, for a `prefilter` other than `none`. At least 1. |
 | `train.joint_sparsity.lr` | float | 0.001 | AdamW learning rate of the pool's parameters and the head. |

@@ -173,9 +173,31 @@ class JointSparsityConfig:
     # pressed to thin out.
     lam: float = 1.0e-3
     lam_warmup_frac: float = 0.1
+    # How lam moves after the warm-up, against the target: the head's width
+    # (model.num_out_neurons, by default nbest_neurons).
+    #   'fixed'    - lam stays at `lam`; the pass runs max_steps.
+    #   'anneal'   - lam is multiplied by lam_step at every evaluation at
+    #                which more than target x (1 + count_margin) neurons are
+    #                active and the count has not fallen since the previous
+    #                one, and held otherwise.
+    #   'adaptive' - as 'anneal', and divided by lam_step while fewer than
+    #                the target are active.
+    # Under 'anneal' and 'adaptive' the pass also keeps a copy of the state
+    # with the fewest active neurons not below the target (on equal counts,
+    # the lower dev loss), and stops early: once the count has stayed in
+    # [target, target x (1 + count_margin)] for count_patience evaluations
+    # in a row, or, rolling back to that copy, once it has stayed below the
+    # target for count_patience evaluations (or is below it at max_steps).
+    lam_control: str = "adaptive"
+    lam_step: float = 1.2
+    count_margin: float = 0.1
+    count_patience: int = 3
     # A neuron counts as active while its deterministic gate ('gates') or its
     # group norm relative to the start of the pass ('group_lasso') is above
-    # this; the others are removed when the pass ends.
+    # this; the others are removed when the pass ends. If more than the
+    # head's width remain active, the ones that move the prediction most are
+    # kept: largest norm of the neuron's head column times the standard
+    # deviation of its (scaled, gated) output on dev.
     prune_threshold: float = 0.05
     # Which candidates enter the pool. Every candidate of the layer is first
     # fitted on its own, as a greedy layer does; those fits are the pool's

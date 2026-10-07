@@ -16,7 +16,20 @@ neurons (`kind: gates`, hard-concrete gates with an expected-L0 penalty, or
 `kind: group_lasso`, each neuron's coefficients and head column as one
 group with the proximal step). The neurons left active are kept, at most as
 many as the head reads, the gates and a per-column scale are folded into
-the head, and the head is refitted over them. The result is an ordinary
+the head, and the head is refitted over them.
+
+The number of neurons a penalty leaves depends on its weight only
+indirectly, and a closed neuron does not come back, so by default
+(`lam_control: adaptive`) `lam` is steered toward the head's width: it grows
+by `lam_step` at an evaluation while the active count is above target × (1 +
+`count_margin`) and not falling, shrinks while it is below the target, and
+the pass stops once the count has held in that band for `count_patience`
+evaluations. The pass keeps a copy of the state with the fewest active
+neurons not below the target and goes back to it if the count falls through
+(`anneal` never lowers `lam`; `fixed` keeps it constant for a sparsity
+sweep). Active neurons beyond the head's width are cut by their
+contribution to the prediction, the norm of their head column times the
+standard deviation of their output on dev. The result is an ordinary
 one-layer model with a head; `train_finetune` polishes it as usual. The
 log reports `lam`, the data loss and the penalty, the dev loss and the
 number of active neurons every `eval_interval` steps. `selection_mode:
