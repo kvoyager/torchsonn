@@ -5,7 +5,7 @@ import os
 import sys
 import torch
 from torchsonn.model import SONN, _linear_from_seed
-from torchsonn.modules import HardConcreteGate, group_lasso_penalty, group_norms, group_soft_threshold
+from torchsonn.modules import HardConcreteGate, group_lasso_penalty, group_norms
 from tqdm import tqdm
 import logging
 from torch import nn
@@ -443,10 +443,11 @@ class _CountControl:
     the one with the fewest active neurons not below `target` (on equal
     counts, the lower loss), and moves `lam` after the warm-up: times
     `lam_step` while more than `hi` = max(target, floor(target x (1 +
-    margin))) neurons are active and the count has not fallen since the
-    previous evaluation (the gates lag behind lam, so a falling count gets
-    time), divided by it while fewer than `target` are ('adaptive' only),
-    held otherwise. A sparsity penalty almost never brings a closed neuron
+    margin))) neurons are active and neither the count nor the penalty has
+    fallen since the previous evaluation (the penalty by at least 1%): the
+    neurons lag behind lam, so while they are still moving lam waits. It is
+    divided by `lam_step` while fewer than `target` are active ('adaptive'
+    only), held otherwise. A sparsity penalty almost never brings a closed neuron
     back, so the count only falls: the band stops the pass before it falls
     through the target, and the copy undoes an overshoot.
     """
@@ -465,11 +466,14 @@ class _CountControl:
         self.in_band = 0
         self.below = 0
         self.prev_active: int | None = None
+        self.prev_penalty: float | None = None
 
-    def observe(self, step: int, active: int, loss: float, adjust: bool) -> tuple[bool, str | None]:
+    def observe(self, step: int, active: int, loss: float, adjust: bool,
+                penalty: float | None = None) -> tuple[bool, str | None]:
         """Record an evaluation. Returns (whether this state is the new copy to
         roll back to, 'band' / 'below' when the pass should stop, else None).
-        `adjust` lets lam move (False during the warm-up)."""
+        `adjust` lets lam move (False during the warm-up); `penalty` is the
+        penalty's current value (without lam)."""
         better = active >= self.target and (
             self.best_count is None or active < self.best_count
             or (active == self.best_count and loss < self.best_loss))
@@ -477,8 +481,9 @@ class _CountControl:
             self.best_count, self.best_loss, self.best_step = active, loss, step
         self.in_band = self.in_band + 1 if self.target <= active <= self.hi else 0
         self.below = self.below + 1 if active < self.target else 0
-        falling = self.prev_active is not None and active < self.prev_active
-        self.prev_active = active
+        falling = (self.prev_active is not None and active < self.prev_active) or (
+            penalty is not None and self.prev_penalty is not None and penalty < 0.99 * self.prev_penalty)
+        self.prev_active, self.prev_penalty = active, penalty
         if self.mode == "fixed":
             return better, None
         if self.in_band >= self.patience:
@@ -528,9 +533,9 @@ class _JointPool:
         self.bounds = [0]
         for module in self.layer.neuron_models:
             self.bounds.append(self.bounds[-1] + module.num_neurons)
-        # Each group's norm when the pass starts; 'group_lasso' measures a
-        # neuron's importance against it.
-        self.norms0 = self.group_norms().detach().clone() if self.gate is None else None
+        # Each neuron's head column norm when the pass starts; 'group_lasso'
+        # measures a neuron's importance against it.
+        self.head_norms0 = self.head.weight.detach().norm(dim=0).clone() if self.gate is None else None
 
     @property
     def size(self) -> int:
@@ -554,8 +559,7 @@ class _JointPool:
 
     def groups(self) -> list[list[torch.Tensor]]:
         """Per neuron module, the parts of its neurons' groups: the coefficient
-        rows and the matching columns of the head (transposed views, so the
-        proximal step writes into the head)."""
+        rows and the matching columns of the head (transposed views)."""
         head_t = self.head.weight.T
         return [[module.weight, head_t[a:b]] for module, a, b
                 in zip(self.layer.neuron_models, self.bounds[:-1], self.bounds[1:])]
@@ -594,10 +598,18 @@ class _JointPool:
 
     @torch.no_grad()
     def importance(self) -> torch.Tensor:
-        """Per neuron: its deterministic gate, or its group norm over the norm it started the pass with."""
+        """Per neuron: its deterministic gate, or the norm of its head column
+        over the norm it started the pass with.
+
+        Under 'group_lasso' the penalty covers the whole group, so the head
+        column cannot shrink while the coefficients grow to make up for it,
+        but whether the head still reads a neuron is told by its column
+        alone: the coefficient rows carry each neuron's constant term (about
+        the target's mean for every candidate), which Adam takes thousands
+        of steps to shrink and which the centred column does not pass on."""
         if self.gate is not None:
             return self.gate.deterministic()
-        return self.group_norms() / self.norms0.clamp_min(1e-12)
+        return self.head.weight.norm(dim=0) / self.head_norms0.clamp_min(1e-12)
 
     @torch.no_grad()
     def histogram(self) -> str:
@@ -605,7 +617,7 @@ class _JointPool:
         imp = self.importance()
         bins = [(0.0, 0.05), (0.05, 0.5), (0.5, 0.95), (0.95, float("inf"))]
         counts = [int((imp == 0).sum())] + [int(((imp > lo) & (imp <= hi)).sum()) for lo, hi in bins]
-        what = "gates" if self.gate is not None else "norm/start"
+        what = "gates" if self.gate is not None else "head col/start"
         return (f"{what} =0: {counts[0]}, (0,.05]: {counts[1]}, (.05,.5]: {counts[2]}, "
                 f"(.5,.95]: {counts[3]}, >.95: {counts[4]}")
 
@@ -3608,10 +3620,14 @@ class Trainer:
         `max_steps` steps. lam rises linearly from 0 over the first
         `lam_warmup_frac` of the steps, then follows `lam_control` against
         `target` (`_CountControl`), which can also stop the pass early or
-        roll it back. Under 'gates' the loss is data loss + lam * expected
-        open gates, with one gate sample per step from a generator seeded by
-        `train.seed`; under 'group_lasso' the loss is the data loss and every
-        step is followed by the proximal step with threshold lam * lr.
+        roll it back. The loss is data loss + lam * penalty: the expected
+        number of open gates under 'gates' (one gate sample per step, from a
+        generator seeded by `train.seed`), the sum of the group norms under
+        'group_lasso'. Both go through AdamW, so a neuron shrinks only where
+        the penalty's gradient outweighs its data gradient; a proximal step
+        (a shrink of lam * lr for every group alike) does not tell the
+        neurons apart under Adam's normalized steps, and on California
+        housing it shrank all 120 at once.
         """
         js = model.param.train.joint_sparsity
         device = model.device
@@ -3656,13 +3672,10 @@ class Trainer:
             pool.train()
             z = pool.gate(generator) if pool.gate is not None else None
             data = model.loss_fn(pool.predict(x, z), y).mean()
-            loss = data + lam * pool.penalty() if pool.gate is not None else data
+            loss = data + lam * pool.penalty()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
-            if pool.gate is None and lam > 0.0:
-                for parts in pool.groups():
-                    group_soft_threshold(parts, lam * float(js.lr))
             step += 1
             data_sum += float(data.item())
             data_n += 1
@@ -3682,7 +3695,7 @@ class Trainer:
             tbar.n = step
             tbar.refresh()
             data_sum, data_n = 0.0, 0
-            better, stop = control.observe(step, active, val_loss, adjust=step >= warmup)
+            better, stop = control.observe(step, active, val_loss, adjust=step >= warmup, penalty=penalty)
             if better:
                 best_state = pool.state()
             if stop == "band":

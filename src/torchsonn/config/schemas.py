@@ -151,8 +151,8 @@ class JointSparsityConfig:
     """
     # 'gates'       - a hard-concrete gate per neuron (modules/sparsity.py,
     #                 HardConcreteGate) and its expected-L0 penalty.
-    # 'group_lasso' - the L2 norm of each neuron's parameters, summed, with
-    #                 the proximal step that zeroes whole neurons.
+    # 'group_lasso' - the L2 norm of each neuron's parameters (its
+    #                 coefficients and its column of the head), summed.
     kind: str = "gates"
     # Hard-concrete gate shape (Louizos, Welling and Kingma 2018): the
     # temperature, and the interval (gamma, zeta) the sigmoid is stretched to
@@ -166,11 +166,9 @@ class JointSparsityConfig:
 
     # Weight of the penalty, lam in loss = data_loss + lam * penalty. The
     # penalty is the expected number of open gates ('gates') or the sum of
-    # the neurons' group norms ('group_lasso', applied as the proximal step
-    # with threshold lam * lr after every optimizer step), so the two kinds
-    # want different values. It rises linearly from 0 over the first
-    # `lam_warmup_frac` of `max_steps`, so the pool fits before it is
-    # pressed to thin out.
+    # the neurons' group norms ('group_lasso'). It rises linearly from 0 over
+    # the first `lam_warmup_frac` of `max_steps`, so the pool fits before it
+    # is pressed to thin out.
     lam: float = 1.0e-3
     lam_warmup_frac: float = 0.1
     # How lam moves after the warm-up, against the target: the head's width
@@ -178,8 +176,8 @@ class JointSparsityConfig:
     #   'fixed'    - lam stays at `lam`; the pass runs max_steps.
     #   'anneal'   - lam is multiplied by lam_step at every evaluation at
     #                which more than target x (1 + count_margin) neurons are
-    #                active and the count has not fallen since the previous
-    #                one, and held otherwise.
+    #                active and neither the count nor the penalty (by 1%) has
+    #                fallen since the previous one, and held otherwise.
     #   'adaptive' - as 'anneal', and divided by lam_step while fewer than
     #                the target are active.
     # Under 'anneal' and 'adaptive' the pass also keeps a copy of the state
@@ -192,9 +190,9 @@ class JointSparsityConfig:
     lam_step: float = 1.2
     count_margin: float = 0.1
     count_patience: int = 3
-    # A neuron counts as active while its deterministic gate ('gates') or its
-    # group norm relative to the start of the pass ('group_lasso') is above
-    # this; the others are removed when the pass ends. If more than the
+    # A neuron counts as active while its deterministic gate ('gates') or the
+    # norm of its head column relative to the start of the pass
+    # ('group_lasso') is above this; the others are removed when the pass ends. If more than the
     # head's width remain active, the ones that move the prediction most are
     # kept: largest norm of the neuron's head column times the standard
     # deviation of its (scaled, gated) output on dev.

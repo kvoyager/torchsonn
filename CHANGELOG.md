@@ -14,7 +14,7 @@ the head's width by a selection method) gets a head over all of them, and
 pool, head and gates are trained together with a penalty that removes whole
 neurons (`kind: gates`, hard-concrete gates with an expected-L0 penalty, or
 `kind: group_lasso`, each neuron's coefficients and head column as one
-group with the proximal step). The neurons left active are kept, at most as
+group). The neurons left active are kept, at most as
 many as the head reads, the gates and the pool's column standardization
 (fixed training-split mean and standard deviation, so a gate scales a
 neuron's deviation from its mean rather than the level every candidate
@@ -24,7 +24,7 @@ The number of neurons a penalty leaves depends on its weight only
 indirectly, and a closed neuron does not come back, so by default
 (`lam_control: adaptive`) `lam` is steered toward the head's width: it grows
 by `lam_step` at an evaluation while the active count is above target × (1 +
-`count_margin`) and not falling, shrinks while it is below the target, and
+`count_margin`) and neither the count nor the penalty is falling, shrinks while it is below the target, and
 the pass stops once the count has held in that band for `count_patience`
 evaluations. The pass keeps a copy of the state with the fewest active
 neurons not below the target and goes back to it if the count falls through

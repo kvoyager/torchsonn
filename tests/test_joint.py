@@ -84,7 +84,7 @@ def test_gates_close_under_the_penalty(tmp_path, caplog):
 
 def test_group_lasso_zeroes_whole_neurons(tmp_path):
     cfg = _cfg(tmp_path, model={"nbest_neurons": 10},
-               joint={"kind": "group_lasso", "lam": 200.0, "lr": 1e-2, "max_steps": 80, "lam_control": "fixed"})
+               joint={"kind": "group_lasso", "lam": 1.0, "lr": 2e-2, "max_steps": 150, "lam_control": "fixed"})
     model, _ = _train(cfg)
     assert len(model.layers[0]) < 10
 
@@ -116,7 +116,7 @@ def test_a_steered_pass_is_skipped_when_the_pool_fits_the_head(tmp_path, monkeyp
     assert not called and len(model.layers[0]) == 10
 
 
-@pytest.mark.parametrize("kind, lam", [("gates", 0.05), ("group_lasso", 20.0)])
+@pytest.mark.parametrize("kind, lam", [("gates", 0.05), ("group_lasso", 0.05)])
 def test_adaptive_control_lands_on_the_target(tmp_path, caplog, kind, lam):
     caplog.set_level("INFO", logger="torchsonn.trainer")
     cfg = _cfg(tmp_path, model={"nbest_neurons": 4},
@@ -139,13 +139,13 @@ def test_an_overshoot_rolls_back_to_the_closest_state_from_above(tmp_path, monke
     original_load = trainer_mod._JointPool.load
     original_observe = trainer_mod._CountControl.observe
 
-    def observe(self, step, active, loss, adjust):
+    def observe(self, step, active, loss, adjust, penalty=None):
         count = next(script)
         imp = torch.zeros(10)
         imp[:count] = 1.0
         masks["imp"] = imp
         masks["at"] = step
-        return original_observe(self, step, count, loss, adjust)
+        return original_observe(self, step, count, loss, adjust, penalty)
 
     def load(self, state):
         loads.append(masks["at"])
@@ -286,6 +286,14 @@ class TestCountControl:
         c.observe(3, 25, 0.5, adjust=True)      # stalled -> x2
         assert c.lam == 4.0
         c.observe(4, 25, 0.5, adjust=False)     # warm-up -> never moves
+        assert c.lam == 4.0
+
+    def test_lam_holds_while_the_penalty_falls(self):
+        c = self._control()
+        c.observe(1, 30, 0.5, adjust=True, penalty=10.0)     # x2
+        c.observe(2, 30, 0.5, adjust=True, penalty=9.5)      # penalty -5% -> hold
+        assert c.lam == 2.0
+        c.observe(3, 30, 0.5, adjust=True, penalty=9.45)     # -0.5% -> stalled, x2
         assert c.lam == 4.0
 
     def test_adaptive_lowers_lam_below_the_target_and_anneal_does_not(self):
