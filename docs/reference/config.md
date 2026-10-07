@@ -185,18 +185,22 @@ the optimizers differ and two keys only matter here.
 
 ## Joint selection
 
-With `model.selection_mode: joint`, `Trainer.train` builds a single layer:
-it fits the candidates on their own, trains a pool of them together with
-the output head under a sparsity penalty that removes whole neurons, cuts
-the layer to the neurons left, at most `model.num_out_neurons` (by default
-`model.nbest_neurons`), and refits the head over them. By default the
-penalty's weight is steered so that the pass ends with that many neurons
-active, or a few more. `train.joint_sparsity` configures the penalty and
-the pass.
+With `model.selection_mode: joint`, `Trainer.train` grows the network
+layer by layer as in greedy mode, but chooses each layer's survivors
+differently: it fits the candidates on their own, trains a pool of them
+together with a temporary head under a sparsity penalty that removes whole
+neurons (the earlier layers stay frozen), and cuts the layer to
+`model.nbest_neurons` of the neurons left. By default the penalty's weight
+is steered so that the pass ends with that many neurons active, or a few
+more. The growth rule scores each layer by `train.layer_err_source`: its
+survivors' own dev errors after the pass (`neuron`) or the dev loss of a
+head over them (`readout`). When growth stops, the output head is fitted
+over the last layer. `train.joint_sparsity` configures the penalty and the
+pass; `train.max_layer_count: 1` builds one layer.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `model.selection_mode` | str | `greedy` | `greedy`: grow the network layer by layer, keeping the best candidates of each. `joint`: one layer selected jointly, as above. `joint` needs `model.use_output_projection`, a regressor or multi-class model and no `model.use_layer_norm`, and does not resume a run. |
+| `model.selection_mode` | str | `greedy` | `greedy`: grow the network layer by layer, keeping the best candidates of each. `joint`: each layer's survivors selected jointly, as above. `joint` needs `model.use_output_projection`, a regressor or multi-class model and no `model.use_layer_norm`, and does not resume a run. |
 | `train.joint_sparsity.kind` | str | `gates` | `gates`: a hard-concrete gate on each neuron's output, with the expected number of open gates as the penalty (Louizos, Welling and Kingma, 2018). `group_lasso`: the sum over neurons of the L2 norm of each neuron's coefficients together with its column of the head. |
 | `train.joint_sparsity.beta` | float | 0.66 | `gates` only: temperature of the gate distribution. Must be positive. |
 | `train.joint_sparsity.gamma` | float | -0.1 | `gates` only: lower end of the interval the gate's sigmoid is stretched to before it is clamped to [0, 1]. Must be negative. |
@@ -209,8 +213,8 @@ the pass.
 | `train.joint_sparsity.count_margin` | float | 0.1 | How far above the target the active count may end, as a fraction of the target: the pass stops in [target, target × (1 + `count_margin`)] (rounded down). |
 | `train.joint_sparsity.count_patience` | int | 3 | Evaluations in a row the count must stay in that band, or below the target, before the pass stops or goes back. |
 | `train.joint_sparsity.prune_threshold` | float | 0.05 | A neuron counts as active while its deterministic gate (`gates`), or the norm of its head column over the norm it started the pass with (`group_lasso`), is above this. When the pass ends the others are removed. If more remain active than the head reads, the ones kept move the prediction most: the largest norm of their head column times the standard deviation of their output on dev. |
-| `train.joint_sparsity.prefilter` | str | `omp_mixed` | Which of the candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `omp_mixed` or `omp` the `prefilter_mult` × head width chosen by that selection method (see `train.neuron_selection_method`). |
-| `train.joint_sparsity.prefilter_mult` | float | 10.0 | Pool size as a multiple of the head's width, for a `prefilter` other than `none`. At least 1. |
+| `train.joint_sparsity.prefilter` | str | `omp_mixed` | Which of a layer's candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `omp_mixed` or `omp` the `prefilter_mult` × `model.nbest_neurons` chosen by that selection method (see `train.neuron_selection_method`). |
+| `train.joint_sparsity.prefilter_mult` | float | 10.0 | Pool size as a multiple of `model.nbest_neurons`, for a `prefilter` other than `none`. At least 1. |
 | `train.joint_sparsity.lr` | float | 0.001 | AdamW learning rate of the pool's parameters and the head. |
 | `train.joint_sparsity.gate_lr` | float | 0.01 | AdamW learning rate of the gates. It sets how fast a gate can close. |
 | `train.joint_sparsity.weight_decay` | float | 1e-4 | AdamW weight decay of the pool's parameters and the head; the gates have none. |

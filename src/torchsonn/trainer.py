@@ -499,9 +499,10 @@ class _CountControl:
 
 
 class _JointPool:
-    """The pool of the joint selection mode (`Trainer.train_joint`).
+    """One layer's pool in the joint selection mode (`Trainer.train_joint`).
 
-    The model's single trained layer of candidate neurons and a linear head
+    The layer being built (the model's last; the earlier layers are frozen,
+    and the pool reads the layer's input, computed once) and a linear head
     over all of its columns, in the layer's column order. Each column is
     standardized with fixed statistics of the training split, (output -
     `center`) * `scale`, before the head, so the head's weights compare the
@@ -520,6 +521,7 @@ class _JointPool:
                  js: Any) -> None:
         self.model = model
         self.layer = model.layers[-1]
+        self.clamp = float(model.param.model.output_clamp_value)
         self.head = head
         self.center = center
         self.scale = scale
@@ -542,9 +544,9 @@ class _JointPool:
         return int(self.head.in_features)
 
     def tensors(self) -> list[torch.Tensor]:
-        """Everything the pass trains: the model's parameters, the head and the gates."""
+        """Everything the pass trains: the layer's parameters, the head and the gates."""
         gate = [self.gate.log_alpha] if self.gate is not None else []
-        return list(self.model.parameters()) + list(self.head.parameters()) + gate
+        return list(self.layer.parameters()) + list(self.head.parameters()) + gate
 
     @torch.no_grad()
     def state(self) -> list[torch.Tensor]:
@@ -587,10 +589,15 @@ class _JointPool:
         """The deterministic gates, or None without gates."""
         return self.gate.deterministic() if self.gate is not None else None
 
-    def predict(self, x: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
-        """The pool's prediction, shaped like `SONN.infer`'s: (B,) for a
-        regressor, (B, C) log-probabilities for a multi-class model."""
-        u = (self.model(x) - self.center) * self.scale
+    def outputs(self, x_in: torch.Tensor) -> torch.Tensor:
+        """The layer's (clamped) outputs on its input `x_in`, as `SONN.forward` computes them."""
+        return torch.clamp(self.layer(x_in), -self.clamp, self.clamp)
+
+    def predict(self, x_in: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
+        """The pool's prediction from the layer's input, shaped like
+        `SONN.infer`'s: (B,) for a regressor, (B, C) log-probabilities for a
+        multi-class model."""
+        u = (self.outputs(x_in) - self.center) * self.scale
         if z is not None:
             u = u * z
         out = self.head(u)
@@ -1294,8 +1301,8 @@ class Trainer:
         in the run folder. The output head and the end-to-end fine-tune are
         separate steps (`train_out_proj`, `train_finetune`).
 
-        With `model.selection_mode: joint` the network is a single layer
-        built by `train_joint` instead.
+        With `model.selection_mode: joint` each layer's survivors are
+        selected jointly instead, by `train_joint`.
 
         Parameters
         ----------
@@ -1456,12 +1463,15 @@ class Trainer:
             checkpoint_data: dict[str, Any] | None,
             nbest: int | None = None,
             selection_method: str | None = None,
+            joint_pool: bool = False,
     ) -> None:
         """Calculate neuron weights
 
         `nbest` and `selection_method` override `model.nbest_neurons` and
         `train.neuron_selection_method` for this layer's selection; the
-        joint selection mode uses them to keep its pool.
+        joint selection mode uses them to keep its pool. `joint_pool` skips
+        the per-layer fine-tune and the readout head (`layer_finetune`,
+        `layer_err_source: readout`): the joint pass takes their place.
         """
 
         accumulator = LayerAccumulator()
@@ -1683,7 +1693,9 @@ class Trainer:
         # error above describes survivors the fine-tune has just turned into a
         # basis (individually worse, jointly better).
         readout_err: float | None = None
-        if model.param.train.layer_finetune:
+        if joint_pool:
+            pass
+        elif model.param.train.layer_finetune:
             readout_err = self._train_layer_finetune(model, layer, train_dl, dev_dl)
         elif model.param.train.layer_err_source == "readout":
             # No fine-tune: fit the temporary head over the frozen survivors,
@@ -3449,42 +3461,48 @@ class Trainer:
 
     def train_joint(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader,
                     verbose: bool = True, val_dl: DataLoader | None = None) -> SONN:
-        """Build the network as one layer whose neurons are selected jointly.
+        """Grow the network with neurons selected jointly at every layer.
 
         The joint selection mode (`model.selection_mode: joint`, called by
-        `train`). Instead of keeping the candidates that score best on their
-        own, it trains a pool of candidates and the output head together and
-        lets a sparsity penalty remove whole neurons:
+        `train`). A greedy layer keeps the candidates that score best on
+        their own; here each layer keeps the ones a sparsity penalty leaves
+        when a pool of candidates is trained together with a head
+        (`_train_joint_layer`):
 
-        1. The first layer's candidates are created and fitted on their own,
-           as `train_layer` does for a greedy layer. Those fits are the
-           pool's starting weights; `train.joint_sparsity.prefilter` decides
-           how many enter the pool (all finite ones, or prefilter_mult x the
-           head's width by a selection method).
-        2. A head over the whole pool is fitted with the neurons frozen
-           (`train_out_proj`).
-        3. Pool, head and, under 'gates', the gates are trained together on
-           the training split with loss = data loss + lam * penalty
-           (`train.joint_sparsity`). Every `eval_interval` steps the log
-           shows lam, both terms, the loss on dev (or the validation split
-           under `train.stop_source: val`) and the number of active neurons.
-           Under `lam_control` 'anneal' / 'adaptive' lam is steered toward
-           the target, the head's width (`model.num_out_neurons`, by default
-           `model.nbest_neurons`): the pass stops once the count holds just
-           above it, and rolls back to the closest state from above if the
-           count falls below it (`_CountControl`).
-        4. The active neurons are kept, at most as many as the head reads;
-           if more remain, the ones contributing most to the prediction (the
+        1. The layer's candidates are created, calibrated and fitted on
+           their own, as `train_layer` does for a greedy layer. Those fits
+           are the pool's starting weights; `train.joint_sparsity.prefilter`
+           decides how many enter the pool (all finite ones, or
+           prefilter_mult x `nbest_neurons` by a selection method).
+        2. A temporary head over the whole pool is fitted with the neurons
+           frozen (`train_out_proj`).
+        3. The layer, the head and, under 'gates', the gates are trained
+           together on the training split with loss = data loss + lam *
+           penalty (`train.joint_sparsity`); the earlier layers are frozen
+           and the layer's input is computed once. Every `eval_interval`
+           steps the log shows lam, both terms, the loss on dev (or the
+           validation split under `train.stop_source: val`) and the number
+           of active neurons. Under `lam_control` 'anneal' / 'adaptive' lam
+           is steered toward `nbest_neurons`: the pass stops once the count
+           holds just above it, and rolls back to the closest state from
+           above if the count falls below it (`_CountControl`).
+        4. The layer is cut to `nbest_neurons` of the active neurons (if
+           more remain, the ones contributing most to the prediction: the
            norm of their head column times the standard deviation of their
-           gated, scaled output on dev). The layer is cut to them, the scale
-           and the deterministic gates are folded into the head's weights,
-           the head is rebuilt at its configured width and refitted over the
-           survivors (`train_out_proj`).
+           gated, scaled output on dev). Gates and head are discarded: the
+           next layer reads the survivors' own outputs. The survivors'
+           `err_values` become their own dev errors after the pass.
 
-        The model is then an ordinary one-layer SONN with a head, saved as
-        `model_last.ckpt`; `train_finetune` polishes it like any other.
-        Survivors keep the dev errors of their own fits as `err_values`,
-        which order the head's inputs.
+        Each layer then gets an error for the growth rule, as greedy layers
+        do (`GrowthCriterion`, `train.criterion_minimum_width`,
+        `stop_train_min_delta`, `max_layer_count`), by
+        `train.layer_err_source`: 'neuron' scores its survivors' own dev
+        errors after the pass (reduced by `layer_err_criterion`), 'readout'
+        the dev loss of a head refitted over them. Both are logged. When
+        growth stops, the layers after the best one are dropped, and the
+        model's head (`num_out_neurons` wide) is fitted over the last layer
+        (`train_out_proj`). The model is saved as `model_last.ckpt`;
+        `train_finetune` polishes it like any other.
 
         Parameters
         ----------
@@ -3492,104 +3510,189 @@ class Trainer:
             The model to train. Its existing layers are discarded.
         train_dl, dev_dl : DataLoader
             Training split (all fits) and dev split (candidate selection,
-            the head fit's early stop and the pass's log).
+            the heads' early stop, the pass's log and the layer error).
         verbose : bool
-            Log the time the candidate fits take, and show progress bars.
+            Log the time each layer takes, and show progress bars.
         val_dl : DataLoader, optional
-            Validation split; under `train.stop_source: val` the pass's log
-            reports the loss on it instead of dev.
+            Validation split: its layer error is logged, and under
+            `train.stop_source: val` it drives the growth rule and the pass's
+            log instead of dev.
 
         Returns
         -------
         model : SONN
             The trained model (the same object).
         """
-        js = model.param.train.joint_sparsity
         if model.out_proj is None:
             raise ValueError("model.selection_mode='joint' needs model.use_output_projection=true")
         head_width = int(model.out_proj.in_features)
         n_out = int(model.out_proj.out_features)
-        stop_split = "val" if self._stop_source(val_dl) == "val" else "dev"
+        seed = int(model.param.train.seed)
+        stop_source = self._stop_source(val_dl)
+        stop_split = "val" if stop_source == "val" else "dev"
         stop_dl = val_dl if stop_split == "val" else dev_dl
+        source = str(model.param.train.layer_err_source)
+        crit = model.param.train.layer_err_criterion
+        growth = GrowthCriterion(
+            width=int(model.param.train.criterion_minimum_width),
+            epsilon=float(model.param.train.stop_train_epsilon_condition),
+            min_delta=float(getattr(model.param.train, "stop_train_min_delta", 0.0)),
+        )
 
         model.layers = nn.ModuleList()
         model.layer_val_err = []
-        layer = model.create_layer(0)
-        model.layers.append(layer)
-        self.fit_layer_inputs(model, layer, train_dl)
+        model.out_proj = None
+        while True:
+            layer_index = len(model.layers)
+            layer = model.create_layer(layer_index)
+            model.layers.append(layer)
+            self.fit_layer_inputs(model, layer, train_dl)
+            with timed_block(f"train joint layer #{layer_index}", verbose=verbose):
+                self._train_joint_layer(model, layer, train_dl, dev_dl, stop_dl, stop_split, n_out, verbose)
+
+            neuron_err = (layer.err_values.min() if crit == "top" else layer.err_values.mean()).item()
+            readout = self._joint_readout(model, train_dl, [dev_dl] + ([val_dl] if val_dl is not None else []),
+                                          dev_dl, n_out)
+            model.out_proj = None
+            layer.err = readout[0] if source == "readout" else neuron_err
+            logger.info(f"Joint layer #{layer_index}: dev loss of a head over the survivors {fmt_err(readout[0])}; "
+                        f"best survivor's own dev error {fmt_err(neuron_err)}; layer error ({source}) "
+                        f"{fmt_err(layer.err)}")
+            stop_err = layer.err
+            if val_dl is not None:
+                val_err = readout[1] if source == "readout" else self._layer_val_err(model, layer, val_dl)
+                layer.val_err = val_err
+                model.layer_val_err.append(val_err)
+                logger.info(f"Joint layer #{layer_index}: dev {fmt_err(layer.err)} | val {fmt_err(val_err)}")
+                if stop_source == "val":
+                    stop_err = val_err
+            stopped = growth.update(layer_index, stop_err)
+            logger.info(growth.describe(layer_index, stop_err))
+            logger.info(f"Layer errors: {abbrev_floats([l.err for l in model.layers], fmt=fmt_err)}")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if stopped or not (layer_index < model.param.train.max_layer_count - 1):
+                break
+
+        best = growth.best_index
+        model.layer_err.clear()
+        model.layer_err.extend(l.err for l in model.layers)
+        for layer_idx in range(best + 1, len(model.layers)):
+            self.cleanup_layer_checkpoints(layer_idx)
+        del model.layers[best + 1:]
+        for layer in model.layers:
+            layer.set_neuron_module()
+
+        model.out_proj = _linear_from_seed(head_width, n_out, seed).to(device=model.device)
+        self.train_out_proj(model, train_dl, dev_dl)
+        logger.info(f"joint selection: {len(model.layers)} layer(s) kept; {stop_split} loss of the "
+                    f"{head_width}-wide head {self._mean_loss(model, stop_dl, model.infer):.4f}")
+        self.save_model_checkpoint(model)
+        return model
+
+    def _train_joint_layer(self, model: SONN, layer: SONNLayer, train_dl: DataLoader, dev_dl: DataLoader,
+                           stop_dl: DataLoader, stop_split: str, n_out: int, verbose: bool) -> None:
+        """Steps 1-4 of `train_joint` for the model's last layer: candidate
+        fits and screen, the pool head, the joint pass, the cut to
+        `nbest_neurons` and the survivors' own errors after the pass."""
+        js = model.param.train.joint_sparsity
+        target = int(model.nbest_neurons)
+        device = model.device
         n_candidates = len(layer)
         if str(js.prefilter) == "none":
             pool_size, method = n_candidates, "plain"
             screen = "every finite fit"
         else:
-            pool_size = min(n_candidates, max(head_width, math.ceil(float(js.prefilter_mult) * head_width)))
+            pool_size = min(n_candidates, max(target, math.ceil(float(js.prefilter_mult) * target)))
             method = str(js.prefilter)
             screen = f"up to {pool_size} by {method}"
-        with timed_block("joint pool: candidate fits", verbose=verbose):
-            self.train_layer(model, layer, train_dl, dev_dl, None, nbest=pool_size, selection_method=method)
-        logger.info(f"joint pool: {len(layer)} of {n_candidates} candidates ({screen}); "
-                    f"the head reads {head_width}")
+        self.train_layer(model, layer, train_dl, dev_dl, None, nbest=pool_size, selection_method=method,
+                         joint_pool=True)
+        logger.info(f"joint layer #{layer.layer_index}: pool of {len(layer)} of {n_candidates} candidates "
+                    f"({screen}); keeping {target}")
+        own_before = layer.err_values.clone()
 
         # A head over the whole pool, fitted over the frozen candidates.
-        model.out_proj = _linear_from_seed(len(layer), n_out, int(model.param.train.seed)).to(device=model.device)
+        model.out_proj = _linear_from_seed(len(layer), n_out, int(model.param.train.seed)).to(device=device)
         self.train_out_proj(model, train_dl, dev_dl)
-        pool = self._joint_pool(model, train_dl, js)
+        # The layer's input does not change during the pass: compute it once.
+        train_in = self._precompute_dl(model, train_dl, device)
+        stop_in = self._precompute_dl(model, stop_dl, device)
+        pool = self._joint_pool(model, train_in, js)
         model.out_proj = None
 
-        if pool.size <= head_width and str(js.lam_control) != "fixed":
-            logger.info(f"joint pool: {pool.size} neurons, no more than the head reads; "
+        if pool.size <= target and str(js.lam_control) != "fixed":
+            logger.info(f"joint layer #{layer.layer_index}: {pool.size} neurons, no more than it keeps; "
                         "nothing to select, so no pass")
         else:
-            self._sparsify_joint_pool(model, pool, train_dl, stop_dl, stop_split, head_width, verbose)
+            self._sparsify_joint_pool(model, pool, train_in, stop_in, stop_split, target, verbose)
         pool.eval()
-        before = self._mean_loss(model, stop_dl, lambda x: pool.predict(x, pool.eval_gates()))
-        keep = self._joint_survivors(pool, head_width, stop_dl)
-        self._fold_joint_pool(model, pool, keep, head_width)
-        cut = self._mean_loss(model, stop_dl, model.infer)
-        # The pass trained the head over every neuron; the survivors alone
-        # need their own combination (a cut without a refit can be far off).
+        keep = self._joint_survivors(pool, target, stop_in)
+        self._keep_columns(layer, keep)
+        layer.d_model = len(layer)
+        before = own_before[keep.to(own_before.device)]
+        layer.err_values = self._own_errors(model, layer, dev_dl)
+        logger.info(f"joint layer #{layer.layer_index}: kept {len(layer)} of {pool.size}; survivors' own dev "
+                    f"error before the pass min {fmt_err(before.min().item())} / median "
+                    f"{fmt_err(before.median().item())}, after min {fmt_err(layer.err_values.min().item())} / "
+                    f"median {fmt_err(layer.err_values.median().item())}")
+
+    def _own_errors(self, model: SONN, layer: SONNLayer, dl: DataLoader) -> torch.Tensor:
+        """Each neuron's own error on `dl` by the regularity criterion (the
+        dev error a 'validate' selection ranks candidates by), in column order."""
+        device = model.device
+        errs = []
+        model.eval()
+        with torch.no_grad():
+            for module in layer.neuron_models:
+                _, _, pred_fn, params, buffers, _ = self.create_loss_functions(model, module)
+                errs.append(self.regularity_err(model, pred_fn, params, buffers, dl, device).detach())
+        return torch.cat(errs).to(device=layer.module_idxs.device)
+
+    def _joint_readout(self, model: SONN, train_dl: DataLoader, dls: list[DataLoader], dev_dl: DataLoader,
+                       n_out: int) -> list[float]:
+        """Loss on each loader of a head fitted over every neuron of the last
+        layer (`train_out_proj`, early stop on `dev_dl`). Leaves the head in
+        `model.out_proj`."""
+        model.out_proj = _linear_from_seed(len(model.layers[-1]), n_out,
+                                           int(model.param.train.seed)).to(device=model.device)
         self.train_out_proj(model, train_dl, dev_dl)
-        refit = self._mean_loss(model, stop_dl, model.infer)
-        logger.info(f"joint selection: kept {len(layer)} of {pool.size} neurons (head width {head_width}); "
-                    f"{stop_split} loss {before:.4f} with every neuron, {cut:.4f} after the cut, "
-                    f"{refit:.4f} with the head refitted")
+        model.eval()
+        return [self._mean_loss(model, dl, model.infer) for dl in dls]
 
-        layer.set_neuron_module()
-        model.layer_err.clear()
-        model.layer_err.append(layer.err)
-        self.save_model_checkpoint(model)
-        return model
-
-    def _mean_loss(self, model: SONN, dl: DataLoader, predict: Callable[[torch.Tensor], torch.Tensor]) -> float:
-        """Mean over the loader's batches of the model's loss of `predict(x)`."""
+    def _mean_loss(self, model: SONN, dl: DataLoader, predict: Callable[[torch.Tensor], torch.Tensor],
+                   callback: bool = True) -> float:
+        """Mean over the loader's batches of the model's loss of `predict(x)`.
+        `callback=False` for a loader of precomputed features."""
         device = model.device
         total = 0.0
         with torch.no_grad():
             for batch in dl:
-                x, y = self.batch_callback(batch) if self.batch_callback else batch
+                x, y = self.batch_callback(batch) if (callback and self.batch_callback) else batch
                 total += model.loss_fn(predict(x.to(device=device)), y.to(device=device)).mean().item()
         return total / len(dl)
 
-    def _joint_pool(self, model: SONN, train_dl: DataLoader, js: Any) -> _JointPool:
-        """The pool over the model's trained layer and its fitted wide head.
+    def _joint_pool(self, model: SONN, train_in: DataLoader, js: Any) -> _JointPool:
+        """The pool over the model's last layer and its fitted wide head.
 
         Measures each column's mean and standard deviation on the training
-        split and moves the head's weights into the layer's column order (the
-        fitted head reads the columns in ascending-error order), rescaled to
-        the standardized columns, with the means moved into the bias, so the
-        prediction is unchanged.
+        split (`train_in`: the layer's input, precomputed) and moves the
+        head's weights into the layer's column order (the fitted head reads
+        the columns in ascending-error order), rescaled to the standardized
+        columns, with the means moved into the bias, so the prediction is
+        unchanged.
         """
         layer = model.layers[-1]
         k = len(layer)
         device = model.device
+        clamp = float(model.param.model.output_clamp_value)
         n = 0
         s1 = torch.zeros(k, dtype=torch.float64, device=device)
         s2 = torch.zeros(k, dtype=torch.float64, device=device)
         model.eval()
         with torch.inference_mode():
-            for batch in train_dl:
-                x, _ = self.batch_callback(batch) if self.batch_callback else batch
-                out = model(x.to(device=device)).double()
+            for x_in, _ in train_in:
+                out = torch.clamp(layer(x_in.to(device=device)), -clamp, clamp).double()
                 s1 += out.sum(dim=0)
                 s2 += (out * out).sum(dim=0)
                 n += out.shape[0]
@@ -3611,12 +3714,14 @@ class Trainer:
             head.bias.copy_(model.out_proj.bias + w @ center[cols])
         return _JointPool(model, head, center, scale, js)
 
-    def _sparsify_joint_pool(self, model: SONN, pool: _JointPool, train_dl: DataLoader,
-                             stop_dl: DataLoader, stop_split: str, target: int, verbose: bool) -> None:
+    def _sparsify_joint_pool(self, model: SONN, pool: _JointPool, train_in: DataLoader,
+                             stop_in: DataLoader, stop_split: str, target: int, verbose: bool) -> None:
         """Train the pool, the head and the gates together under the sparsity penalty.
 
-        AdamW over every parameter of the model and the head (`lr`,
-        `weight_decay`) and over the gates (`gate_lr`, no decay), for at most
+        `train_in` / `stop_in` hold the layer's input, precomputed: the
+        earlier layers are frozen. AdamW over the layer's parameters and the
+        head (`lr`, `weight_decay`) and over the gates (`gate_lr`, no
+        decay), for at most
         `max_steps` steps. lam rises linearly from 0 over the first
         `lam_warmup_frac` of the steps, then follows `lam_control` against
         `target` (`_CountControl`), which can also stop the pass early or
@@ -3631,15 +3736,15 @@ class Trainer:
         """
         js = model.param.train.joint_sparsity
         device = model.device
-        for p in model.parameters():
+        for p in pool.layer.parameters():
             p.requires_grad_(True)
-        param_groups = [{"params": list(model.parameters()) + list(pool.head.parameters()),
+        param_groups = [{"params": list(pool.layer.parameters()) + list(pool.head.parameters()),
                          "lr": float(js.lr), "weight_decay": float(js.weight_decay)}]
         if pool.gate is not None:
             param_groups.append({"params": [pool.gate.log_alpha], "lr": float(js.gate_lr), "weight_decay": 0.0})
         opt = torch.optim.AdamW(param_groups)
         generator = torch.Generator(device=device).manual_seed(int(model.param.train.seed))
-        batches, _ = _finetune_batches(train_dl, device, "false", self.batch_callback)
+        batches, _ = _finetune_batches(train_in, device, "auto", None)
 
         max_steps = int(js.max_steps)
         eval_interval = int(js.eval_interval)
@@ -3657,7 +3762,8 @@ class Trainer:
 
         steer = "" if control.mode == "fixed" else (
             f", steered to {control.target}-{control.hi} active ({control.mode}, x{control.lam_step:g} per evaluation)")
-        logger.info(f"joint pass: {js.kind}, lam {lam_max:g} (warm-up {int(warmup)} steps){steer}, "
+        logger.info(f"joint pass, layer #{pool.layer.layer_index}: {js.kind}, lam {lam_max:g} "
+                    f"(warm-up {int(warmup)} steps){steer}, "
                     f"{pool.size} neurons, at most {max_steps} steps")
         tbar = tqdm(total=max_steps, desc="joint", file=sys.stdout, ncols=140,
                     disable=not (verbose and model.param.train.verbose))
@@ -3683,7 +3789,8 @@ class Trainer:
                 continue
 
             pool.eval()
-            val_loss = self._mean_loss(model, stop_dl, lambda v: pool.predict(v, pool.eval_gates()))
+            val_loss = self._mean_loss(model, stop_in, lambda v: pool.predict(v, pool.eval_gates()),
+                                       callback=False)
             with torch.no_grad():
                 penalty = float(pool.penalty())
             active = int((pool.importance() > threshold).sum())
@@ -3718,17 +3825,15 @@ class Trainer:
     @torch.no_grad()
     def _joint_contribution(self, pool: _JointPool, dl: DataLoader) -> torch.Tensor:
         """How much each pool neuron moves the prediction: the norm of its head
-        column times the standard deviation, over the loader, of its scaled
-        and (deterministically) gated output."""
-        model = pool.model
-        device = model.device
+        column times the standard deviation, over the loader (the layer's
+        input, precomputed), of its scaled and (deterministically) gated output."""
+        device = pool.model.device
         z = pool.eval_gates()
         n = 0
         s1 = torch.zeros(pool.size, dtype=torch.float64, device=device)
         s2 = torch.zeros(pool.size, dtype=torch.float64, device=device)
-        for batch in dl:
-            x, _ = self.batch_callback(batch) if self.batch_callback else batch
-            u = (model(x.to(device=device)) - pool.center) * pool.scale
+        for x_in, _ in dl:
+            u = (pool.outputs(x_in.to(device=device)) - pool.center) * pool.scale
             if z is not None:
                 u = u * z
             u = u.double()
@@ -3740,11 +3845,11 @@ class Trainer:
         return pool.head.weight.detach().double().norm(dim=0) * std
 
     @torch.no_grad()
-    def _joint_survivors(self, pool: _JointPool, head_width: int, dl: DataLoader) -> torch.Tensor:
+    def _joint_survivors(self, pool: _JointPool, target: int, dl: DataLoader) -> torch.Tensor:
         """The pool columns to keep, sorted: the active neurons, cut to the
-        `head_width` with the largest contribution on `dl` when there are
-        more (`_joint_contribution`), and the most important one when none
-        is active."""
+        `target` with the largest contribution on `dl` when there are more
+        (`_joint_contribution`), and the most important one when none is
+        active."""
         threshold = float(pool.model.param.train.joint_sparsity.prune_threshold)
         imp = pool.importance()
         keep = (imp > threshold).nonzero().squeeze(1)
@@ -3752,40 +3857,15 @@ class Trainer:
             logger.warning(f"joint selection: no neuron is active (threshold {threshold}); "
                            "keeping the most important one")
             keep = imp.argmax().view(1)
-        if keep.numel() > head_width:
+        if keep.numel() > target:
             contrib = self._joint_contribution(pool, dl)[keep]
             order = torch.argsort(contrib, descending=True, stable=True)
-            logger.info(f"joint selection: {keep.numel()} active neurons, more than the head reads; "
-                        f"keeping the {head_width} with the largest contribution (head weight x output std "
-                        f"on dev: kept >= {float(contrib[order[head_width - 1]]):.4g}, "
-                        f"cut <= {float(contrib[order[head_width]]):.4g})")
-            keep = keep[order[:head_width]]
+            logger.info(f"joint selection: {keep.numel()} active neurons, more than the layer keeps; "
+                        f"keeping the {target} with the largest contribution (head weight x output std "
+                        f"on dev: kept >= {float(contrib[order[target - 1]]):.4g}, "
+                        f"cut <= {float(contrib[order[target]]):.4g})")
+            keep = keep[order[:target]]
         return keep.sort().values
-
-    @torch.no_grad()
-    def _fold_joint_pool(self, model: SONN, pool: _JointPool, keep: torch.Tensor, head_width: int) -> None:
-        """Cut the layer to the columns `keep` and give the model a head of
-        width `head_width` over them, with the standardization and the
-        deterministic gates folded into its weights and bias (zero weights on
-        the inputs no neuron fills). A removed neuron takes its deviation from
-        its mean with it; its mean stays in the bias."""
-        layer = pool.layer
-        factor = pool.scale if pool.gate is None else pool.scale * pool.gate.deterministic()
-        weight = pool.head.weight * factor
-        bias = pool.head.bias - weight[:, keep] @ pool.center[keep]
-        self._keep_columns(layer, keep)
-        layer.d_model = len(layer)
-        crit = model.param.train.layer_err_criterion
-        layer.err = (layer.err_values.min() if crit == "top" else layer.err_values.mean()).item()
-        # Kept column q of the cut layer is pool column keep[q]; the head
-        # reads the cut layer's columns in the order infer() derives.
-        new_cols = torch.as_tensor(model._best_neuron_columns(layer, len(layer)), dtype=torch.long,
-                                   device=keep.device)
-        head = _linear_from_seed(head_width, weight.shape[0], int(model.param.train.seed)).to(device=weight.device)
-        head.weight.zero_()
-        head.weight[:, :new_cols.numel()] = weight[:, keep[new_cols]]
-        head.bias.copy_(bias)
-        model.out_proj = head
 
     def _train_layer_finetune(
             self,

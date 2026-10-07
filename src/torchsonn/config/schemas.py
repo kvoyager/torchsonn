@@ -267,11 +267,15 @@ class ModelConfig:
     # How Trainer.train builds the network:
     #   'greedy' - layer by layer: fit every candidate neuron on its own and
     #              keep the best `nbest_neurons` (GMDH).
-    #   'joint'  - one layer: fit the candidates on their own, put a pool of
-    #              them under one output head, train pool and head together
-    #              with the sparsity penalty of `train.joint_sparsity`, and
-    #              keep the neurons it leaves, at most as many as the head
-    #              reads (`num_out_neurons`). Needs `use_output_projection`.
+    #   'joint'  - layer by layer too, but each layer keeps the neurons a
+    #              sparsity penalty leaves: fit the candidates on their own,
+    #              put a pool of them under a temporary head, train the layer,
+    #              head and gates together with the penalty of
+    #              `train.joint_sparsity` (earlier layers frozen), and keep
+    #              `nbest_neurons` of the neurons left. Same growth rule as
+    #              greedy; `layer_err_source` scores a layer by its survivors'
+    #              own dev errors after the pass ('neuron') or by a head over
+    #              them ('readout'). Needs `use_output_projection`.
     selection_mode: str = "greedy"
 
     # Required by the caller (tutorial YAMLs override). Left as Optional so

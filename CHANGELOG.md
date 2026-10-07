@@ -2,37 +2,45 @@
 
 ## Unreleased
 
-### Added — `model.selection_mode: joint`: a layer selected jointly under a sparsity penalty
+### Added — `model.selection_mode: joint`: layers selected jointly under a sparsity penalty
 
 A greedy layer fits every candidate neuron on its own and keeps the
 `nbest_neurons` that score best alone, so it cannot choose neurons for how
 they work together. With `model.selection_mode: joint`, `Trainer.train`
-calls the new `Trainer.train_joint`, which builds one layer differently:
+calls the new `Trainer.train_joint`, which grows the network layer by layer
+with the same growth rule but chooses each layer's survivors differently:
 the candidates are fitted on their own as before, a pool of them
 (`train.joint_sparsity.prefilter`: every finite fit, or `prefilter_mult` ×
-the head's width by a selection method) gets a head over all of them, and
-pool, head and gates are trained together with a penalty that removes whole
-neurons (`kind: gates`, hard-concrete gates with an expected-L0 penalty, or
-`kind: group_lasso`, each neuron's coefficients and head column as one
-group). The neurons left active are kept, at most as
-many as the head reads, the gates and the pool's column standardization
-(fixed training-split mean and standard deviation, so a gate scales a
-neuron's deviation from its mean rather than the level every candidate
-shares) are folded into the head, and the head is refitted over them.
+`nbest_neurons` by a selection method) gets a temporary head over all of
+them, and the layer, head and gates are trained together with a penalty
+that removes whole neurons (`kind: gates`, hard-concrete gates with an
+expected-L0 penalty, or `kind: group_lasso`, each neuron's coefficients and
+head column as one group). The earlier layers stay frozen, and the layer's
+input is computed once. The pool's columns are standardized with fixed
+training-split statistics before the gates, so a gate scales a neuron's
+deviation from its mean rather than the level every candidate shares. The
+layer is cut to `nbest_neurons` of the neurons left; head and gates are
+discarded, and the next layer reads the survivors' own outputs. The growth
+rule scores a layer by `train.layer_err_source`: its survivors' own dev
+errors after the pass (`neuron`, which become their `err_values`) or the
+dev loss of a head refitted over them (`readout`); the log has both, and
+the survivors' own errors before and after the pass. When growth stops the
+output head is fitted over the last layer.
 
 The number of neurons a penalty leaves depends on its weight only
 indirectly, and a closed neuron does not come back, so by default
-(`lam_control: adaptive`) `lam` is steered toward the head's width: it grows
+(`lam_control: adaptive`) `lam` is steered toward `nbest_neurons`: it grows
 by `lam_step` at an evaluation while the active count is above target × (1 +
-`count_margin`) and neither the count nor the penalty is falling, shrinks while it is below the target, and
+`count_margin`) and neither the count nor the penalty is falling, shrinks
+while it is below the target, and
 the pass stops once the count has held in that band for `count_patience`
 evaluations. The pass keeps a copy of the state with the fewest active
 neurons not below the target and goes back to it if the count falls through
 (`anneal` never lowers `lam`; `fixed` keeps it constant for a sparsity
-sweep). Active neurons beyond the head's width are cut by their
-contribution to the prediction, the norm of their head column times the
-standard deviation of their output on dev. The result is an ordinary
-one-layer model with a head; `train_finetune` polishes it as usual. The
+sweep). Active neurons beyond `nbest_neurons` are cut by their contribution
+to the prediction, the norm of their head column times the standard
+deviation of their output on dev. The result is an ordinary SONN with a
+head; `train_finetune` polishes it as usual. The
 log reports `lam`, the data loss and the penalty, the dev loss and the
 number of active neurons every `eval_interval` steps. `selection_mode:
 greedy`, the default, trains exactly as before.
