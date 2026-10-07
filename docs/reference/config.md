@@ -185,16 +185,31 @@ the optimizers differ and two keys only matter here.
 
 ## Joint selection
 
-`train.joint_sparsity` sets the sparsity penalty that removes whole neurons
-from a pool trained together with the output head.
+With `model.selection_mode: joint`, `Trainer.train` builds a single layer:
+it fits the candidates on their own, trains a pool of them together with
+the output head under a sparsity penalty that removes whole neurons, cuts
+the layer to the neurons left, at most `model.num_out_neurons` (by default
+`model.nbest_neurons`), and refits the head over them. `train.joint_sparsity`
+configures the penalty and the pass.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `model.selection_mode` | str | `greedy` | `greedy`: grow the network layer by layer, keeping the best candidates of each. `joint`: one layer selected jointly, as above. `joint` needs `model.use_output_projection`, a regressor or multi-class model and no `model.use_layer_norm`, and does not resume a run. |
 | `train.joint_sparsity.kind` | str | `gates` | `gates`: a hard-concrete gate on each neuron's output, with the expected number of open gates as the penalty (Louizos, Welling and Kingma, 2018). `group_lasso`: the sum over neurons of the L2 norm of each neuron's parameters, with the proximal step that sets whole neurons to zero. |
 | `train.joint_sparsity.beta` | float | 0.66 | `gates` only: temperature of the gate distribution. Must be positive. |
 | `train.joint_sparsity.gamma` | float | -0.1 | `gates` only: lower end of the interval the gate's sigmoid is stretched to before it is clamped to [0, 1]. Must be negative. |
 | `train.joint_sparsity.zeta` | float | 1.1 | `gates` only: upper end of that interval. Must be above 1. |
 | `train.joint_sparsity.init_open` | float | 0.9 | `gates` only: starting probability of the gate's sigmoid sample, in (0, 1). At 0.9 every gate starts nearly open. |
+| `train.joint_sparsity.lam` | float | 0.001 | Weight of the penalty: the loss is the data loss plus `lam` times the expected number of open gates (`gates`), or the data loss followed by the proximal step with threshold `lam` × `lr` after every step (`group_lasso`). The two kinds need different values. |
+| `train.joint_sparsity.lam_warmup_frac` | float | 0.1 | `lam` rises linearly from 0 over this fraction of `max_steps`, so the pool fits before the penalty presses on it. |
+| `train.joint_sparsity.prune_threshold` | float | 0.05 | A neuron counts as active while its deterministic gate (`gates`), or its group norm over the norm it started the pass with (`group_lasso`), is above this. When the pass ends the others are removed, and the most important active ones are kept if more remain than the head reads. |
+| `train.joint_sparsity.prefilter` | str | `omp_mixed` | Which of the candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `omp_mixed` or `omp` the `prefilter_mult` × head width chosen by that selection method (see `train.neuron_selection_method`). |
+| `train.joint_sparsity.prefilter_mult` | float | 10.0 | Pool size as a multiple of the head's width, for a `prefilter` other than `none`. At least 1. |
+| `train.joint_sparsity.lr` | float | 0.001 | AdamW learning rate of the pool's parameters and the head. |
+| `train.joint_sparsity.gate_lr` | float | 0.01 | AdamW learning rate of the gates. It sets how fast a gate can close. |
+| `train.joint_sparsity.weight_decay` | float | 1e-4 | AdamW weight decay of the pool's parameters and the head; the gates have none. |
+| `train.joint_sparsity.max_steps` | int | 2000 | Steps of the pass. |
+| `train.joint_sparsity.eval_interval` | int | 25 | Every this many steps, log `lam`, the data loss and the penalty, the loss on dev (or the validation split under `train.stop_source: val`) and the number of active neurons. |
 
 ## Checkpoints
 

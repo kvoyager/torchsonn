@@ -164,6 +164,35 @@ class JointSparsityConfig:
     # 0.9 starts every gate nearly open (deterministic gate 0.98). 'gates' only.
     init_open: float = 0.9
 
+    # Weight of the penalty, lam in loss = data_loss + lam * penalty. The
+    # penalty is the expected number of open gates ('gates') or the sum of
+    # the neurons' group norms ('group_lasso', applied as the proximal step
+    # with threshold lam * lr after every optimizer step), so the two kinds
+    # want different values. It rises linearly from 0 over the first
+    # `lam_warmup_frac` of `max_steps`, so the pool fits before it is
+    # pressed to thin out.
+    lam: float = 1.0e-3
+    lam_warmup_frac: float = 0.1
+    # A neuron counts as active while its deterministic gate ('gates') or its
+    # group norm relative to the start of the pass ('group_lasso') is above
+    # this; the others are removed when the pass ends.
+    prune_threshold: float = 0.05
+    # Which candidates enter the pool. Every candidate of the layer is first
+    # fitted on its own, as a greedy layer does; those fits are the pool's
+    # starting weights. 'none' keeps every candidate whose fit is finite;
+    # 'plain', 'omp_mixed' and 'omp' keep prefilter_mult x the head's width,
+    # chosen by that train.neuron_selection_method.
+    prefilter: str = "omp_mixed"
+    prefilter_mult: float = 10.0
+    # The pass itself: AdamW over the pool's parameters and the head (lr,
+    # weight_decay) and the gates (gate_lr, no decay), max_steps steps, an
+    # evaluation on dev every eval_interval steps.
+    lr: float = 1.0e-3
+    gate_lr: float = 1.0e-2
+    weight_decay: float = 1.0e-4
+    max_steps: int = 2000
+    eval_interval: int = 25
+
 
 # ---------------------------------------------------------------------------
 # Model
@@ -214,6 +243,16 @@ class ModelConfig:
     # magnitude reached there. 'sigma' only. core_range must be in (0, 1).
     squash_n_sigma: float = 2.0
     squash_core_range: float = 0.75
+
+    # How Trainer.train builds the network:
+    #   'greedy' - layer by layer: fit every candidate neuron on its own and
+    #              keep the best `nbest_neurons` (GMDH).
+    #   'joint'  - one layer: fit the candidates on their own, put a pool of
+    #              them under one output head, train pool and head together
+    #              with the sparsity penalty of `train.joint_sparsity`, and
+    #              keep the neurons it leaves, at most as many as the head
+    #              reads (`num_out_neurons`). Needs `use_output_projection`.
+    selection_mode: str = "greedy"
 
     # Required by the caller (tutorial YAMLs override). Left as Optional so
     # the schema can still load with the library default before the caller

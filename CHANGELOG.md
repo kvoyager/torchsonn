@@ -2,21 +2,33 @@
 
 ## Unreleased
 
-### Added — hard-concrete gates, group lasso and `train.joint_sparsity`
+### Added — `model.selection_mode: joint`: a layer selected jointly under a sparsity penalty
 
-`torchsonn.modules` has the building blocks for removing whole neurons
-from a pool with a penalty. `HardConcreteGate` holds one gate per neuron in
-[0, 1]: it samples the stretched concrete gate in training (from the
-generator it is given, so seeded runs repeat), returns the deterministic
-gate in eval mode, and has the expected number of open gates,
-`expected_l0()`, as a differentiable penalty (Louizos, Welling and Kingma,
-2018). `group_lasso_penalty` sums the L2 norm of each neuron's parameters,
-spread over several tensors that share the neuron axis, and
-`group_soft_threshold` is its proximal step, which sets whole neurons to
-exactly zero. The new `train.joint_sparsity` section picks one of them
-(`kind`: `gates` or `group_lasso`) and holds the gate's shape (`beta`,
-`gamma`, `zeta`, `init_open`); the `Trainer` rejects values the gate
-cannot use. Nothing reads the section yet.
+A greedy layer fits every candidate neuron on its own and keeps the
+`nbest_neurons` that score best alone, so it cannot choose neurons for how
+they work together. With `model.selection_mode: joint`, `Trainer.train`
+calls the new `Trainer.train_joint`, which builds one layer differently:
+the candidates are fitted on their own as before, a pool of them
+(`train.joint_sparsity.prefilter`: every finite fit, or `prefilter_mult` ×
+the head's width by a selection method) gets a head over all of them, and
+pool, head and gates are trained together with a penalty that removes whole
+neurons (`kind: gates`, hard-concrete gates with an expected-L0 penalty, or
+`kind: group_lasso`, each neuron's coefficients and head column as one
+group with the proximal step). The neurons left active are kept, at most as
+many as the head reads, the gates and a per-column scale are folded into
+the head, and the head is refitted over them. The result is an ordinary
+one-layer model with a head; `train_finetune` polishes it as usual. The
+log reports `lam`, the data loss and the penalty, the dev loss and the
+number of active neurons every `eval_interval` steps. `selection_mode:
+greedy`, the default, trains exactly as before.
+
+The building blocks are in `torchsonn.modules`: `HardConcreteGate` (one
+gate per neuron, sampled from a given generator in training,
+deterministic in eval mode, `expected_l0()` as the penalty; Louizos,
+Welling and Kingma, 2018), `group_lasso_penalty` and its proximal step
+`group_soft_threshold`. `train_layer` and `neuron_selection` take optional
+`nbest` / `method` overrides, and `Trainer.prune` cuts a layer through the
+new `Trainer._keep_columns`, which the joint mode shares.
 
 ## 0.1.6
 
