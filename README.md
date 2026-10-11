@@ -89,8 +89,7 @@ the latest version tag. Install `main` with:
 pip install "git+https://github.com/kvoyager/torchsonn.git"
 ```
 
-The latest release on PyPI is 0.1.1, which does not have everything
-described here (the `rbf` neuron family, for example):
+The latest release on PyPI is 0.1.6:
 
 ```bash
 pip install torchsonn

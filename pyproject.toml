@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "torchsonn"
 version = "0.1.6"
-description = "Self-organizing neural network on PyTorch."
+description = "GPU self-organizing (GMDH) neural networks on PyTorch: polynomial, orthogonal, and RBF neurons with end-to-end fine-tuning."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
