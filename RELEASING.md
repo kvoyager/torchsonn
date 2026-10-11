@@ -20,9 +20,11 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
    `## X.Y.Z` section.
 2. Bump `version` in `pyproject.toml`. Releases bump the patch digit.
 3. Update the version the README and the docs state:
-   - the README citation's `version`;
+   - the README citation's `version`, the only version the README names
+     (PyPI shows the README as the project description, under a header
+     that carries the version);
    - `docs/getting-started/install.md`: "These pages describe version
-     X.Y.Z", "install X.Y.Z from GitHub", and the tag (`@vX.Y.Z`) in its
+     X.Y.Z, the latest release on PyPI", and the tag (`@vX.Y.Z`) in its
      two GitHub install commands, so a reader of the published pages
      installs the version they describe.
 
@@ -36,7 +38,12 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
    mkdocs build --strict
    ```
 
-5. Commit as `release: X.Y.Z`, then push the branch and the tag:
+   `tests/test_readme.py` fails on what breaks the README on PyPI but not
+   on GitHub: a relative link or image, a Mermaid block, a `$` outside
+   code.
+5. Commit everything the release changes as `release: X.Y.Z`, then push
+   the branch and the tag. Step 7 builds the package from this commit, so
+   the README, the changelog and the version must all be in it:
 
    ```bash
    git push origin main
@@ -46,14 +53,26 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
 
 6. On GitHub, **Actions → docs** shows the run: the build job runs the
    drift test and the strict build, and the deploy job publishes the site.
-7. To publish the version on PyPI as well, build and upload it, then update
-   "The latest release on PyPI is ..." in the README and in
-   `docs/getting-started/install.md`:
+7. Build the package from the tag and upload it to PyPI (the tools:
+   `pip install build twine`):
 
    ```bash
+   git status --short        # must print nothing
+   git checkout vX.Y.Z
+   rm -rf dist build
    python -m build
+   twine check --strict dist/*
    twine upload dist/*
+   git checkout main
    ```
+
+   `python -m build` packs the working tree, not a commit, so an edit that
+   is not committed, or a file left in `build/` by an earlier build, ends
+   up in the package. A clean tree at the tag and empty `dist/` and
+   `build/` folders make the uploaded files match the tagged commit.
+   `twine check` renders the README as PyPI will and fails if it cannot.
+   PyPI accepts each version's files once and never replaces them, so a
+   mistake found after the upload ships in the next patch release.
 
 A manual run (**Actions → docs → Run workflow**) builds and deploys any
 branch or tag, for example to republish a version after a docs fix on its
