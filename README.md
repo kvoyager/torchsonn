@@ -249,7 +249,7 @@ If you use TorchSONN in your research, please cite it as:
   author    = {Kolokolov, Konstantin},
   title     = {{TorchSONN}: A {PyTorch} Implementation of the self-organizing neural network},
   year      = {2026},
-  version   = {0.1.6},
+  version   = {0.1.7},
   url       = {https://github.com/kvoyager/torchsonn},
   note      = {GitHub repository}
 }

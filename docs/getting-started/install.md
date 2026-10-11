@@ -1,6 +1,6 @@
 # Install
 
-TorchSONN needs Python 3.12 or later. These pages describe version 0.1.6,
+TorchSONN needs Python 3.12 or later. These pages describe version 0.1.7,
 the latest release on PyPI:
 
 ```bash
@@ -10,7 +10,7 @@ pip install torchsonn
 To install that same version straight from GitHub instead:
 
 ```bash
-pip install "git+https://github.com/kvoyager/torchsonn.git@v0.1.6"
+pip install "git+https://github.com/kvoyager/torchsonn.git@v0.1.7"
 ```
 
 pip also installs the dependencies: PyTorch, NumPy, scikit-learn, Hydra,
@@ -22,7 +22,7 @@ Network diagrams and the layer-error plot need the `viz` extra, which adds
 `graphviz` and `matplotlib`:
 
 ```bash
-pip install "torchsonn[viz] @ git+https://github.com/kvoyager/torchsonn.git@v0.1.6"
+pip install "torchsonn[viz] @ git+https://github.com/kvoyager/torchsonn.git@v0.1.7"
 ```
 
 The `graphviz` Python package only drives the Graphviz programs, which are
