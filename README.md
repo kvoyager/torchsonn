@@ -23,28 +23,20 @@ over a few named inputs, and the whole network can be drawn as a graph.
 
 ## Neuron families
 
-- **[Plain polynomials](docs/concepts/neurons/polynomial.md)** in the power
+- **[Plain polynomials](https://kvoyager.github.io/torchsonn/concepts/neurons/polynomial/)** in the power
   basis: `linear`, `linear_cov`, `quadratic`, `cubic` and the multi-input
   `polyquad`.
-- **[Orthogonal polynomials](docs/concepts/neurons/orthogonal.md)**:
+- **[Orthogonal polynomials](https://kvoyager.github.io/torchsonn/concepts/neurons/orthogonal/)**:
   `legendre` and `chebyshev`, with a configurable degree and number of
   inputs. They stay well conditioned at higher degrees, where the raw power
   basis does not.
-- **[Gaussian radial basis functions](docs/concepts/neurons/rbf.md)**:
+- **[Gaussian radial basis functions](https://kvoyager.github.io/torchsonn/concepts/neurons/rbf/)**:
   `rbf`, local bumps whose centres and widths start from k-means and are
   then learned.
 
 ## How a model grows
 
-```mermaid
-flowchart TB
-    F[Features] --> L0[Layer 0]
-    L0 --> L1[Layer 1]
-    F --> L1
-    L1 --> L2[...]
-    F --> L2
-    L2 --> P[Prediction]
-```
+<img src="https://raw.githubusercontent.com/kvoyager/torchsonn/main/img/growth.svg" alt="Growth diagram: the features feed every layer, each layer also reads the layer before it, and the last layer gives the prediction" width="260">
 
 Each layer fits its candidates on the train split and keeps the
 `nbest_neurons` with the lowest dev error. Growth stops when the dev error
@@ -61,13 +53,13 @@ prediction is read off the grown network in one of two ways:
 
 ## A grown network
 
-The network of the [CCPP tutorial](tutorials/ccpp/README.md), pruned to the
+The network of the [CCPP tutorial](https://kvoyager.github.io/torchsonn/tutorials/ccpp/), pruned to the
 neurons that reach the output. Each box is a neuron, and its incoming edges
 are the inputs it reads. `PlotModel` draws it (see
-[Inspecting a model](docs/guides/inspecting.md)); click the image for full
+[Inspecting a model](https://kvoyager.github.io/torchsonn/guides/inspecting/)); click the image for full
 size.
 
-<a href="img/ccpp_pruned_model.svg"><img src="img/ccpp_pruned_model.svg" alt="The pruned network of the CCPP tutorial" width="100%"></a>
+<a href="https://kvoyager.github.io/torchsonn/assets/img/ccpp_pruned_model.svg"><img src="https://kvoyager.github.io/torchsonn/assets/img/ccpp_pruned_model.svg" alt="The pruned network of the CCPP tutorial" width="100%"></a>
 
 ## Relation to GMDH
 
@@ -77,19 +69,11 @@ library. Two parts come from GMDH: the plain-polynomial neurons, and the
 growth itself, which fits candidates layer by layer and keeps the best by
 their error on a separate split. The orthogonal-polynomial and RBF neurons,
 the output head, the fine-tuning passes and the training on a GPU go beyond
-it. [GMDH](docs/concepts/gmdh.md) describes the method.
+it. [GMDH](https://kvoyager.github.io/torchsonn/concepts/gmdh/) describes the method.
 
 ## Install
 
-TorchSONN needs Python 3.12 or later. This README describes the `main`
-branch on GitHub, and the [documentation](https://kvoyager.github.io/torchsonn/)
-the latest version tag. Install `main` with:
-
-```bash
-pip install "git+https://github.com/kvoyager/torchsonn.git"
-```
-
-The latest release on PyPI is 0.1.6:
+TorchSONN needs Python 3.12 or later. Install the latest release from PyPI:
 
 ```bash
 pip install torchsonn
@@ -100,12 +84,20 @@ Plotting is opt-in via the `viz` extra, which adds `graphviz` (for the
 `SONN.plot_layer_error`):
 
 ```bash
-pip install "torchsonn[viz] @ git+https://github.com/kvoyager/torchsonn.git"
+pip install "torchsonn[viz]"
 ```
 
 `graphviz` additionally requires the system Graphviz binaries — `dot` must be
 on your `PATH` (see [graphviz.org/download](https://graphviz.org/download/)).
 Training and inference work without any of this.
+
+The [documentation](https://kvoyager.github.io/torchsonn/) describes the
+latest release. The `main` branch on GitHub can be ahead of it; to install
+`main`:
+
+```bash
+pip install "git+https://github.com/kvoyager/torchsonn.git"
+```
 
 For development, clone the repo and install editably:
 
@@ -180,14 +172,17 @@ preds, targets = trainer.infer(model, test_dl)
 print(f"test MSE: {((preds - targets) ** 2).mean().item():.4f}")
 ```
 
-The [regression](docs/getting-started/quickstart-regression.md) and
-[classification](docs/getting-started/quickstart-classification.md)
+The [regression](https://kvoyager.github.io/torchsonn/getting-started/quickstart-regression/) and
+[classification](https://kvoyager.github.io/torchsonn/getting-started/quickstart-classification/)
 quickstarts walk through a model like this one step by step.
 
 ## Tutorials
 
-Five end-to-end examples live under `tutorials/`, each with every config
-key overridable on the command line:
+Five end-to-end examples live in the repository's
+[`tutorials/`](https://github.com/kvoyager/torchsonn/tree/main/tutorials)
+folder, and the [tutorial pages](https://kvoyager.github.io/torchsonn/tutorials/)
+walk through them. Run them from a clone, each with every config key
+overridable on the command line:
 
 ```bash
 # Iris classification — multi-class, linear_cov neurons.
@@ -238,12 +233,12 @@ a base install.
 Every setting has a typed default in `torchsonn.config.SONNConfig`, and a
 configuration lists only what it changes, from Python or from a Hydra YAML
 file with command-line overrides. The
-[configuration guide](docs/guides/configuration.md) shows both, and the
-[configuration reference](docs/reference/config.md) lists every key.
+[configuration guide](https://kvoyager.github.io/torchsonn/guides/configuration/) shows both, and the
+[configuration reference](https://kvoyager.github.io/torchsonn/reference/config/) lists every key.
 
 ## License
 
-Released under the MIT License — see [LICENSE](LICENSE) for the full text.
+Released under the MIT License — see [LICENSE](https://github.com/kvoyager/torchsonn/blob/main/LICENSE) for the full text.
 
 ## Citation
 

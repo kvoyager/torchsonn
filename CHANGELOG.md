@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — the PyPI project page
+
+PyPI renders the README as the project description, and parts of it only
+worked on GitHub.
+
+- **Links and the network image.** Every link and image in the README is
+  an absolute URL, so they work on PyPI as well as on GitHub. Links to
+  documentation pages go to the documentation site.
+- **The growth diagram.** PyPI does not render Mermaid, so the README shows
+  the diagram as an image, `img/growth.svg`, rendered from `img/growth.mmd`.
+- **Install.** The section starts with `pip install torchsonn` and names no
+  version; installing `main` from GitHub comes after it.
+
 ## 0.1.6
 
 ### Removed — compatibility code for older names, entry forms and checkpoints
