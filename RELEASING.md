@@ -41,20 +41,19 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
    `tests/test_readme.py` fails on what breaks the README on PyPI but not
    on GitHub: a relative link or image, a Mermaid block, a `$` outside
    code.
-5. Commit everything the release changes as `release: X.Y.Z`, then push
-   the branch and the tag. Step 7 builds the package from this commit, so
+5. Commit everything the release changes as `release: X.Y.Z` and tag it,
+   without pushing either. Step 6 builds the package from this commit, so
    the README, the changelog and the version must all be in it:
 
    ```bash
-   git push origin main
    git tag vX.Y.Z
-   git push origin vX.Y.Z
    ```
 
-6. On GitHub, **Actions → docs** shows the run: the build job runs the
-   drift test and the strict build, and the deploy job publishes the site.
-7. Build the package from the tag and upload it to PyPI (the tools:
-   `pip install build twine`):
+   Until step 7 pushes them, a mistake is fixed by amending the commit and
+   moving the tag (`git tag -f vX.Y.Z`).
+6. Build the package from the tag and upload it to TestPyPI, a separate
+   instance of PyPI for trying a release (the tools: `pip install build
+   twine`; TestPyPI has its own account and API token):
 
    ```bash
    git status --short        # must print nothing
@@ -62,7 +61,7 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
    rm -rf dist build
    python -m build
    twine check --strict dist/*
-   twine upload dist/*
+   twine upload --repository testpypi dist/*
    git checkout main
    ```
 
@@ -71,6 +70,35 @@ documentation site at <https://kvoyager.github.io/torchsonn/> through
    up in the package. A clean tree at the tag and empty `dist/` and
    `build/` folders make the uploaded files match the tagged commit.
    `twine check` renders the README as PyPI will and fails if it cannot.
+
+   Then open <https://test.pypi.org/project/torchsonn/X.Y.Z/> and check the
+   description: the version in the header, both diagrams, a few links. To
+   check the install as well (the dependencies come from PyPI):
+
+   ```bash
+   pip install --index-url https://test.pypi.org/simple/ \
+       --extra-index-url https://pypi.org/simple/ torchsonn==X.Y.Z
+   ```
+
+   TestPyPI, like PyPI, accepts each version's files once. A fix found
+   here is amended into the release commit as in step 5; testing the fixed
+   build on TestPyPI again takes the next patch version.
+7. Push the branch and the tag:
+
+   ```bash
+   git push origin main
+   git push origin vX.Y.Z
+   ```
+
+   On GitHub, **Actions → docs** shows the run the tag starts: the build
+   job runs the drift test and the strict build, and the deploy job
+   publishes the site.
+8. Upload the same files to PyPI, without building again:
+
+   ```bash
+   twine upload dist/*
+   ```
+
    PyPI accepts each version's files once and never replaces them, so a
    mistake found after the upload ships in the next patch release.
 
