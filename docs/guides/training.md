@@ -171,7 +171,7 @@ on CUDA the end-to-end pass runs as a captured graph (see
 [Performance](performance.md)).
 
 The neurons, the head, the class weights and the input statistics the
-squash and RBF neurons use are all in PyTorch's default type, float32.
+squash, RBF and MLP neurons use are all in PyTorch's default type, float32.
 
 ## Several GPUs
 

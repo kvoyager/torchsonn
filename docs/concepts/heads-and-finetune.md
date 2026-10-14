@@ -79,7 +79,7 @@ pass, below.
 the survivors train together through a temporary linear head, against the
 model's training loss, on the train split, with an early stop on dev. Every
 parameter the survivors own trains, except a per-candidate class map: their
-coefficients and, for the RBF family, their centres and widths. The temporary head is then discarded.
+coefficients, the RBF family's centres and widths, and the MLP family's hidden layers. The temporary head is then discarded.
 The pass takes its settings from `train.out_proj_train`, like the head
 fit.
 
@@ -109,7 +109,7 @@ with `ValueError` at the first layer.
 
 `Trainer.train_finetune(model, train_dl, dev_dl, cfg=None, val_dl=None)`
 trains every parameter of the network at once: all layers' coefficients,
-RBF centres and widths, a learned class map (the shared projection or one
+RBF centres and widths, MLP hidden layers, a learned class map (the shared projection or one
 per candidate; the soft binner's points stay fixed) and the head. Its loss
 is the model's training loss on exactly what `infer` returns, so it
 optimizes the readout the model is scored on.

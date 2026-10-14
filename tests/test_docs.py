@@ -88,7 +88,7 @@ def test_every_family_is_covered():
     names = {cls.__name__ for cls in _families()}
     assert {"LinearPolynomNeuron", "LinearCovPolynomNeuron", "QuadraticPolynomNeuron",
             "CubicPolynomNeuron", "PolyQuadratic", "LegendrePolynomNeuron",
-            "ChebyshevPolynomNeuron", "RBFNeuron"} <= names
+            "ChebyshevPolynomNeuron", "RBFNeuron", "MLPNeuron"} <= names
 
 
 @pytest.mark.parametrize("name", sorted(optimizer_map))

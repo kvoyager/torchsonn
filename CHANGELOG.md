@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added — `mlp`: a one-hidden-layer network neuron family
+
+`MLPNeuron` (`ref_functions: - mlp`) reads `dim` inputs (2 by default),
+expands them to the inputs plus, optionally, their pairwise products
+(`cov`) and squares (`squares`), and passes that through one hidden layer
+of `hidden` units (default `2 * dim + 1`, activation `hidden_activation`,
+default `silu`). The output is a weighted sum of the hidden units and, with
+`skip` (on by default), of the expanded inputs too, so the neuron contains
+the polynomial over the same terms. The hidden layer is fitted with the
+output weights by the candidate fit, the layer fine-tune and the end-to-end
+pass; `train.ridge_alpha` applies to the output weights only. The inputs
+can be standardized (`standardize`) and squashed (`squash`, with
+`squash_method`, `squash_n_sigma` and `squash_core_range` defaulting to the
+`model.squash_*` keys); both are off by default, and the input pass runs
+only when one is on. The short name is `MLP<hidden>`, with `x<dim>` when
+`dim` is not 2. The concept page is Neuron families / MLP.
+
 ## 0.1.7
 
 ### Fixed — the PyPI project page

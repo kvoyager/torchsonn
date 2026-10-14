@@ -172,8 +172,9 @@ class ModelConfig:
 
     # How the orthogonal-polynomial families (legendre / chebyshev) map their
     # inputs into [-1, 1], the only interval where those bases are orthogonal
-    # and bounded. Ignored by every other ref function, and by an entry that
-    # sets `squash: false`. A ref_functions entry may override it per family,
+    # and bounded. Also the defaults of the `mlp` family's optional squash,
+    # which is off unless the entry sets `squash: true`. Ignored by every
+    # other ref function, and by an entry that sets `squash: false`. A ref_functions entry may override it per family,
     # e.g. `- legendre: {squash_method: tanh}`.
     #
     #   'sigma' (default) — SigmaSquashNorm (modules/sigma_squash_norm.py):

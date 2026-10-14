@@ -16,6 +16,7 @@ from torchsonn.neurons.orthopoly import (
     ChebyshevPolynomNeuron,
 )
 from torchsonn.neurons.rbf import RBFNeuron
+from torchsonn.neurons.mlp import MLPNeuron
 
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "LegendrePolynomNeuron",
     "ChebyshevPolynomNeuron",
     "RBFNeuron",
+    "MLPNeuron",
     "generate_unique_pairs",
     "generate_unique_combinations",
 ]

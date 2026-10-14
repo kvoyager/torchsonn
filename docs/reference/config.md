@@ -33,8 +33,8 @@ Two tables at the end list what the schema leaves open: the options of a
 
 ## Orthogonal-family squash
 
-Defaults for the `legendre` and `chebyshev` families; an entry can override
-each one. See [Orthogonal polynomials](../concepts/neurons/orthogonal.md#the-squash).
+Defaults for the `legendre` and `chebyshev` families, and for the `mlp`
+family when an entry turns its `squash` on; an entry can override each one. See [Orthogonal polynomials](../concepts/neurons/orthogonal.md#the-squash).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -266,6 +266,22 @@ The options of a `model.ref_functions` entry, as in
 | `normalize` | true | Normalize the bumps to sum to 1. |
 | `linear` | true | Add the standardized inputs to the design row. |
 | `standardize` | true | Standardize the inputs first. |
+
+**`mlp`**
+
+| Option | Default | Meaning |
+|---|---|---|
+| `dim` | 2 | Inputs per neuron. |
+| `hidden` | null | Hidden units; null means `2 * dim + 1`. |
+| `cov` | false | Feed the pairwise products of the inputs to the hidden layer too. |
+| `squares` | false | Feed the squared inputs to the hidden layer too. |
+| `skip` | true | Also read the hidden layer's inputs directly in the output sum. |
+| `hidden_activation` | `silu` | Activation of the hidden units; any name `activation` accepts. |
+| `standardize` | false | Standardize the inputs first. |
+| `squash` | false | Squash the inputs as the `legendre` and `chebyshev` families do. |
+| `squash_method` | `model.squash_method` | `sigma` or `tanh`. |
+| `squash_n_sigma` | `model.squash_n_sigma` | Half-width of the linear band, in standard deviations. |
+| `squash_core_range` | `model.squash_core_range` | Squashed value at the band's edge. |
 
 The pair families `linear`, `linear_cov`, `quadratic` and `cubic` take only
 the options of every family.

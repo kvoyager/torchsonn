@@ -1122,3 +1122,185 @@ class TestRBFNeuron:
             BasePolynomNeuron.from_checkpoint_metadata(missing)
         with pytest.raises(ValueError, match="seeding"):
             _rbf(seeding="random")
+
+
+# --- The MLP family ----------------------------------------------------------
+
+from torchsonn.neurons import MLPNeuron
+
+
+def _mlp(num_feat=4, **kw):
+    kw.setdefault("max_neuron_models", 3)
+    activation = kw.pop("activation", None)
+    return MLPNeuron(num_feat, num_feat, activation, 0, 0, **kw)
+
+
+def _mlp_stats(n, x):
+    n.fit_input_stats(x.mean(0), x.std(0, unbiased=False))
+
+
+class TestMLPNeuron:
+    def test_num_w_and_shapes(self):
+        for dim, cov, sq, skip in itertools.product((2, 3), (False, True), (False, True), (False, True)):
+            n = _mlp(5, dim=dim, cov=cov, squares=sq, skip=skip)
+            f = dim + (dim * (dim - 1) // 2 if cov else 0) + (dim if sq else 0)
+            assert n.hidden == 2 * dim + 1
+            assert n.num_w == 1 + (f if skip else 0) + n.hidden
+            assert n.weight.shape == (3, n.num_w)
+            assert n.hidden_weight.shape == (3, n.hidden, f) and n.hidden_bias.shape == (3, n.hidden)
+            assert n.get_args(_slots(n, torch.randn(6, 5))).shape == (6, 3, n.num_w)
+            assert n(torch.randn(6, 5)).shape == (6, 3)
+        assert _mlp(hidden=8).num_w == 1 + 2 + 8
+
+    def test_invalid_options_raise(self):
+        for bad in ({"dim": 1}, {"hidden": 0}, {"hidden_activation": "swishy"},
+                    {"hidden_activation": nn.Tanh()}, {"squash_method": "clip"}):
+            with pytest.raises(ValueError):
+                _mlp(**bad)
+        with pytest.raises(ValueError):
+            _mlp(squash=True, squash_core_range=1.0)
+
+    def test_defaults(self):
+        n = _mlp()
+        assert isinstance(n.hidden_act, nn.SiLU)
+        assert n.skip and not (n.cov or n.squares or n.standardize or n.squash)
+        assert not n.needs_input_stats
+        assert set(n.state_dict()) - {"params_metadata"} == {"weight", "hidden_weight", "hidden_bias"}
+        assert n.get_short_name() == "MLP5" and _mlp(5, dim=3).get_short_name() == "MLP7x3"
+        assert torch.equal(n.hidden_bias, torch.zeros_like(n.hidden_bias))
+        assert n.hidden_weight.abs().max() <= (6.0 / (5 + 2)) ** 0.5
+
+    def test_vmap_matches_eager_including_gradients(self):
+        n = _mlp(cov=True, squares=True, standardize=True, squash=True, activation="tanh")
+        x = torch.randn(64, 4) * 3 + 1
+        _mlp_stats(n, x)
+        params = dict(n.named_parameters())
+        buffers = dict(n.named_buffers())
+        buffers["src_idxs"] = n.src_idxs
+        in_dims = ({k: 0 for k in params}, {k: 0 for k in buffers}, None)
+
+        def loss(p, b, x):
+            return functional_call(n, {**p, **b}, (x,)).pow(2).mean()
+
+        eager = n(x)
+        vm = _fvmap(lambda p, b, x: functional_call(n, {**p, **b}, (x,)), in_dims=in_dims)(params, buffers, x)
+        assert torch.allclose(vm.T, eager, atol=1e-5)
+        g_vm = _fvmap(_fgrad(loss), in_dims=in_dims)(params, buffers, x)
+        n.zero_grad()
+        for k in range(n.num_neurons):
+            eager[:, k].pow(2).mean().backward(retain_graph=True)
+        for name in ("weight", "hidden_weight", "hidden_bias"):
+            assert torch.allclose(g_vm[name], getattr(n, name).grad, atol=1e-5), name
+
+    def test_skip_with_zero_hidden_readout_is_the_quadratic_polynomial(self):
+        n = _mlp(2, max_neuron_models=None, cov=True, squares=True, standardize=True)
+        x = torch.randn(50, 2) * 4 + 2
+        _mlp_stats(n, x)
+        w = torch.tensor([0.5, 1.0, -2.0, 0.3, 0.7, -0.4])  # w0, z1, z2, z1*z2, z1^2, z2^2
+        with torch.no_grad():
+            n.weight.zero_()
+            n.weight[0, :6] = w
+        z = (x - x.mean(0)) / x.std(0, unbiased=False)
+        expect = w[0] + w[1] * z[:, 0] + w[2] * z[:, 1] + w[3] * z[:, 0] * z[:, 1] \
+            + w[4] * z[:, 0] ** 2 + w[5] * z[:, 1] ** 2
+        assert torch.allclose(n(x)[:, 0], expect, atol=1e-5)
+
+    def test_swapped_slots_give_the_same_function(self):
+        a = _mlp(2, max_neuron_models=None, cov=True, squares=True)
+        b = _mlp(2, max_neuron_models=None, cov=True, squares=True)
+        b.src_idxs = torch.tensor([[1, 0]])
+        perm = torch.tensor([1, 0, 2, 4, 3])  # f = [z1, z2, z1*z2, z1^2, z2^2]
+        with torch.no_grad():
+            b.hidden_weight.copy_(a.hidden_weight[:, :, perm])
+            b.hidden_bias.copy_(a.hidden_bias)
+            b.weight.copy_(a.weight)
+            b.weight[:, 1:6] = a.weight[:, 1:6][:, perm]
+        x = torch.randn(30, 2)
+        assert torch.allclose(a(x), b(x), atol=1e-6)
+
+    def test_fit_input_stats_per_slot(self):
+        x = torch.randn(400, 5) * torch.arange(1.0, 6.0) + torch.arange(5.0)
+        n = _mlp(5, standardize=True, squash=True)
+        assert n.needs_input_stats
+        _mlp_stats(n, x)
+        mean, std = x.mean(0), x.std(0, unbiased=False)
+        assert torch.allclose(n.in_mean, mean[n.src_idxs]) and torch.allclose(n.in_std, std[n.src_idxs])
+        # Under standardize the sigma squash is calibrated on z-scores.
+        assert torch.equal(n.squash_norm.mean, torch.zeros(3, 2))
+        assert torch.equal(n.squash_norm.std, torch.ones(3, 2))
+        sq = _mlp(5, squash=True)
+        _mlp_stats(sq, x)
+        assert torch.allclose(sq.squash_norm.mean, mean[sq.src_idxs])
+        assert not _mlp(squash=True, squash_method="tanh").needs_input_stats
+
+    def test_sigma_squash_is_the_same_with_or_without_standardize(self):
+        x = torch.randn(300, 4) * 20 - 7
+        a = _mlp(squash=True, cov=True)
+        b = _mlp(squash=True, cov=True, standardize=True)
+        b.src_idxs = a.src_idxs.clone()
+        b.load_state_dict(a.state_dict(), strict=False)
+        _mlp_stats(a, x)
+        _mlp_stats(b, x)
+        assert torch.allclose(a(x), b(x), atol=1e-5)
+
+    @pytest.mark.parametrize("method", ["sigma", "tanh"])
+    def test_squashed_inputs_are_bounded(self, method):
+        n = _mlp(squash=True, squash_method=method, standardize=method == "tanh")
+        x = torch.randn(200, 4)
+        _mlp_stats(n, x)
+        far = torch.cat([x, x * 1e4])
+        z = n._transform(_slots(n, far))
+        assert (z.abs() <= 1.0).all() and torch.isfinite(z).all()
+        assert torch.isfinite(n(far)).all()
+
+    def test_prune_keeps_every_per_neuron_tensor_aligned(self):
+        n = _mlp(6, max_neuron_models=5, standardize=True, squash=True)
+        x = torch.randn(100, 6) * 3
+        _mlp_stats(n, x)
+        before = n(x)
+        keep = torch.tensor([4, 1])
+        names = ("hidden_weight", "hidden_bias", "in_mean", "in_std")
+        expect = {k: getattr(n, k).detach()[keep].clone() for k in names}
+        n.prune(keep)
+        assert isinstance(n.hidden_weight, nn.Parameter) and isinstance(n.hidden_bias, nn.Parameter)
+        for k, t in expect.items():
+            assert torch.equal(getattr(n, k).detach(), t), k
+        assert n.squash_norm.mean.shape == (2, 2)
+        assert torch.equal(n(x), before[:, keep])
+
+    @pytest.mark.parametrize("opts", [{}, {"cov": True, "squares": True, "skip": False, "hidden": 3,
+                                           "hidden_activation": "tanh", "standardize": True,
+                                           "squash": True, "squash_n_sigma": 1.5}])
+    def test_checkpoint_round_trip(self, opts):
+        n = _mlp(activation="tanh", **opts)
+        x = torch.randn(80, 4) * 2
+        _mlp_stats(n, x)
+        meta = {k: getattr(n, k) for k in n.params_metadata_names}
+        back = BasePolynomNeuron.from_checkpoint_metadata(meta)
+        assert isinstance(back, MLPNeuron)
+        back.load_state_dict(n.state_dict(), strict=False)
+        assert torch.equal(back(x), n(x))
+        assert back.get_name() == n.get_name()
+
+    def test_fit_report(self):
+        assert "skip readout" in _mlp().fit_report()
+        assert "skip readout" not in _mlp(skip=False).fit_report()
+
+    def test_create_layer_builds_mlp_with_model_wide_squash_defaults(self):
+        from omegaconf import OmegaConf
+        from torchsonn.config import SONNConfig
+        from torchsonn.model import SONN
+        cfg = OmegaConf.merge(OmegaConf.structured(SONNConfig), OmegaConf.create({
+            "model": {"type": "regressor", "num_classes": 1, "nbest_neurons": 2, "soft_binner": False,
+                      "max_neuron_models": 3, "shortcut": False, "squash_n_sigma": 3.0,
+                      "ref_functions": [{"mlp": {"squash": True, "cov": True}},
+                                        {"mlp": {"squash": True, "squash_n_sigma": 1.0, "hidden": 4}}]},
+            "train": {"device": "cpu"},
+        }))
+        model = SONN(cfg, d_model=4)
+        a, b = model.create_layer(0).neuron_models
+        assert isinstance(a, MLPNeuron) and a.cov and a.hidden == 5
+        assert a.squash_n_sigma == 3.0 and a.squash_norm.n_sigma == 3.0
+        assert b.squash_n_sigma == 1.0 and b.hidden == 4
+        assert RefFunctionType.get("mlp") is RefFunctionType.rfMLP
+        assert RefFunctionType.get_name(RefFunctionType.rfMLP) == "MLP"

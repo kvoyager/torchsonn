@@ -68,8 +68,9 @@ layer has sits that layer out.
 
 Some families need to see the layer's inputs before they train. The
 orthogonal families squash each input into $[-1, 1]$ using its mean and
-standard deviation, and the RBF family places its centres by k-means. For
-these, `Trainer.fit_layer_inputs` runs the frozen layers below over the
+standard deviation, the RBF family places its centres by k-means, and the
+MLP family standardizes or squashes its inputs when those options are on.
+For these, `Trainer.fit_layer_inputs` runs the frozen layers below over the
 train split once, collects the statistics and, for RBF, a sample of up to
 `train.input_sample_rows` rows. Layers whose families need none of this
 skip the pass.
@@ -187,7 +188,7 @@ and the end-to-end early stop from dev.
 - **Fitting.** Classical GMDH solves each candidate's coefficients by least
   squares in closed form. TorchSONN fits them with batched gradient and
   quasi-Newton optimizers, because the same loop also fits what least
-  squares cannot: RBF centres and widths, output activations, per-neuron
+  squares cannot: RBF centres and widths, MLP hidden layers, output activations, per-neuron
   class projections, and the censored loss of `train.censor_target_at`.
 - **Normalization.** The regression criterion divides by the spread of the
   targets around their mean. Ivakhnenko's original divides by the sum of
@@ -196,7 +197,7 @@ and the end-to-end early stop from dev.
   improvement are TorchSONN's. GmdhPy uses the relative margin alone.
 - **Layer inputs.** A layer can read the outputs of older layers
   (`prev_layers`), not only the previous one.
-- **Additions.** The multi-class criteria, the RBF family, output heads and
+- **Additions.** The multi-class criteria, the RBF and MLP families, output heads and
   the fine-tuning passes have no counterpart in classical GMDH.
 
 ## The knobs

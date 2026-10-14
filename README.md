@@ -33,6 +33,9 @@ over a few named inputs, and the whole network can be drawn as a graph.
 - **[Gaussian radial basis functions](https://kvoyager.github.io/torchsonn/concepts/neurons/rbf/)**:
   `rbf`, local bumps whose centres and widths start from k-means and are
   then learned.
+- **[MLP](https://kvoyager.github.io/torchsonn/concepts/neurons/mlp/)**:
+  `mlp`, a one-hidden-layer network over a few inputs, read out together
+  with a polynomial of them.
 
 ## How a model grows
 
@@ -67,7 +70,7 @@ TorchSONN builds on the Group Method of Data Handling (GMDH) and on
 [GmdhPy](https://github.com/kvoyager/GmdhPy), a scikit-learn-style GMDH
 library. Two parts come from GMDH: the plain-polynomial neurons, and the
 growth itself, which fits candidates layer by layer and keeps the best by
-their error on a separate split. The orthogonal-polynomial and RBF neurons,
+their error on a separate split. The orthogonal-polynomial, RBF and MLP neurons,
 the output head, the fine-tuning passes and the training on a GPU go beyond
 it. [GMDH](https://kvoyager.github.io/torchsonn/concepts/gmdh/) describes the method.
 
