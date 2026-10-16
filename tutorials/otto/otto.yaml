@@ -68,7 +68,7 @@ train:
     # so 200 x 20 ~ sklearn's max_iter=2000 — convex problem converges well before.
     max_steps: 200
     lr: 0.1                # step length for LBFGS; strong_wolfe scales it
-    # Critical for LBFGS — without L2 the unregularized class-weighted CE on
+    # Critical for LBFGS — without L2 the unregularized CE on
     # near-separable polynomial features has its optimum at ||W||→∞, which
     # collapses softmax onto a single class. Sklearn's default C=1.0 adds
     # 0.5·||W||² to a sum-loss objective; matching that for a mean-loss
@@ -87,7 +87,7 @@ train:
     lbfgs_line_search: strong_wolfe
   # Per-layer joint fine-tune: after selection on every layer, the last one
   # included, the surviving neurons' coefficients and a temporary (D, K)
-  # head train together against class-weighted CE on the training split,
+  # head train together against CE on the training split,
   # with an early stop on dev. Uses out_proj_train's hyperparameters
   # (above) so there's a single place to tune optimizer / max_steps /
   # weight_decay for both passes.

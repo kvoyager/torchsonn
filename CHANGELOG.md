@@ -27,6 +27,15 @@ AdamW: every step shrinks each candidate's parameters by the factor
 1 - lr * weight_decay before the Adam update. The default 0.0 leaves the
 candidate fits unchanged.
 
+### Changed — the Otto tutorial trains without class weights
+
+`otto_classification.py` and `otto.ipynb` no longer pass inverse-frequency
+`class_weights` to the `Trainer`. Otto is scored by the unweighted log loss,
+and the weights made the model predict a flat class prior. Test log loss
+goes from 0.7317 to 0.6206 and accuracy from 0.7334 to 0.7734 (seed 42,
+same configuration otherwise). The classification concept page now says
+what class weights do to the predicted probabilities.
+
 ## 0.1.7
 
 ### Fixed — the PyPI project page

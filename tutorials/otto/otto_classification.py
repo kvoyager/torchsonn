@@ -148,10 +148,10 @@ def main():
     dev_dl   = DataLoader(SONNDataset(x_dev,   y_dev),   batch_size=bs)
     test_dl  = DataLoader(SONNDataset(x_test,  y_test),  batch_size=bs)
 
-    # -- Class weights (inverse frequency, normalized to sum to num_classes) --
-    counts = np.bincount(y_train)
-    cw = torch.tensor(counts.sum() / (len(counts) * counts), dtype=torch.float32)
-    print("class weights:", cw.numpy().round(3))
+    # -- No class weights ----------------------------------------------------
+    # The score is the unweighted log loss. Inverse-frequency class weights
+    # would make the model predict a flat class prior, over-predicting the
+    # small classes, and raise the log loss.
 
     preprocessing = torch.nn.Sequential(torch.nn.LayerNorm(x_train.shape[1], elementwise_affine=False))
     # -- Model ---------------------------------------------------------------
@@ -163,7 +163,7 @@ def main():
     print(model)
 
     # -- Train SONN layers ---------------------------------------------------
-    trainer = Trainer(config, feature_names=feature_names, class_weights=cw)
+    trainer = Trainer(config, feature_names=feature_names)
     trainer.train(model, train_dl, dev_dl, test_dl, resume=config.resume)
 
     # -- Train out_proj ------------------------------------------------------
