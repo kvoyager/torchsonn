@@ -1,0 +1,48 @@
+# MLP variant of california_housing_legendre_finetune.yaml: the Legendre
+# family replaced by the MLP neuron (src/torchsonn/neurons/mlp.py). Everything
+# else (split, features, survivors, candidate cap, omp_mixed selection, head,
+# end-to-end pass, seed) comes from that file through the defaults list.
+#
+# Per pair neuron, defaults: inputs as they arrive, one hidden layer of
+# 2*dim + 1 = 5 SiLU units, output w0 + v . x + a . h (skip on): 23 parameters.
+#
+# Run from the tutorial folder:
+#     python california_housing.py --config-name california_housing_mlp train.device=cuda
+# Variants as CLI overrides on this file (one knob per run):
+#     model.ref_functions.0.mlp.standardize=true
+#     model.ref_functions.0.mlp.squash=true                  (sigma squash)
+#     model.ref_functions.0.mlp.hidden=8                     (4 x dim)
+#     model.ref_functions.0.mlp.cov=true model.ref_functions.0.mlp.squares=true
+#     model.ref_functions.0.mlp.skip=false
+#
+# Results, 2026-10-13, cuda, seed 10, single split (noise ~ +-0.002 MSE);
+# logs in experiments/logs/MLP_*.log, runner experiments/mlp_2026-10-13.sh:
+#   Legendre-3 baseline (california_housing_legendre_finetune)
+#                                          MSE 0.1863   MAE 0.2767   ( 6 layers,   793 params)
+#   this file, defaults                    MSE 0.1890   MAE 0.2809   (13 layers,  7201 params)
+#   + standardize                          MSE 0.1875   MAE 0.2804   (10 layers,  3889 params)
+#   + squash (sigma)                       MSE 0.1900   MAE 0.2802   (10 layers,  5545 params)
+#   standardize, hidden 8                  MSE 0.1872   MAE 0.2774   (10 layers,  5905 params)
+#   standardize, cov + squares             MSE 0.1960   MAE 0.2806   (16 layers, 12817 params; dev 0.164)
+#   same, skip false                       MSE 0.1943   MAE 0.2832   (10 layers,  6073 params)
+#   legendre + mlp (standardize), CLI:
+#     'model.ref_functions=[{legendre:{degree:3,squash:true}},{mlp:{standardize:true}}]'
+#                                          MSE 0.1851   MAE 0.2747   (17 layers,  6334 params)
+# cov + squares lower the dev error but raise the test error: the richer
+# neuron makes the selection criterion optimistic.
+defaults:
+  - california_housing_legendre_finetune
+  - _self_
+
+model:
+  ref_functions:
+    - mlp:
+        dim: 2
+        hidden: null
+        cov: false
+        squares: false
+        skip: true
+        hidden_activation: silu
+        standardize: false
+        squash: false
+        activation: ""
