@@ -19,6 +19,14 @@ can be standardized (`standardize`) and squashed (`squash`, with
 only when one is on. The short name is `MLP<hidden>`, with `x<dim>` when
 `dim` is not 2. The concept page is Neuron families / MLP.
 
+### Added — `weight_decay` for the `adam` candidate optimizer
+
+`train.optimizer.optimizer_params.weight_decay` now applies to `adam` as
+well as `sgd`. For `adam` the decay is decoupled from the gradient, as in
+AdamW: every step shrinks each candidate's parameters by the factor
+1 - lr * weight_decay before the Adam update. The default 0.0 leaves the
+candidate fits unchanged.
+
 ## 0.1.7
 
 ### Fixed — the PyPI project page

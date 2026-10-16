@@ -110,6 +110,38 @@ class TestBatchedAdam:
         with pytest.raises(KeyError):
             BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1).load_state_dict(sd)
 
+    def test_weight_decay_is_decoupled(self):
+        # Zero gradients leave only the decay: each active member shrinks by
+        # exactly 1 - lr * wd, a masked member keeps its parameters.
+        p = {"weight": torch.randn(3, 4), "shared_w": torch.randn(3, 2)}
+        lr = torch.tensor([0.1, 0.2, 0.3])
+        opt = BatchedAdam(p, shared_param_names=["shared_w"], lr=lr, weight_decay=0.5)
+        g = {k: torch.zeros_like(v) for k, v in p.items()}
+        new = opt.step(p, g, active_mask=torch.tensor([True, False, True]))
+        expected = p["weight"] * (1 - 0.5 * lr).view(-1, 1)
+        assert torch.allclose(new["weight"][[0, 2]], expected[[0, 2]])
+        assert torch.equal(new["weight"][1], p["weight"][1])
+        assert torch.allclose(new["shared_w"], p["shared_w"] * (1 - 0.5 * 0.2))
+
+    def test_zero_weight_decay_matches_default(self):
+        p = _make_params()
+        g = _make_grads()
+        a = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1).step(p, g)
+        b = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1, weight_decay=0.0).step(p, g)
+        assert torch.equal(a["weight"], b["weight"])
+
+    def test_state_roundtrip_keeps_weight_decay(self):
+        p = _make_params()
+        opt = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1, weight_decay=0.01)
+        opt.step(p, _make_grads())
+        sd = opt.state_dict()
+        opt2 = BatchedAdam(p, shared_param_names=[], lr=torch.ones(3) * 0.1)
+        opt2.load_state_dict(sd)
+        assert opt2.weight_decay == 0.01
+        del sd["weight_decay"]
+        opt2.load_state_dict(sd)
+        assert opt2.weight_decay == 0.0
+
 
 class TestBatchedSGD:
     def test_step_changes_params(self):

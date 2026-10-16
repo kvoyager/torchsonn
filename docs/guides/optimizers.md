@@ -75,8 +75,11 @@ one with few.
 
 ## Adam and SGD
 
-`adam` takes `betas` (0.9, 0.999) and `eps` (1e-8). `sgd` takes `momentum`
-(0.9), `nesterov` (true) and `weight_decay` (0.0). Both converge more slowly
+`adam` takes `betas` (0.9, 0.999), `eps` (1e-8) and `weight_decay` (0.0),
+a decay decoupled from the gradient as in AdamW: each step shrinks every
+parameter by the factor 1 - lr * weight_decay before the Adam update. `sgd`
+takes `momentum` (0.9), `nesterov` (true) and `weight_decay` (0.0), added
+to the gradient. Both converge more slowly
 than LBFGS on these small problems, so they need more steps and a learning
 rate tuned to the data.
 

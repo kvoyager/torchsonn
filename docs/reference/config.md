@@ -308,7 +308,7 @@ The keys of `train.optimizer.optimizer_params`.
 | `eps` | `adam` | 1e-8 | Adam's denominator term. |
 | `momentum` | `sgd` | 0.9 | Momentum. |
 | `nesterov` | `sgd` | true | Nesterov momentum. |
-| `weight_decay` | `sgd` | 0.0 | Weight decay. |
+| `weight_decay` | `adam`, `sgd` | 0.0 | Weight decay. `adam` decouples it from the gradient, as AdamW does; `sgd` adds it to the gradient. |
 | `history_size` | `lbfgs` | 10 | Correction pairs kept per candidate. |
 | `max_step` | `lbfgs` | 1.0 | The largest update norm per candidate and parameter; null for no cap. |
 | `curvature_eps` | `lbfgs` | 1e-8 | Keep a correction pair only when its curvature passes this test; null keeps every pair. |
