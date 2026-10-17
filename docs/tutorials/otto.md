@@ -53,7 +53,7 @@ loss and the accuracy (see [Classification](../concepts/classification.md#class-
 | `train.layer_finetune` | true | each layer's survivors train together through a temporary head (see [Heads and fine-tuning](../concepts/heads-and-finetune.md#the-per-layer-fine-tune)) |
 | `train.out_proj_train` | `lbfgs`, `weight_decay` 2.5e-5 | the head fit and the per-layer fine-tune; the small L2 penalty keeps the head's weights finite on nearly separable classes |
 | `train.optimizer`, `train.steps` | `adam`, `lr` 1e-3, `min_lr` 1e-4; 1101 | batches of 512 rows, evaluated every 100 steps; no candidate fit stops early, so each runs 1,101 steps |
-| `train.neuron_selection_method` | `greedy_orth`, threshold 0.2 | survivors whose outputs differ |
+| `train.neuron_selection_method` | `omp_mixed`, reserve 0.2, threshold 0.05 | 80% of the survivors chosen for how much of the class targets they explain, the rest for outputs that differ from them (see [Survivor selection](../concepts/selection.md)) |
 | `train.log_layer_diagnostics` | true | logs the survivors' correlations and effective rank |
 | `train.max_layer_count` | 3 | |
 | `train.device` | `cuda` | |
@@ -65,19 +65,19 @@ layers allowed, each better than the one before:
 
 | Layer | 0 | 1 | 2 |
 |---|---|---|---|
-| Dev error | 0.7371 | 0.6898 | 0.6337 |
+| Dev error | 0.7371 | 0.7224 | 0.7010 |
 
 After the head fit:
 
 | Split | Log loss | Accuracy |
 |---|---|---|
-| Train | 0.5095 | 0.8032 |
-| Dev | 0.6153 | 0.7782 |
-| Test | 0.6206 | 0.7734 |
+| Train | 0.5370 | 0.7918 |
+| Dev | 0.5914 | 0.7776 |
+| Test | 0.5949 | 0.7752 |
 
 The script also prints a per-class report and the test confusion matrix.
-The small classes are the hard ones: the smallest is found 43% of the time,
-at a precision of 56%. The largest share of the errors, about 40%, is
+The small classes are the hard ones: the smallest is found 44% of the time,
+at a precision of 56%. The largest share of the errors, about 45%, is
 `Class_2` and `Class_3` taken for each other.
 
 <small>Checked against TorchSONN 0.1.7.</small>

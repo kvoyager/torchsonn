@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed — the Otto tutorial selects survivors with `omp_mixed`
+
+`otto.yaml` sets `train.neuron_selection_method: omp_mixed` (reserve 0.2,
+threshold 0.05) in place of `greedy_orth` at threshold 0.2. On seed 42,
+test log loss goes from 0.6206 to 0.5949 and accuracy from 0.7734 to
+0.7752; over seeds 42 to 44, the mean test log loss goes from 0.6326 to
+0.5890 and the accuracy from 0.7741 to 0.7799. The tutorial page and the
+notebook carry the new results.
+
 ### Added — `neuron_selection_method: omp_mixed`, the new default
 
 `omp_mixed` picks a layer's survivors in two phases over one shared

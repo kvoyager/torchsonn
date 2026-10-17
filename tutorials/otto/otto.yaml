@@ -100,5 +100,10 @@ train:
   shuffle: true
   verbose: true
   log_layer_diagnostics: true
-  neuron_selection_method: greedy_orth
-  neuron_selection_orth_threshold: 0.2
+  # Survivor selection: target aware OMP fills 80% of the survivors, max
+  # volume the rest (see the Survivor selection concept page). Against
+  # greedy_orth at threshold 0.2, mean test over seeds 42 to 44: log loss
+  # 0.5890 vs 0.6326, accuracy 0.7799 vs 0.7741.
+  neuron_selection_method: omp_mixed
+  neuron_selection_reserve_frac: 0.2
+  neuron_selection_orth_threshold: 0.05
