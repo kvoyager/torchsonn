@@ -140,7 +140,7 @@ and the per-layer fine-tune. See
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.layer_finetune` | bool | false | After selection, train each layer's survivors jointly through a temporary linear head, on every layer. Use it with `model.use_output_projection`: the pass turns the survivors into inputs for a head, and a model without one predicts poorly. Fails on binary models. |
+| `train.layer_finetune` | bool | false | After selection, train each layer's survivors jointly through a temporary linear head, on every layer. Under `model.selection_mode: joint` it runs after the joint cut. Use it with `model.use_output_projection`: the pass turns the survivors into inputs for a head, and a model without one predicts poorly. Fails on binary models. |
 | `train.out_proj_train.optimizer` | str | `adam` | `adam`, `sgd` (momentum 0.9) or `lbfgs` (full batch, no plateau schedule). |
 | `train.out_proj_train.lr` | float | 0.001 | Learning rate. |
 | `train.out_proj_train.weight_decay` | float | 0.0 | L2 penalty; added to the loss under `lbfgs`. |
@@ -202,13 +202,15 @@ pass; `train.max_layer_count: 1` builds one layer.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `model.selection_mode` | str | `greedy` | `greedy`: grow the network layer by layer, keeping the best candidates of each. `joint`: each layer's survivors selected jointly, as above. `joint` needs `model.use_output_projection`, a regressor or multi-class model and no `model.use_layer_norm`, and does not resume a run. |
+| `model.selection_mode` | str | `greedy` | `greedy`: grow the network layer by layer, keeping the best candidates of each. `joint`: each layer's survivors selected jointly, as above. `joint_last`: greedy at every layer; once growth stops, the last kept layer is built again and selected jointly. `joint` and `joint_last` need `model.use_output_projection`, a regressor or multi-class model and no `model.use_layer_norm`, and does not resume a run. |
 | `train.joint_sparsity.kind` | str | `gates` | `gates`: a hard-concrete gate on each neuron's output, with the expected number of open gates as the penalty (Louizos, Welling and Kingma, 2018). `group_lasso`: the sum over neurons of the L2 norm of each neuron's coefficients together with its column of the head. |
 | `train.joint_sparsity.beta` | float | 0.66 | `gates` only: temperature of the gate distribution. Must be positive. |
 | `train.joint_sparsity.gamma` | float | -0.1 | `gates` only: lower end of the interval the gate's sigmoid is stretched to before it is clamped to [0, 1]. Must be negative. |
 | `train.joint_sparsity.zeta` | float | 1.1 | `gates` only: upper end of that interval. Must be above 1. |
 | `train.joint_sparsity.init_open` | float | 0.9 | `gates` only: starting probability of the gate's sigmoid sample, in (0, 1). At 0.9 every gate starts nearly open. |
 | `train.joint_sparsity.lam` | float | 0.001 | Weight of the penalty: the loss is the data loss plus `lam` times the expected number of open gates (`gates`) or the sum of the group norms (`group_lasso`). |
+| `train.joint_sparsity.diversity_lam` | float | 0.0 | Weight of a diversity term added to the loss: the mean squared correlation between the pool's neuron outputs on the batch, each pair weighted by the product of the two neurons' gates (`gates`) or of the norms of their head columns (`group_lasso`). It pushes the kept neurons apart. 0 turns it off. At least 0. |
+| `train.joint_sparsity.diversity_tau` | float | 0.0 | Correlations up to this in absolute value add nothing to the diversity term. In [0, 1). |
 | `train.joint_sparsity.lam_warmup_frac` | float | 0.1 | `lam` rises linearly from 0 over this fraction of `max_steps`, so the pool fits before the penalty presses on it. |
 | `train.joint_sparsity.lam_control` | str | `adaptive` | How `lam` moves after the warm-up, against the target, the head's width. `fixed`: it stays at `lam` and the pass runs `max_steps`. `anneal`: at every evaluation where more than target × (1 + `count_margin`) neurons are active and neither the count nor the penalty (by 1%) has fallen since the previous one, it is multiplied by `lam_step`. `adaptive`: as `anneal`, and divided by `lam_step` while fewer than the target are active. Under both the pass stops once the count has stayed between the target and target × (1 + `count_margin`) for `count_patience` evaluations; if it stays below the target that long, or is below it at `max_steps`, the pass goes back to the state with the fewest active neurons not below the target. |
 | `train.joint_sparsity.lam_step` | float | 1.2 | Factor by which `anneal` and `adaptive` change `lam` at an evaluation. Above 1. |
@@ -222,6 +224,7 @@ pass; `train.max_layer_count: 1` builds one layer.
 | `train.joint_sparsity.weight_decay` | float | 1e-4 | AdamW weight decay of the pool's parameters and the head; the gates have none. |
 | `train.joint_sparsity.max_steps` | int | 2000 | Steps of the pass. |
 | `train.joint_sparsity.eval_interval` | int | 25 | Every this many steps, log `lam`, the data loss and the penalty, the loss on dev (or the validation split under `train.stop_source: val`) and the number of active neurons. |
+| `train.joint_sparsity.restore_weights` | bool | false | `true`: the pass only selects the survivors. After the cut their coefficients go back to their own fits from before the pass, as a greedy layer keeps them. |
 
 ## Checkpoints
 

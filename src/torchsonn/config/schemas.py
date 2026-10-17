@@ -171,6 +171,14 @@ class JointSparsityConfig:
     # is pressed to thin out.
     lam: float = 1.0e-3
     lam_warmup_frac: float = 0.1
+    # Weight of the diversity term, added to the loss as diversity_lam x
+    # the mean squared correlation between the pool's neuron outputs on
+    # the batch, each pair weighted by the product of the two neurons'
+    # gates ('gates': the sampled gates; 'group_lasso': the norms of their
+    # head columns). It pushes the kept neurons apart. 0 turns it off.
+    # Correlations up to diversity_tau in absolute value are not penalized.
+    diversity_lam: float = 0.0
+    diversity_tau: float = 0.0
     # How lam moves after the warm-up, against the target: the head's width
     # (model.num_out_neurons, by default nbest_neurons).
     #   'fixed'    - lam stays at `lam`; the pass runs max_steps.
@@ -213,6 +221,10 @@ class JointSparsityConfig:
     weight_decay: float = 1.0e-4
     max_steps: int = 2000
     eval_interval: int = 25
+    # True: the pass only selects. After the cut the survivors' coefficients
+    # go back to their own fits from before the pass, as a greedy layer
+    # keeps them; the gates and the pass's head are discarded either way.
+    restore_weights: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +290,11 @@ class ModelConfig:
     #              greedy; `layer_err_source` scores a layer by its survivors'
     #              own dev errors after the pass ('neuron') or by a head over
     #              them ('readout'). Needs `use_output_projection`.
+    #   'joint_last' - greedy at every layer; once growth stops and the
+    #              layers after the best one are dropped, the last kept
+    #              layer is built again, its candidates fitted on the same
+    #              input, and selected as a 'joint' layer is. Same needs as
+    #              'joint'.
     selection_mode: str = "greedy"
 
     # Required by the caller (tutorial YAMLs override). Left as Optional so

@@ -10,6 +10,9 @@ here each neuron is one unit that is either kept or dropped.
 - `group_lasso_penalty` / `group_soft_threshold`: the sum over neurons of
   the L2 norm of each neuron's parameters, and its proximal step, which
   sets whole groups to exactly zero.
+- `diversity_loss`: the mean squared correlation between the outputs of
+  the neurons that are kept, weighted by their gates, to push the kept
+  neurons apart.
 """
 import math
 from collections.abc import Sequence
@@ -122,6 +125,25 @@ def group_norms(parts: Sequence[torch.Tensor]) -> torch.Tensor:
 def group_lasso_penalty(parts: Sequence[torch.Tensor]) -> torch.Tensor:
     """sum_j ||w_j||_2 over the groups of `parts` (see `group_norms`)."""
     return group_norms(parts).sum()
+
+
+def diversity_loss(h: torch.Tensor, g: torch.Tensor, eps: float = 1e-5, tau: float = 0.0) -> torch.Tensor:
+    """Gate weighted mean squared correlation between neuron outputs.
+
+    `h` is (B, K), one column per neuron; `g` is (K,), each neuron's gate
+    (or another weight >= 0). The columns are standardized over the batch,
+    so the result does not depend on their scale. Each off-diagonal
+    correlation enters as max(0, |c_ij| - tau)^2 with the weight g_i g_j,
+    so a pair counts only as much as both neurons are open, and the gates
+    get a gradient that closes one of two correlated neurons. Returns the
+    weighted mean over the pairs, in [0, 1].
+    """
+    z = (h - h.mean(0)) / (h.std(0) + eps)
+    corr = z.T @ z / (h.shape[0] - 1)
+    off = torch.relu((corr - torch.diag(torch.diag(corr))).abs() - tau)
+    w = g[:, None] * g[None, :]
+    w = w - torch.diag(torch.diag(w))
+    return (w * off.pow(2)).sum() / (w.sum() + eps)
 
 
 @torch.no_grad()

@@ -82,6 +82,17 @@ def test_gates_close_under_the_penalty(tmp_path, caplog):
     assert steps and "active" in steps[-1] and "lam*penalty" in steps[-1]
 
 
+@pytest.mark.parametrize("kind", ["gates", "group_lasso"])
+def test_the_diversity_term_enters_the_pass(tmp_path, caplog, kind):
+    caplog.set_level("INFO", logger="torchsonn.trainer")
+    cfg = _cfg(tmp_path, joint={"kind": kind, "lam": 0.1 if kind == "gates" else 5.0,
+                                "diversity_lam": 1.0, "diversity_tau": 0.1})
+    model, _ = _train(cfg)
+    assert 1 <= len(model.layers[0]) <= 3
+    steps = [r.getMessage() for r in caplog.records if r.getMessage().startswith("joint step")]
+    assert steps and all("diversity" in s for s in steps)
+
+
 def test_group_lasso_zeroes_whole_neurons(tmp_path):
     cfg = _cfg(tmp_path, model={"nbest_neurons": 10},
                joint={"kind": "group_lasso", "lam": 1.0, "lr": 2e-2, "max_steps": 150, "lam_control": "fixed"})
@@ -275,6 +286,78 @@ def test_a_joint_pool_skips_the_per_layer_readout_head(tmp_path, monkeypatch):
     assert not called
 
 
+def test_layer_finetune_runs_on_the_survivors_after_the_cut(tmp_path, monkeypatch):
+    widths = []
+    original = Trainer._train_layer_finetune
+
+    def spy(self, model, layer, *a, **kw):
+        widths.append(len(layer))
+        return original(self, model, layer, *a, **kw)
+
+    monkeypatch.setattr(Trainer, "_train_layer_finetune", spy)
+    model, _ = _train(_deep_cfg(tmp_path, max_layer_count=2, layer_finetune=True))
+    # Once per layer grown, on the cut layer rather than the pool.
+    assert widths and all(w == 3 for w in widths)
+    assert len(widths) >= len(model.layers)
+
+
+def test_joint_layer_errors_are_taken_before_the_fine_tune(tmp_path, monkeypatch):
+    seen = []
+    original = Trainer._train_layer_finetune
+
+    def spy(self, model, layer, *a, **kw):
+        seen.append(layer.err_values.clone())
+        return original(self, model, layer, *a, **kw)
+
+    monkeypatch.setattr(Trainer, "_train_layer_finetune", spy)
+    model, _ = _train(_cfg(tmp_path, layer_finetune=True))
+    assert len(seen) == 1
+    assert torch.equal(model.layers[0].err_values.cpu(), seen[0].cpu())
+
+
+def test_restore_weights_keeps_the_candidates_own_fits(tmp_path, monkeypatch):
+    fits = {}
+    original = Trainer._sparsify_joint_pool
+
+    def spy(self, model, pool, *a, **kw):
+        fits["before"] = [p.detach().clone() for p in pool.layer.parameters()]
+        out = original(self, model, pool, *a, **kw)
+        fits["after"] = [p.detach().clone() for p in pool.layer.parameters()]
+        return out
+
+    monkeypatch.setattr(Trainer, "_sparsify_joint_pool", spy)
+    cfg = _cfg(tmp_path, model={"nbest_neurons": 4}, joint={"restore_weights": True, "lam": 1.0, "gate_lr": 0.2})
+    model, _ = _train(cfg)
+    layer = model.layers[0]
+    # The pass moved the coefficients; the kept ones are back at their own fits.
+    assert any(not torch.equal(b, a) for b, a in zip(fits["before"], fits["after"]))
+    kept = [p.detach() for p in layer.parameters()]
+    pool_rows = torch.cat([b.reshape(b.shape[0], -1) for b in fits["before"]], dim=1)
+    kept_rows = torch.cat([k.reshape(k.shape[0], -1) for k in kept], dim=1)
+    for row in kept_rows:
+        assert any(torch.equal(row, r) for r in pool_rows)
+
+
+def test_joint_last_selects_only_the_last_layer_jointly(tmp_path, monkeypatch):
+    calls = []
+    original = Trainer._train_joint_layer
+
+    def spy(self, model, layer, *a, **kw):
+        calls.append(layer.layer_index)
+        return original(self, model, layer, *a, **kw)
+
+    monkeypatch.setattr(Trainer, "_train_joint_layer", spy)
+    cfg = _cfg(tmp_path, model={"shortcut": True, "selection_mode": "joint_last"},
+               max_layer_count=3, criterion_minimum_width=4, stop_train_epsilon_condition=1e-9)
+    model, trainer = _train(cfg)
+    assert calls == [len(model.layers) - 1]
+    assert len(model.layers[-1]) == 3
+    assert model.out_proj.in_features == 3
+    trainer.train_out_proj(model, _dl(512, 0), _dl(128, 1))
+    pred = model.infer(torch.randn(6, 5))
+    assert pred.shape == (6,) and torch.isfinite(pred).all()
+
+
 def test_joint_multiclass(tmp_path):
     cfg = _cfg(tmp_path, model={"type": "multi-class", "num_classes": 3, "soft_binner": True})
     model, _ = _train(cfg, classes=3)
@@ -306,7 +389,8 @@ def test_joint_rejects_configs_it_cannot_honour(tmp_path, model_over, match):
 
 
 @pytest.mark.parametrize("joint", [{"prefilter": "top"}, {"prefilter_mult": 0.5}, {"lam": -1.0},
-                                   {"lam_warmup_frac": 2.0}, {"max_steps": 0}, {"gate_lr": 0.0}])
+                                   {"lam_warmup_frac": 2.0}, {"max_steps": 0}, {"gate_lr": 0.0},
+                                   {"diversity_lam": -1.0}, {"diversity_tau": 1.0}])
 def test_joint_rejects_bad_pass_settings(tmp_path, joint):
     with pytest.raises(ValueError, match="joint_sparsity"):
         Trainer(config=_cfg(tmp_path, joint=joint))

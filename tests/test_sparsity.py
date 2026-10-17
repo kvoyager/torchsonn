@@ -7,7 +7,8 @@ from omegaconf import OmegaConf
 from omegaconf.errors import ConfigKeyError
 
 from torchsonn.config import SONNConfig
-from torchsonn.modules import HardConcreteGate, group_lasso_penalty, group_norms, group_soft_threshold
+from torchsonn.modules import (HardConcreteGate, diversity_loss, group_lasso_penalty, group_norms,
+                               group_soft_threshold)
 from torchsonn.trainer import Trainer
 
 
@@ -103,6 +104,37 @@ class TestGroupLasso:
 
 def _cfg(**joint):
     return OmegaConf.merge(OmegaConf.structured(SONNConfig), {"train": {"joint_sparsity": joint}})
+
+
+class TestDiversityLoss:
+    def test_copies_score_one_and_independent_columns_near_zero(self):
+        torch.manual_seed(0)
+        a = torch.randn(4000, 1)
+        assert torch.isclose(diversity_loss(torch.cat([a, 3 * a + 1], 1), torch.ones(2)),
+                             torch.tensor(1.0), atol=1e-3)
+        assert diversity_loss(torch.randn(4000, 4), torch.ones(4)) < 1e-2
+
+    def test_a_closed_gate_drops_its_pairs(self):
+        torch.manual_seed(0)
+        a, b = torch.randn(500, 1), torch.randn(500, 1)
+        h = torch.cat([a, a, b], 1)
+        # With the copy's gate closed only the near-independent pair (a, b) is left.
+        assert diversity_loss(h, torch.tensor([1.0, 0.0, 1.0])) < 0.05
+        assert diversity_loss(h, torch.tensor([1.0, 1.0, 1.0])) > 0.3
+
+    def test_tau_tolerates_mild_correlation(self):
+        torch.manual_seed(0)
+        a = torch.randn(4000, 1)
+        h = torch.cat([a, a + 2.0 * torch.randn(4000, 1)], 1)  # |corr| about 0.45
+        assert diversity_loss(h, torch.ones(2)) > 0.1
+        assert diversity_loss(h, torch.ones(2), tau=0.6) == 0.0
+
+    def test_the_gates_get_a_gradient_that_closes_a_copy(self):
+        torch.manual_seed(0)
+        a, b = torch.randn(500, 1), torch.randn(500, 1)
+        g = torch.ones(3, requires_grad=True)
+        diversity_loss(torch.cat([a, a, b], 1), g).backward()
+        assert g.grad[0] > 0 and g.grad[1] > 0 and g.grad[2] < g.grad[0]
 
 
 class TestJointSparsityConfig:
