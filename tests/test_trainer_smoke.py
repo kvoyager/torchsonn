@@ -282,6 +282,16 @@ def test_train_with_precompute_and_shortcut(tmp_path):
     assert len(trained.layers) >= 1
 
 
+def test_train_with_max_volume_selection(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="max_volume")
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    train_dl = _make_dl(48)
+    dev_dl = _make_dl(16)
+    test_dl = _make_dl(8)
+    trainer.train(model, train_dl, dev_dl, test_dl, verbose=False)
+
+
 def test_train_with_omp_selection(tmp_path):
     cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="omp")
     model = SONN(cfg, d_model=4)
@@ -289,7 +299,40 @@ def test_train_with_omp_selection(tmp_path):
     train_dl = _make_dl(48)
     dev_dl = _make_dl(16)
     test_dl = _make_dl(8)
-    trainer.train(model, train_dl, dev_dl, test_dl, verbose=False)
+    trained = trainer.train(model, train_dl, dev_dl, test_dl, verbose=False)
+    assert 1 <= len(trained.layers[0]) <= 2
+
+
+def test_omp_selection_stops_when_gain_is_too_small(tmp_path):
+    # A min_gain above 1 can never be met, so omp keeps only the first
+    # survivor, which it always keeps.
+    cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="omp",
+               neuron_selection_min_gain=2.0)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+    trainer.fit_layer_inputs(model, layer, _make_dl(48))
+    trainer.train_layer(model, layer, _make_dl(48), _make_dl(16), None)
+    assert len(layer) == 1
+
+
+def test_train_with_omp_selection_multiclass(tmp_path):
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=1, neuron_selection_method="omp"),
+        {"model": {"type": "multi-class", "num_classes": 3, "soft_binner": True}},
+    )
+    rng = np.random.default_rng(0)
+
+    def dl(n):
+        x = rng.standard_normal((n, 4)).astype("float32")
+        y = np.digitize(x[:, 0] + 0.5 * x[:, 1], [-0.5, 0.5]).astype("int64")
+        return DataLoader(SONNDataset(torch.from_numpy(x), torch.from_numpy(y)), batch_size=8)
+
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    trained = trainer.train(model, dl(48), dl(16), dl(8), verbose=False)
+    assert len(trained.layers[0]) >= 1
 
 
 def test_train_finetune_and_layer_finetune_multiclass(tmp_path):

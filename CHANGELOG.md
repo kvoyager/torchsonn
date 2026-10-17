@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Changed — `neuron_selection_method: omp` is now `max_volume`; a new `omp` fits the target
+
+The selection method that kept, at every step, the candidate whose output
+has the largest norm after removing the survivors' directions is renamed
+from `omp` to `max_volume`; it behaves as before. `omp` is now orthogonal
+matching pursuit against the dev targets: at every step it keeps the
+candidate whose orthogonalized output explains the most of the target
+residual, then removes that direction from the residual and from the other
+candidates. After the first survivor it stops early once the best candidate
+explains less than the new `train.neuron_selection_min_gain` (default
+0.001) of the target's centered energy, so a layer can keep fewer than
+`nbest_neurons`. A multi-class target is one-hot encoded. Configs that set
+`omp` and want the old behavior should set `max_volume`. Both names are
+accepted by `train.joint_sparsity.prefilter`.
+
 ### Added — `model.selection_mode: joint`: layers selected jointly under a sparsity penalty
 
 A greedy layer fits every candidate neuron on its own and keeps the

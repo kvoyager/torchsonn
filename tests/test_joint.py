@@ -290,7 +290,7 @@ def test_train_layer_selection_overrides(tmp_path):
     layer = model.create_layer(0)
     model.layers.append(layer)
     trainer.fit_layer_inputs(model, layer, _dl(256, 0))
-    trainer.train_layer(model, layer, _dl(256, 0), _dl(64, 1), None, nbest=6, selection_method="omp")
+    trainer.train_layer(model, layer, _dl(256, 0), _dl(64, 1), None, nbest=6, selection_method="max_volume")
     assert len(layer) == 6
 
 

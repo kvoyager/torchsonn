@@ -15,7 +15,7 @@ More survivors give later layers more to combine, at the cost of more
 candidates in every later layer: with 16 survivors and 16 features, the next
 layer has 32 inputs and 496 pairs.
 
-## The three methods
+## The four methods
 
 `train.neuron_selection_method` chooses how the survivors are picked:
 
@@ -28,14 +28,22 @@ layer has 32 inputs and 496 pairs.
   `train.neuron_selection_orth_threshold` (0.3) of its original norm
   remains. The walk stops at `nbest_neurons` survivors, or earlier if the
   candidates run out.
-- **`omp`**: orthogonal matching pursuit on the candidates' outputs. At
-  each step it keeps the candidate whose remaining output, after removing
-  the survivors' directions, has the largest norm. It ignores the criterion
-  values when choosing.
+- **`max_volume`**: greedy maximum volume selection on the candidates'
+  outputs. At each step it keeps the candidate whose remaining output, after
+  removing the survivors' directions, has the largest norm. It ignores the
+  criterion values and the targets when choosing.
+- **`omp`**: orthogonal matching pursuit against the dev targets. At each
+  step it keeps the candidate whose remaining output explains the most of
+  the target that the survivors have not explained yet, then removes that
+  candidate's direction from the target and from the other candidates. It
+  ignores the criterion values. After the first survivor, it stops before
+  `nbest_neurons` once the best candidate explains less than `train.neuron_selection_min_gain`
+  (0.001) of the target's centered energy, so a layer can keep fewer
+  survivors. A multi-class target is one-hot encoded, one column per class.
 
-Both OMP methods use the neuron's own output, before any multi-class
-projection. In all three methods, the layer's error is computed from the
-criterion values of the survivors actually kept.
+`omp_mixed`, `max_volume` and `omp` use the neuron's own output, before any
+multi-class projection. In every method, the layer's error is computed from
+the criterion values of the survivors actually kept.
 
 ## Why decorrelate
 
@@ -44,7 +52,8 @@ other: the same strong pair of inputs, fitted by slightly different neurons.
 A linear head over such survivors has little to combine, since they carry
 much the same signal. `omp_mixed` keeps survivors that differ from each
 other while still preferring good ones, giving the head more distinct inputs
-to work with.
+to work with. `omp` goes further and picks each survivor for what it adds to
+the prediction of the target given the survivors already kept.
 
 ## Diagnostics
 
@@ -57,7 +66,8 @@ the largest. It costs one extra pass over the dev split per layer.
 ## The knobs
 
 `model.nbest_neurons`, `train.neuron_selection_method`,
-`train.neuron_selection_orth_threshold`, `train.log_layer_diagnostics`. See
+`train.neuron_selection_orth_threshold`, `train.neuron_selection_min_gain`,
+`train.log_layer_diagnostics`. See
 [Configuration keys](../reference/config.md).
 
 <small>Checked against TorchSONN 0.1.5.</small>

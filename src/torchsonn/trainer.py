@@ -106,6 +106,9 @@ class LayerAccumulator:
     # neuron_selection cats along dim 0 → (C_total, N_val) and uses it for
     # OMP-style decorrelation alongside err / module_idxs.
     z_val: list[torch.Tensor] = field(default_factory=list)
+    # Dev split targets in the same order as z_val's columns, (N_val,) or
+    # (N_val, O). The same for every neuron model, so it is kept once.
+    y_val: torch.Tensor | None = None
     layer_completed: bool = False
 
 
@@ -793,9 +796,10 @@ class Trainer:
                 f"train.joint_sparsity.lam_control={control!r}; expected 'fixed', 'anneal' or 'adaptive'."
             )
         prefilter = str(js.prefilter)
-        if prefilter not in ("none", "plain", "omp_mixed", "omp"):
+        if prefilter not in ("none", "plain", "omp_mixed", "max_volume", "omp"):
             raise ValueError(
-                f"train.joint_sparsity.prefilter={prefilter!r}; expected 'none', 'plain', 'omp_mixed' or 'omp'."
+                f"train.joint_sparsity.prefilter={prefilter!r}; expected 'none', 'plain', 'omp_mixed', "
+                "'max_volume' or 'omp'."
             )
         for key, ok, what in (
             ("lam", float(js.lam) >= 0.0, "a value >= 0"),
@@ -1547,9 +1551,10 @@ class Trainer:
                 regularity_err = self.regularity_err(model, pred_fn_vmapped, trained_params, buffers_batch, dev_feat_dl, device, skip_model_fwd=precompute)
             # Cache the per-candidate raw scalar outputs on the full dev
             # split for neuron_selection's OMP decorrelation.
-            accumulator.z_val.append(
-                self._compute_z_val(neuron_model, model, dev_feat_dl, device, precompute)
-            )
+            z_val, y_val = self._compute_z_val(neuron_model, model, dev_feat_dl, device, precompute)
+            accumulator.z_val.append(z_val)
+            if accumulator.y_val is None:
+                accumulator.y_val = y_val
 
             if model.need_bias_err:
                 neuron_module_a = deepcopy(neuron_model)
@@ -1741,8 +1746,9 @@ class Trainer:
             dev_dl: DataLoader,
             device: torch.device | str,
             skip_model_fwd: bool,
-    ) -> torch.Tensor:
-        """Per-candidate raw scalar outputs on the full dev split, shape (C, N_val).
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Per-candidate raw scalar outputs on the full dev split, shape (C, N_val),
+        and the dev targets in the same order.
 
         Used by neuron_selection's OMP-style decorrelation to skip candidates
         whose scalar response on the validation set is nearly collinear with
@@ -1753,12 +1759,14 @@ class Trainer:
         the next layer and is the right space to decorrelate in.
         """
         chunks: list[torch.Tensor] = []
+        targets: list[torch.Tensor] = []
         neuron_model.eval()
         with torch.inference_mode():
-            for x, _ in self._iter_eval_batches(model, dev_dl, device, skip_model_fwd):
+            for x, y in self._iter_eval_batches(model, dev_dl, device, skip_model_fwd):
                 z = neuron_model(x)  # (batch, C)
                 chunks.append(z.transpose(0, 1))  # (C, batch)
-        return torch.cat(chunks, dim=1)  # (C, N_val)
+                targets.append(y)
+        return torch.cat(chunks, dim=1), torch.cat(targets, dim=0)  # (C, N_val), (N_val, ...)
 
     def neuron_selection(
             self,
@@ -1829,12 +1837,12 @@ class Trainer:
             err_idxs = torch.tensor(selected_local_idxs, device=err.device, dtype=torch.long)
             err_values = err[err_idxs]
 
-        elif method == "omp":
-            # Classical Orthogonal Matching Pursuit, vectorized over the
-            # candidate axis. At every step, pick the candidate whose
-            # orthogonalized residual has the largest norm, then project that
-            # direction out of all remaining residuals. Pre-center each
-            # candidate's dev outputs once — we score variance, not magnitude.
+        elif method == "max_volume":
+            # Greedy maximum volume selection, vectorized over the candidate
+            # axis. At every step, pick the candidate whose orthogonalized
+            # residual has the largest norm, then project that direction out
+            # of all remaining residuals. Pre-center each candidate's dev
+            # outputs once: we score variance, not magnitude.
             R = z_val - z_val.mean(dim=1, keepdim=True)  # (C, N_val)
             C = R.size(0)
             available = torch.ones(C, dtype=torch.bool, device=R.device)
@@ -1855,10 +1863,47 @@ class Trainer:
             err_idxs = torch.tensor(selected_local_idxs, device=err.device, dtype=torch.long)
             err_values = err[err_idxs]
 
+        elif method == "omp":
+            # Orthogonal Matching Pursuit against the dev targets: at every
+            # step pick the candidate whose orthogonalized output explains the
+            # most of the target residual, then project its direction out of
+            # the residual and of every remaining candidate. After the first
+            # survivor, stops early once the best gain falls below
+            # neuron_selection_min_gain of the target's centered energy.
+            R = z_val - z_val.mean(dim=1, keepdim=True)  # (C, N_val)
+            y = accumulator.y_val
+            if model.param.model.type == "multi-class":
+                y = nn.functional.one_hot(y.long().view(-1), int(model.param.model.num_classes))
+            y = y.to(dtype=R.dtype)
+            y = y if y.dim() == 2 else y.view(-1, 1)  # (N_val, O)
+            r = y - y.mean(dim=0, keepdim=True)  # target residual
+            r0 = (r * r).sum()
+            min_gain = float(model.param.train.neuron_selection_min_gain)
+            C = R.size(0)
+            available = torch.ones(C, dtype=torch.bool, device=R.device)
+            selected_local_idxs = []
+            neg_inf = torch.full((), float("-inf"), device=R.device, dtype=R.dtype)
+            for _ in range(nbest):
+                norms = R.norm(dim=1).clamp_min(EPS)
+                gain = ((R @ r) ** 2).sum(dim=1) / norms ** 2  # residual target energy explained
+                gain = torch.where(available & (norms > EPS), gain, neg_inf)
+                best_ci = int(torch.argmax(gain).item())
+                if not torch.isfinite(gain[best_ci]):
+                    break
+                if selected_local_idxs and gain[best_ci].item() < min_gain * r0.item():  # the rest is noise
+                    break
+                selected_local_idxs.append(best_ci)
+                available[best_ci] = False
+                b = R[best_ci] / norms[best_ci]  # unit direction
+                r = r - b[:, None] * (b @ r)[None, :]  # deflate the target
+                R = R - (R @ b).unsqueeze(1) * b  # deflate the candidates
+            err_idxs = torch.tensor(selected_local_idxs, device=err.device, dtype=torch.long)
+            err_values = err[err_idxs]
+
         else:
             raise NotImplementedError(
                 f"Unknown neuron_selection_method: {method!r}; "
-                "expected one of 'plain', 'omp_mixed', 'omp'."
+                "expected one of 'plain', 'omp_mixed', 'max_volume', 'omp'."
             )
 
         topk_module_idxs = module_idxs[err_idxs]

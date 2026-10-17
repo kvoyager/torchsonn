@@ -214,7 +214,7 @@ finding.
 
 What the experiments found:
 
-- **Survivor selection is the strongest lever.** Plain and `omp`
+- **Survivor selection is the strongest lever.** Plain and `max_volume`
   selection cost 0.009–0.015.
 - **A wider survivor pool is the one robust gain.** 32 survivors beat 16
   on every seed, and 24 survivors gave the same mean with the smallest

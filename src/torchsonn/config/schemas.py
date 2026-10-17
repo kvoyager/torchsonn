@@ -200,7 +200,7 @@ class JointSparsityConfig:
     # Which candidates enter the pool. Every candidate of the layer is first
     # fitted on its own, as a greedy layer does; those fits are the pool's
     # starting weights. 'none' keeps every candidate whose fit is finite;
-    # 'plain', 'omp_mixed' and 'omp' keep prefilter_mult x the head's width,
+    # 'plain', 'omp_mixed', 'max_volume' and 'omp' keep prefilter_mult x the head's width,
     # chosen by that train.neuron_selection_method.
     prefilter: str = "omp_mixed"
     prefilter_mult: float = 10.0
@@ -418,14 +418,22 @@ class TrainConfig:
     #                 dev set) falls below `neuron_selection_orth_threshold` of
     #                 its original norm. Trades a small NCE bump for
     #                 decorrelated outputs feeding the next layer.
-    #   'omp'       — classical Orthogonal Matching Pursuit: at every step pick
-    #                 the candidate whose orthogonalized residual has the
-    #                 largest norm. Ignores `err` entirely; purely decorrelation-
+    #   'max_volume' — greedy maximum volume: at every step pick the
+    #                 candidate whose orthogonalized residual has the largest
+    #                 norm. Ignores `err` entirely; purely decorrelation
     #                 driven, vectorized over the candidate axis.
+    #   'omp'       — Orthogonal Matching Pursuit against the dev targets: at
+    #                 every step pick the candidate whose orthogonalized output
+    #                 explains the most of the remaining target residual, then
+    #                 deflate the residual and the candidates. Ignores `err`;
+    #                 may keep fewer than nbest (see neuron_selection_min_gain).
     neuron_selection_method: str = "plain"
     # Used only by the 'omp_mixed' variant. 0.3 = "keep candidate if at least
     # 30 % of its centered norm survives orthogonalization."
     neuron_selection_orth_threshold: float = 0.3
+    # Used only by the 'omp' variant. Selection stops once the best candidate
+    # explains less than this fraction of the centered target energy.
+    neuron_selection_min_gain: float = 1.0e-3
 
     eval_step_interval: int = 1000
     # How often (in eval passes) to refresh the tqdm progress bar's scalar

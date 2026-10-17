@@ -85,8 +85,9 @@ See [Survivor selection](../concepts/selection.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.neuron_selection_method` | str | `plain` | `plain`: the lowest criterion values. `omp_mixed`: in order of criterion value, skipping candidates whose dev outputs the survivors already explain. `omp`: orthogonal matching pursuit on the dev outputs, ignoring the criterion. |
+| `train.neuron_selection_method` | str | `plain` | `plain`: the lowest criterion values. `omp_mixed`: in order of criterion value, skipping candidates whose dev outputs the survivors already explain. `max_volume`: greedy maximum volume on the dev outputs, ignoring the criterion. `omp`: orthogonal matching pursuit of the dev targets by the dev outputs, ignoring the criterion. |
 | `train.neuron_selection_orth_threshold` | float | 0.3 | `omp_mixed` keeps a candidate when at least this fraction of its output's norm remains after removing the survivors' directions. |
+| `train.neuron_selection_min_gain` | float | 0.001 | After the first survivor, `omp` stops once the best candidate explains less than this fraction of the dev target's centered energy, so a layer can keep fewer than `model.nbest_neurons`. |
 | `train.log_layer_diagnostics` | bool | false | Log the survivors' correlations, top singular values and effective rank on dev after each layer; one extra pass over dev. |
 
 ## Candidate fit
@@ -213,7 +214,7 @@ pass; `train.max_layer_count: 1` builds one layer.
 | `train.joint_sparsity.count_margin` | float | 0.1 | How far above the target the active count may end, as a fraction of the target: the pass stops in [target, target × (1 + `count_margin`)] (rounded down). |
 | `train.joint_sparsity.count_patience` | int | 3 | Evaluations in a row the count must stay in that band, or below the target, before the pass stops or goes back. |
 | `train.joint_sparsity.prune_threshold` | float | 0.05 | A neuron counts as active while its deterministic gate (`gates`), or the norm of its head column over the norm it started the pass with (`group_lasso`), is above this. When the pass ends the others are removed. If more remain active than the head reads, the ones kept move the prediction most: the largest norm of their head column times the standard deviation of their output on dev. |
-| `train.joint_sparsity.prefilter` | str | `omp_mixed` | Which of a layer's candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `omp_mixed` or `omp` the `prefilter_mult` × `model.nbest_neurons` chosen by that selection method (see `train.neuron_selection_method`). |
+| `train.joint_sparsity.prefilter` | str | `omp_mixed` | Which of a layer's candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `omp_mixed`, `max_volume` or `omp` the `prefilter_mult` × `model.nbest_neurons` chosen by that selection method (see `train.neuron_selection_method`). |
 | `train.joint_sparsity.prefilter_mult` | float | 10.0 | Pool size as a multiple of `model.nbest_neurons`, for a `prefilter` other than `none`. At least 1. |
 | `train.joint_sparsity.lr` | float | 0.001 | AdamW learning rate of the pool's parameters and the head. |
 | `train.joint_sparsity.gate_lr` | float | 0.01 | AdamW learning rate of the gates. It sets how fast a gate can close. |
