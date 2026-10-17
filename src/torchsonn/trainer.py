@@ -796,10 +796,10 @@ class Trainer:
                 f"train.joint_sparsity.lam_control={control!r}; expected 'fixed', 'anneal' or 'adaptive'."
             )
         prefilter = str(js.prefilter)
-        if prefilter not in ("none", "plain", "greedy_orth", "max_volume", "omp"):
+        if prefilter not in ("none", "plain", "greedy_orth", "max_volume", "omp", "omp_mixed"):
             raise ValueError(
                 f"train.joint_sparsity.prefilter={prefilter!r}; expected 'none', 'plain', 'greedy_orth', "
-                "'max_volume' or 'omp'."
+                "'max_volume', 'omp' or 'omp_mixed'."
             )
         for key, ok, what in (
             ("lam", float(js.lam) >= 0.0, "a value >= 0"),
@@ -1768,6 +1768,16 @@ class Trainer:
                 targets.append(y)
         return torch.cat(chunks, dim=1), torch.cat(targets, dim=0)  # (C, N_val), (N_val, ...)
 
+    @staticmethod
+    def _selection_target(model: SONN, accumulator: LayerAccumulator, dtype: torch.dtype) -> torch.Tensor:
+        """Dev targets as an (N_val, O) matrix for the target aware selection
+        methods: one column per output, a multi-class target one-hot encoded."""
+        y = accumulator.y_val
+        if model.param.model.type == "multi-class":
+            y = nn.functional.one_hot(y.long().view(-1), int(model.param.model.num_classes))
+        y = y.to(dtype=dtype)
+        return y if y.dim() == 2 else y.view(-1, 1)
+
     def neuron_selection(
             self,
             model: SONN,
@@ -1871,11 +1881,7 @@ class Trainer:
             # survivor, stops early once the best gain falls below
             # neuron_selection_min_gain of the target's centered energy.
             R = z_val - z_val.mean(dim=1, keepdim=True)  # (C, N_val)
-            y = accumulator.y_val
-            if model.param.model.type == "multi-class":
-                y = nn.functional.one_hot(y.long().view(-1), int(model.param.model.num_classes))
-            y = y.to(dtype=R.dtype)
-            y = y if y.dim() == 2 else y.view(-1, 1)  # (N_val, O)
+            y = self._selection_target(model, accumulator, R.dtype)  # (N_val, O)
             r = y - y.mean(dim=0, keepdim=True)  # target residual
             r0 = (r * r).sum()
             min_gain = float(model.param.train.neuron_selection_min_gain)
@@ -1900,10 +1906,70 @@ class Trainer:
             err_idxs = torch.tensor(selected_local_idxs, device=err.device, dtype=torch.long)
             err_values = err[err_idxs]
 
+        elif method == "omp_mixed":
+            # Hybrid selection in two phases over one shared Gram-Schmidt state.
+            #   Phase 1, target aware OMP: fill the first (1 - reserve_frac) of
+            #   the nbest slots with the candidates that explain the most dev
+            #   target residual after the selected set is projected out.
+            #   Phase 2, max volume reserve: fill the remaining slots with the
+            #   candidates carrying the most variance the selected set cannot
+            #   explain. This phase ignores the target on purpose: it keeps
+            #   directions alive that may only become informative at a later
+            #   layer, which pure OMP would discard.
+            # Both phases skip near collinear picks with orth_threshold.
+            reserve_frac = float(model.param.train.neuron_selection_reserve_frac)
+            min_gain = float(model.param.train.neuron_selection_min_gain)
+            orth_threshold = float(model.param.train.neuron_selection_orth_threshold)
+            n_omp = nbest - int(round(reserve_frac * nbest))
+
+            R = z_val - z_val.mean(dim=1, keepdim=True)  # (C, N_val) residualized candidates
+            full_norm = R.norm(dim=1).clamp_min(EPS)  # (C,) reference for the collinearity guard
+            y = self._selection_target(model, accumulator, R.dtype)  # (N_val, O)
+            r = y - y.mean(dim=0, keepdim=True)  # (N_val, O) target residual
+            r0 = (r * r).sum().item()
+            C = R.size(0)
+            available = torch.ones(C, dtype=torch.bool, device=R.device)
+            neg_inf = torch.full((), float("-inf"), device=R.device, dtype=R.dtype)
+            selected_local_idxs = []
+
+            # Phase 1: target aware OMP.
+            while len(selected_local_idxs) < n_omp:
+                norms = R.norm(dim=1).clamp_min(EPS)
+                ok = available & (norms / full_norm >= orth_threshold)
+                if not bool(ok.any()):
+                    break
+                gain = ((R @ r) ** 2).sum(dim=1) / norms ** 2  # residual target energy explained
+                gain = torch.where(ok, gain, neg_inf)
+                ci = int(torch.argmax(gain).item())
+                if gain[ci].item() < min_gain * r0:  # the rest does not explain y
+                    break
+                selected_local_idxs.append(ci)
+                available[ci] = False
+                b = R[ci] / norms[ci]
+                r = r - b[:, None] * (b @ r)[None, :]  # deflate the target
+                R = R - (R @ b).unsqueeze(1) * b  # deflate the candidates
+
+            # Phase 2: max volume reserve on the OMP deflated candidates.
+            # Runs to nbest even if phase 1 stopped early on min_gain: once y
+            # is explained, the remaining slots are best spent on novelty.
+            while len(selected_local_idxs) < nbest:
+                norms = R.norm(dim=1)
+                ok = available & (norms / full_norm >= orth_threshold)
+                if not bool(ok.any()):
+                    break
+                score = torch.where(ok, norms, neg_inf)
+                ci = int(torch.argmax(score).item())
+                selected_local_idxs.append(ci)
+                available[ci] = False
+                b = R[ci] / norms[ci].clamp_min(EPS)
+                R = R - (R @ b).unsqueeze(1) * b  # r is no longer needed
+            err_idxs = torch.tensor(selected_local_idxs, device=err.device, dtype=torch.long)
+            err_values = err[err_idxs]
+
         else:
             raise NotImplementedError(
                 f"Unknown neuron_selection_method: {method!r}; "
-                "expected one of 'plain', 'greedy_orth', 'max_volume', 'omp'."
+                "expected one of 'plain', 'greedy_orth', 'max_volume', 'omp', 'omp_mixed'."
             )
 
         topk_module_idxs = module_idxs[err_idxs]

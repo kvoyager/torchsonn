@@ -200,8 +200,9 @@ class JointSparsityConfig:
     # Which candidates enter the pool. Every candidate of the layer is first
     # fitted on its own, as a greedy layer does; those fits are the pool's
     # starting weights. 'none' keeps every candidate whose fit is finite;
-    # 'plain', 'greedy_orth', 'max_volume' and 'omp' keep prefilter_mult x the head's width,
-    # chosen by that train.neuron_selection_method.
+    # 'plain', 'greedy_orth', 'max_volume', 'omp' and 'omp_mixed' keep
+    # prefilter_mult x the head's width, chosen by that
+    # train.neuron_selection_method.
     prefilter: str = "greedy_orth"
     prefilter_mult: float = 10.0
     # The pass itself: AdamW over the pool's parameters and the head (lr,
@@ -427,13 +428,23 @@ class TrainConfig:
     #                 explains the most of the remaining target residual, then
     #                 deflate the residual and the candidates. Ignores `err`;
     #                 may keep fewer than nbest (see neuron_selection_min_gain).
-    neuron_selection_method: str = "plain"
-    # Used only by the 'greedy_orth' variant. 0.3 = "keep candidate if at least
-    # 30 % of its centered norm survives orthogonalization."
-    neuron_selection_orth_threshold: float = 0.3
-    # Used only by the 'omp' variant. Selection stops once the best candidate
-    # explains less than this fraction of the centered target energy.
+    #   'omp_mixed' — 'omp' for the first (1 - neuron_selection_reserve_frac)
+    #                 of the nbest slots, then 'max_volume' on what is left of
+    #                 the candidates for the rest, both skipping candidates
+    #                 that fail neuron_selection_orth_threshold.
+    neuron_selection_method: str = "omp_mixed"
+    # Used by the 'greedy_orth' and 'omp_mixed' variants. 0.05 = "keep
+    # candidate if at least 5 % of its centered norm survives
+    # orthogonalization."
+    neuron_selection_orth_threshold: float = 0.05
+    # Used by the 'omp' and 'omp_mixed' variants. The target aware selection
+    # stops once the best candidate explains less than this fraction of the
+    # centered target energy.
     neuron_selection_min_gain: float = 1.0e-3
+    # Used only by the 'omp_mixed' variant: the fraction of the nbest slots
+    # filled by max volume after the target aware phase. 0.0 is pure 'omp',
+    # 1.0 pure 'max_volume', both with the collinearity guard.
+    neuron_selection_reserve_frac: float = 0.2
 
     eval_step_interval: int = 1000
     # How often (in eval passes) to refresh the tqdm progress bar's scalar

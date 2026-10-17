@@ -197,6 +197,7 @@ train:
   # is at the edge of single-run noise (+-0.002); the MAE gain is ~3x it. Also
   # ~30% fewer layers. Not yet confirmed across seeds.
   neuron_selection_method: greedy_orth
+  neuron_selection_orth_threshold: 0.3
 
   # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
   # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex

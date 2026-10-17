@@ -91,6 +91,7 @@ train:
   # gmdhpy defaults: criterion="validate", layer_err_criterion="top",
   # criterion_minimum_width=5, stop_train_epsilon_condition=0.001
   criterion_type: validate
+  neuron_selection_method: plain
   error_alpha: 0.5
   layer_err_criterion: top
   criterion_minimum_width: 2

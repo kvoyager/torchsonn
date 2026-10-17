@@ -85,9 +85,10 @@ See [Survivor selection](../concepts/selection.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `train.neuron_selection_method` | str | `plain` | `plain`: the lowest criterion values. `greedy_orth`: in order of criterion value, skipping candidates whose dev outputs the survivors already explain. `max_volume`: greedy maximum volume on the dev outputs, ignoring the criterion. `omp`: orthogonal matching pursuit of the dev targets by the dev outputs, ignoring the criterion. |
-| `train.neuron_selection_orth_threshold` | float | 0.3 | `greedy_orth` keeps a candidate when at least this fraction of its output's norm remains after removing the survivors' directions. |
-| `train.neuron_selection_min_gain` | float | 0.001 | After the first survivor, `omp` stops once the best candidate explains less than this fraction of the dev target's centered energy, so a layer can keep fewer than `model.nbest_neurons`. |
+| `train.neuron_selection_method` | str | `omp_mixed` | `plain`: the lowest criterion values. `greedy_orth`: in order of criterion value, skipping candidates whose dev outputs the survivors already explain. `max_volume`: greedy maximum volume on the dev outputs, ignoring the criterion. `omp`: orthogonal matching pursuit of the dev targets by the dev outputs, ignoring the criterion. `omp_mixed`: `omp` for all but `train.neuron_selection_reserve_frac` of the survivors, then `max_volume` for the rest, ignoring the criterion. |
+| `train.neuron_selection_orth_threshold` | float | 0.05 | `greedy_orth` and `omp_mixed` keep a candidate only when at least this fraction of its output's norm remains after removing the survivors' directions. |
+| `train.neuron_selection_min_gain` | float | 0.001 | After the first survivor, `omp` stops once the best candidate explains less than this fraction of the dev target's centered energy, so a layer can keep fewer than `model.nbest_neurons`. `omp_mixed` ends its `omp` phase by the same rule and fills the remaining slots with `max_volume`. |
+| `train.neuron_selection_reserve_frac` | float | 0.2 | `omp_mixed`: the fraction of `model.nbest_neurons` filled by `max_volume` after the `omp` phase. 0.0 is pure `omp`, 1.0 pure `max_volume`. |
 | `train.log_layer_diagnostics` | bool | false | Log the survivors' correlations, top singular values and effective rank on dev after each layer; one extra pass over dev. |
 
 ## Candidate fit
@@ -214,7 +215,7 @@ pass; `train.max_layer_count: 1` builds one layer.
 | `train.joint_sparsity.count_margin` | float | 0.1 | How far above the target the active count may end, as a fraction of the target: the pass stops in [target, target × (1 + `count_margin`)] (rounded down). |
 | `train.joint_sparsity.count_patience` | int | 3 | Evaluations in a row the count must stay in that band, or below the target, before the pass stops or goes back. |
 | `train.joint_sparsity.prune_threshold` | float | 0.05 | A neuron counts as active while its deterministic gate (`gates`), or the norm of its head column over the norm it started the pass with (`group_lasso`), is above this. When the pass ends the others are removed. If more remain active than the head reads, the ones kept move the prediction most: the largest norm of their head column times the standard deviation of their output on dev. |
-| `train.joint_sparsity.prefilter` | str | `greedy_orth` | Which of a layer's candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `greedy_orth`, `max_volume` or `omp` the `prefilter_mult` × `model.nbest_neurons` chosen by that selection method (see `train.neuron_selection_method`). |
+| `train.joint_sparsity.prefilter` | str | `greedy_orth` | Which of a layer's candidates, each first fitted on its own, enter the pool: `none` every candidate with a finite fit; `plain`, `greedy_orth`, `max_volume`, `omp` or `omp_mixed` the `prefilter_mult` × `model.nbest_neurons` chosen by that selection method (see `train.neuron_selection_method`). |
 | `train.joint_sparsity.prefilter_mult` | float | 10.0 | Pool size as a multiple of `model.nbest_neurons`, for a `prefilter` other than `none`. At least 1. |
 | `train.joint_sparsity.lr` | float | 0.001 | AdamW learning rate of the pool's parameters and the head. |
 | `train.joint_sparsity.gate_lr` | float | 0.01 | AdamW learning rate of the gates. It sets how fast a gate can close. |

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added — `neuron_selection_method: omp_mixed`, the new default
+
+`omp_mixed` picks a layer's survivors in two phases over one shared
+Gram-Schmidt state. `omp` fills all but `train.neuron_selection_reserve_frac`
+(new, default 0.2) of the `nbest_neurons` slots with the candidates that
+explain the most of the dev target residual, stopping early under
+`train.neuron_selection_min_gain`. `max_volume` then fills the remaining
+slots with the candidates whose outputs the survivors explain least,
+without looking at the target, so that directions which may only help a
+later layer are kept. Both phases skip a candidate when less than
+`train.neuron_selection_orth_threshold` of its output's norm remains.
+`omp_mixed` is now the default `train.neuron_selection_method` (it was
+`plain`), and the default `train.neuron_selection_orth_threshold` is now
+0.05 (it was 0.3), which also applies to `greedy_orth` and to the
+`train.joint_sparsity.prefilter` default. The tutorial configs that relied
+on the old defaults now set them explicitly. `omp_mixed` is also accepted
+by `train.joint_sparsity.prefilter`.
+
 ### Changed — `neuron_selection_method: omp_mixed` is now `greedy_orth`
 
 The method that walks the candidates in order of criterion value and skips

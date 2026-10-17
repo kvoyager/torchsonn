@@ -1817,3 +1817,27 @@ def test_end_to_end_graph_pass_restores_in_place(tmp_path, scripted_best, where,
     _assert_ends_on_second_evaluation(best, list(model.parameters()))
     assert [p.data_ptr() for p in model.parameters()] == ptrs
     assert not list(trainer.run_dir.glob("best_*"))
+
+
+@pytest.mark.parametrize("reserve_frac", [0.0, 0.5, 1.0])
+def test_train_with_omp_mixed_selection(tmp_path, reserve_frac):
+    cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="omp_mixed",
+               neuron_selection_reserve_frac=reserve_frac)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    trained = trainer.train(model, _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
+    assert 1 <= len(trained.layers[0]) <= 2
+
+
+def test_omp_mixed_fills_the_reserve_when_omp_stops_early(tmp_path):
+    # A min_gain above 1 stops the omp phase at once; the max volume phase
+    # still fills every slot.
+    cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="omp_mixed",
+               neuron_selection_min_gain=2.0, neuron_selection_orth_threshold=0.0)
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    layer = model.create_layer(0)
+    model.layers.append(layer)
+    trainer.fit_layer_inputs(model, layer, _make_dl(48))
+    trainer.train_layer(model, layer, _make_dl(48), _make_dl(16), None)
+    assert len(layer) == 2

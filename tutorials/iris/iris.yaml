@@ -41,6 +41,7 @@ train:
   batch_size: 30
   device: cpu
   criterion_type: validate
+  neuron_selection_method: plain
   error_alpha: 0.5
   criterion_minimum_width: 5
   eval_step_interval: 5

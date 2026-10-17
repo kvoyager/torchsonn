@@ -15,17 +15,17 @@ More survivors give later layers more to combine, at the cost of more
 candidates in every later layer: with 16 survivors and 16 features, the next
 layer has 32 inputs and 496 pairs.
 
-## The four methods
+## The five methods
 
 `train.neuron_selection_method` chooses how the survivors are picked:
 
-- **`plain`** (default): the `nbest_neurons` candidates with the lowest
-  criterion values.
+- **`plain`**: the `nbest_neurons` candidates with the lowest criterion
+  values.
 - **`greedy_orth`**: walks the candidates from the lowest criterion value up.
   For each one, it takes the candidate's outputs on the dev split, centred,
   and removes the parts that the survivors kept so far already explain (a
   Gram-Schmidt step). The candidate is kept only if at least
-  `train.neuron_selection_orth_threshold` (0.3) of its original norm
+  `train.neuron_selection_orth_threshold` (0.05) of its original norm
   remains. The walk stops at `nbest_neurons` survivors, or earlier if the
   candidates run out.
 - **`max_volume`**: greedy maximum volume selection on the candidates'
@@ -37,12 +37,23 @@ layer has 32 inputs and 496 pairs.
   the target that the survivors have not explained yet, then removes that
   candidate's direction from the target and from the other candidates. It
   ignores the criterion values. After the first survivor, it stops before
-  `nbest_neurons` once the best candidate explains less than `train.neuron_selection_min_gain`
-  (0.001) of the target's centered energy, so a layer can keep fewer
-  survivors. A multi-class target is one-hot encoded, one column per class.
+  `nbest_neurons` once the best candidate explains less than
+  `train.neuron_selection_min_gain` (0.001) of the target's centered energy,
+  so a layer can keep fewer survivors. A multi-class target is one-hot
+  encoded, one column per class.
+- **`omp_mixed`** (default): `omp` and `max_volume` in turn, over the same
+  orthogonalized outputs. `omp` fills the first slots, all but
+  `train.neuron_selection_reserve_frac` (0.2) of `nbest_neurons`, and stops
+  early under the same `train.neuron_selection_min_gain` rule. `max_volume`
+  fills the rest from what the chosen survivors leave unexplained, without
+  looking at the target, so that directions which may only help a later
+  layer are kept. Both phases skip a candidate when less than
+  `train.neuron_selection_orth_threshold` of its original norm remains. A
+  `reserve_frac` of 0.0 makes it pure `omp`, 1.0 pure `max_volume`, both
+  with that guard. It ignores the criterion values.
 
-`greedy_orth`, `max_volume` and `omp` use the neuron's own output, before any
-multi-class projection. In every method, the layer's error is computed from
+`greedy_orth`, `max_volume`, `omp` and `omp_mixed` use the neuron's own
+output, before any multi-class projection. In every method, the layer's error is computed from
 the criterion values of the survivors actually kept.
 
 ## Why decorrelate
@@ -53,7 +64,9 @@ A linear head over such survivors has little to combine, since they carry
 much the same signal. `greedy_orth` keeps survivors that differ from each
 other while still preferring good ones, giving the head more distinct inputs
 to work with. `omp` goes further and picks each survivor for what it adds to
-the prediction of the target given the survivors already kept.
+the prediction of the target given the survivors already kept. `omp_mixed`
+keeps a share of the slots for survivors that are new rather than
+predictive.
 
 ## Diagnostics
 
@@ -67,7 +80,7 @@ the largest. It costs one extra pass over the dev split per layer.
 
 `model.nbest_neurons`, `train.neuron_selection_method`,
 `train.neuron_selection_orth_threshold`, `train.neuron_selection_min_gain`,
-`train.log_layer_diagnostics`. See
+`train.neuron_selection_reserve_frac`, `train.log_layer_diagnostics`. See
 [Configuration keys](../reference/config.md).
 
 <small>Checked against TorchSONN 0.1.5.</small>
