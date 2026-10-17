@@ -405,8 +405,8 @@ def test_train_finetune_and_layer_finetune_multiclass(tmp_path):
     assert not centers.requires_grad
 
 
-def test_train_with_omp_mixed_selection(tmp_path):
-    cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="omp_mixed",
+def test_train_with_greedy_orth_selection(tmp_path):
+    cfg = _cfg(tmp_path, max_layer_count=1, neuron_selection_method="greedy_orth",
                neuron_selection_orth_threshold=0.1)
     model = SONN(cfg, d_model=4)
     trainer = Trainer(config=cfg)

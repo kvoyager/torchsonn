@@ -1,6 +1,6 @@
 # MLP variant of california_housing_legendre_finetune.yaml: the Legendre
 # family replaced by the MLP neuron (src/torchsonn/neurons/mlp.py). Everything
-# else (split, features, survivors, candidate cap, omp_mixed selection, head,
+# else (split, features, survivors, candidate cap, greedy_orth selection, head,
 # end-to-end pass, seed) comes from that file through the defaults list.
 #
 # Per pair neuron, defaults: inputs as they arrive, one hidden layer of

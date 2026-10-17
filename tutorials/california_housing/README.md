@@ -168,7 +168,7 @@ the row above it.
 | + location features (rotated coordinates, city distances, kNN price) | 0.2605 | 0.3307 |
 | 60/20/20 split (train 12,384 rows) ¹ | 0.2160 | 0.2975 |
 | per-layer fine-tune off, 16 survivors | 0.1972 | 0.2786 |
-| decorrelated survivor selection (`omp_mixed`) | 0.1946 | 0.2731 |
+| decorrelated survivor selection (`greedy_orth`) | 0.1946 | 0.2731 |
 | feature audit (log MedInc, bedrooms-per-room ratio) | 0.1920 | 0.2740 |
 | censored loss at the \$500k cap | 0.1912 | 0.2719 |
 | raw instead of log target (MSE favours the mean) | 0.1877 | 0.2791 |

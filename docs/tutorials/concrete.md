@@ -39,7 +39,7 @@ the predictions back into MPa before it scores them.
 | `model.ref_functions` | `linear_cov`, `quadratic`, `cubic`, `polyquad` with `dim: 5` | pairwise products, squares, cubes and a five-input quadratic compete in every layer |
 | `model.shortcut` | true | every layer can still read the 8 features |
 | `model.nbest_neurons`, `model.max_neuron_models` | 8, 56 | 8 survivors per layer; up to 56 candidates per family, which `polyquad` with `dim: 5` requires (see [Power-basis polynomials](../concepts/neurons/polynomial.md)) |
-| `train.neuron_selection_method` | `omp_mixed`, threshold 0.2 | survivors whose outputs differ (see [Survivor selection](../concepts/selection.md)) |
+| `train.neuron_selection_method` | `greedy_orth`, threshold 0.2 | survivors whose outputs differ (see [Survivor selection](../concepts/selection.md)) |
 | `train.ridge_alpha` | 0.001 | a small L2 penalty on the coefficients |
 | `train.optimizer` | `lbfgs`, `lr` 0.1, `min_lr` 0.01 | one batch holds every training row |
 | `train.criterion_minimum_width`, `train.max_layer_count` | 2, 50 | the search stops after two layers without improvement |

@@ -1,6 +1,6 @@
 # RBF-only variant of california_housing_legendre_finetune.yaml: the Legendre
 # family replaced by the Gaussian RBF neuron (src/torchsonn/neurons/rbf.py).
-# Identical to that file otherwise (survivors, candidate cap, omp_mixed
+# Identical to that file otherwise (survivors, candidate cap, greedy_orth
 # selection, head, end-to-end pass, seed). Per pair neuron, 16 Gaussian bumps
 # over the two standardized inputs
 #     phi_m(u) = softmax_m( -|u - c_m|^2 / (2 s_m^2) )        (partition of unity)
@@ -296,15 +296,15 @@ train:
 
   # Survivor selection. 'plain' keeps the top-16 candidates by individual dev
   # error, which on this data are near-duplicates of the same best pair (a head
-  # over them beat the best single neuron by only 0.002 dev error). 'omp_mixed'
+  # over them beat the best single neuron by only 0.002 dev error). 'greedy_orth'
   # walks candidates in error order and drops any whose output is mostly
   # explained by the survivors already chosen (Gram-Schmidt on dev, keep if
   # >= 30% of the norm survives), so the head gets a decorrelated basis.
-  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), omp_mixed
+  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), greedy_orth
   # 0.1946 / 0.2731 (11 layers), max_volume 0.1952 / 0.2786 (10 layers). The MSE gain
   # is at the edge of single-run noise (+-0.002); the MAE gain is ~3x it. Also
   # ~30% fewer layers. Not yet confirmed across seeds.
-  neuron_selection_method: omp_mixed
+  neuron_selection_method: greedy_orth
 
   # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
   # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex

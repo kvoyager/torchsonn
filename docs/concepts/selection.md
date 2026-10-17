@@ -21,7 +21,7 @@ layer has 32 inputs and 496 pairs.
 
 - **`plain`** (default): the `nbest_neurons` candidates with the lowest
   criterion values.
-- **`omp_mixed`**: walks the candidates from the lowest criterion value up.
+- **`greedy_orth`**: walks the candidates from the lowest criterion value up.
   For each one, it takes the candidate's outputs on the dev split, centred,
   and removes the parts that the survivors kept so far already explain (a
   Gram-Schmidt step). The candidate is kept only if at least
@@ -41,7 +41,7 @@ layer has 32 inputs and 496 pairs.
   (0.001) of the target's centered energy, so a layer can keep fewer
   survivors. A multi-class target is one-hot encoded, one column per class.
 
-`omp_mixed`, `max_volume` and `omp` use the neuron's own output, before any
+`greedy_orth`, `max_volume` and `omp` use the neuron's own output, before any
 multi-class projection. In every method, the layer's error is computed from
 the criterion values of the survivors actually kept.
 
@@ -50,7 +50,7 @@ the criterion values of the survivors actually kept.
 `plain` keeps the best candidates, which are often near-copies of each
 other: the same strong pair of inputs, fitted by slightly different neurons.
 A linear head over such survivors has little to combine, since they carry
-much the same signal. `omp_mixed` keeps survivors that differ from each
+much the same signal. `greedy_orth` keeps survivors that differ from each
 other while still preferring good ones, giving the head more distinct inputs
 to work with. `omp` goes further and picks each survivor for what it adds to
 the prediction of the target given the survivors already kept.

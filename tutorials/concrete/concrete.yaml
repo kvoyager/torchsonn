@@ -81,7 +81,7 @@ train:
   # Decorrelated survivors: a candidate is kept only if at least 20 % of its
   # centered norm on dev survives Gram-Schmidt against the survivors kept
   # so far.
-  neuron_selection_method: omp_mixed
+  neuron_selection_method: greedy_orth
   neuron_selection_orth_threshold: 0.2
 
   # L2 (ridge) penalty on each neuron's polynomial coefficient fit.

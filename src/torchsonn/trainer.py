@@ -796,9 +796,9 @@ class Trainer:
                 f"train.joint_sparsity.lam_control={control!r}; expected 'fixed', 'anneal' or 'adaptive'."
             )
         prefilter = str(js.prefilter)
-        if prefilter not in ("none", "plain", "omp_mixed", "max_volume", "omp"):
+        if prefilter not in ("none", "plain", "greedy_orth", "max_volume", "omp"):
             raise ValueError(
-                f"train.joint_sparsity.prefilter={prefilter!r}; expected 'none', 'plain', 'omp_mixed', "
+                f"train.joint_sparsity.prefilter={prefilter!r}; expected 'none', 'plain', 'greedy_orth', "
                 "'max_volume' or 'omp'."
             )
         for key, ok, what in (
@@ -1814,7 +1814,7 @@ class Trainer:
             # Historical default: top-k by individual error.
             err_values, err_idxs = torch.topk(err, k=nbest, dim=0, largest=False)
 
-        elif method == "omp_mixed":
+        elif method == "greedy_orth":
             # Walk candidates in error order (best-error first) and keep any
             # whose residual after Gram-Schmidt against already-selected
             # survivors still carries enough novel signal on the dev set.
@@ -1903,7 +1903,7 @@ class Trainer:
         else:
             raise NotImplementedError(
                 f"Unknown neuron_selection_method: {method!r}; "
-                "expected one of 'plain', 'omp_mixed', 'max_volume', 'omp'."
+                "expected one of 'plain', 'greedy_orth', 'max_volume', 'omp'."
             )
 
         topk_module_idxs = module_idxs[err_idxs]

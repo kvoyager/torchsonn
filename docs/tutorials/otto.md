@@ -53,7 +53,7 @@ loss and the accuracy (see [Classification](../concepts/classification.md#class-
 | `train.layer_finetune` | true | each layer's survivors train together through a temporary head (see [Heads and fine-tuning](../concepts/heads-and-finetune.md#the-per-layer-fine-tune)) |
 | `train.out_proj_train` | `lbfgs`, `weight_decay` 2.5e-5 | the head fit and the per-layer fine-tune; the small L2 penalty keeps the head's weights finite on nearly separable classes |
 | `train.optimizer`, `train.steps` | `adam`, `lr` 1e-3, `min_lr` 1e-4; 1101 | batches of 512 rows, evaluated every 100 steps; no candidate fit stops early, so each runs 1,101 steps |
-| `train.neuron_selection_method` | `omp_mixed`, threshold 0.2 | survivors whose outputs differ |
+| `train.neuron_selection_method` | `greedy_orth`, threshold 0.2 | survivors whose outputs differ |
 | `train.log_layer_diagnostics` | true | logs the survivors' correlations and effective rank |
 | `train.max_layer_count` | 3 | |
 | `train.device` | `cuda` | |

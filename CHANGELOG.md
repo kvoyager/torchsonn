@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed — `neuron_selection_method: omp_mixed` is now `greedy_orth`
+
+The method that walks the candidates in order of criterion value and skips
+those whose dev outputs the survivors already explain is renamed from
+`omp_mixed` to `greedy_orth`; it behaves as before. It is also the new name
+of the `train.joint_sparsity.prefilter` default. Configs that set
+`omp_mixed` should set `greedy_orth`.
+
 ### Changed — `neuron_selection_method: omp` is now `max_volume`; a new `omp` fits the target
 
 The selection method that kept, at every step, the candidate whose output

@@ -63,14 +63,14 @@
 #                                         MSE 0.2017   MAE 0.2810   (18 trained)
 # Survivor selection (train.neuron_selection_method), single model, cuda:
 #   plain (was the default here)          MSE 0.1972   MAE 0.2786   (15 layers)
-#   omp_mixed                             MSE 0.1946   MAE 0.2731   (11 layers) <- this file
+#   greedy_orth                           MSE 0.1946   MAE 0.2731   (11 layers) <- this file
 #   max_volume                            MSE 0.1952   MAE 0.2786   (10 layers)
-#   omp_mixed + 'readout' criterion       MSE 0.2015   MAE 0.2826   (7 layers: the
+#   greedy_orth + 'readout' criterion     MSE 0.2015   MAE 0.2826   (7 layers: the
 #     readout curve is flatter, so that criterion stops too early; the head-vs-
 #     best-neuron gap did widen as predicted, 0.007 vs 0.002 under plain)
 # Feature audit fixes in the script (log MedInc; AveBedrms column replaced by
 # log bedrooms-per-room, which is the same information at skew 0.5 instead of 6;
-# rows clipped at +-5 sigma on that column 95 -> 5), omp_mixed, single model:
+# rows clipped at +-5 sigma on that column 95 -> 5), greedy_orth, single model:
 #   fixed features                        MSE 0.1920   MAE 0.2740   (7 layers)
 # Censored loss (train.censor_target_at = log cap; tutorial.censor_cap), single model:
 #   + censoring                           MSE 0.1912   MAE 0.2719   (15 layers) <- current
@@ -296,15 +296,15 @@ train:
 
   # Survivor selection. 'plain' keeps the top-16 candidates by individual dev
   # error, which on this data are near-duplicates of the same best pair (a head
-  # over them beat the best single neuron by only 0.002 dev error). 'omp_mixed'
+  # over them beat the best single neuron by only 0.002 dev error). 'greedy_orth'
   # walks candidates in error order and drops any whose output is mostly
   # explained by the survivors already chosen (Gram-Schmidt on dev, keep if
   # >= 30% of the norm survives), so the head gets a decorrelated basis.
-  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), omp_mixed
+  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), greedy_orth
   # 0.1946 / 0.2731 (11 layers), max_volume 0.1952 / 0.2786 (10 layers). The MSE gain
   # is at the edge of single-run noise (+-0.002); the MAE gain is ~3x it. Also
   # ~30% fewer layers. Not yet confirmed across seeds.
-  neuron_selection_method: omp_mixed
+  neuron_selection_method: greedy_orth
 
   # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
   # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex

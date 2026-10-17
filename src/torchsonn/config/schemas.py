@@ -200,9 +200,9 @@ class JointSparsityConfig:
     # Which candidates enter the pool. Every candidate of the layer is first
     # fitted on its own, as a greedy layer does; those fits are the pool's
     # starting weights. 'none' keeps every candidate whose fit is finite;
-    # 'plain', 'omp_mixed', 'max_volume' and 'omp' keep prefilter_mult x the head's width,
+    # 'plain', 'greedy_orth', 'max_volume' and 'omp' keep prefilter_mult x the head's width,
     # chosen by that train.neuron_selection_method.
-    prefilter: str = "omp_mixed"
+    prefilter: str = "greedy_orth"
     prefilter_mult: float = 10.0
     # The pass itself: AdamW over the pool's parameters and the head (lr,
     # weight_decay) and the gates (gate_lr, no decay), max_steps steps, an
@@ -413,7 +413,7 @@ class TrainConfig:
     # Algorithm used by train_layer → neuron_selection to pick survivors from
     # the candidate pool:
     #   'plain'     — top-k by individual error (historical default).
-    #   'omp_mixed' — walk candidates in error order, drop ones whose residual
+    #   'greedy_orth' — walk candidates in error order, drop ones whose residual
     #                 (after Gram-Schmidt vs. already-selected survivors on the
     #                 dev set) falls below `neuron_selection_orth_threshold` of
     #                 its original norm. Trades a small NCE bump for
@@ -428,7 +428,7 @@ class TrainConfig:
     #                 deflate the residual and the candidates. Ignores `err`;
     #                 may keep fewer than nbest (see neuron_selection_min_gain).
     neuron_selection_method: str = "plain"
-    # Used only by the 'omp_mixed' variant. 0.3 = "keep candidate if at least
+    # Used only by the 'greedy_orth' variant. 0.3 = "keep candidate if at least
     # 30 % of its centered norm survives orthogonalization."
     neuron_selection_orth_threshold: float = 0.3
     # Used only by the 'omp' variant. Selection stops once the best candidate

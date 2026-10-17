@@ -100,5 +100,5 @@ train:
   shuffle: true
   verbose: true
   log_layer_diagnostics: true
-  neuron_selection_method: omp_mixed
+  neuron_selection_method: greedy_orth
   neuron_selection_orth_threshold: 0.2

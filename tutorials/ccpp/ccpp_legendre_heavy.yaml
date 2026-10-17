@@ -137,7 +137,7 @@ train:
   # Decorrelate survivors so each layer feeds the next an independent basis.
   # 0.2 keeps any candidate whose residual norm survives at ≥20 % of its
   # centered norm after Gram-Schmidt against the already-selected survivors.
-  neuron_selection_method: omp_mixed
+  neuron_selection_method: greedy_orth
 #  neuron_selection_method: plain
   neuron_selection_orth_threshold: 0.05
 

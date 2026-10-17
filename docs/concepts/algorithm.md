@@ -115,7 +115,7 @@ still fitted on the whole train split. `validate_bias` mixes the two.
 
 The candidates of all families in the layer compete together. With the
 default `train.neuron_selection_method: plain`, the `nbest_neurons` with
-the lowest criterion values survive; `omp_mixed`, `max_volume` and `omp`
+the lowest criterion values survive; `greedy_orth`, `max_volume` and `omp`
 also favour survivors whose outputs differ from each other (see
 [Survivor selection](selection.md)). Every other candidate is deleted. The
 layer's error is its best survivor's criterion value

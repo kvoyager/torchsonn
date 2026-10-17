@@ -1,7 +1,7 @@
 # Legendre + RBF: california_housing_rbf.yaml with the Legendre family kept
 # next to the RBF one, two families per layer, the plain degree-3 Legendre pair neuron and the Gaussian RBF pair
 # neuron (16 learnable, k-means-started centers + linear part), same candidate
-# cap each. The selection (omp_mixed on dev) decides per layer whether a local
+# cap each. The selection (greedy_orth on dev) decides per layer whether a local
 # neuron earns a slot next to a global one - the fair test of the family,
 # since a local basis alone may lose on the global trend and still be worth
 # slots beside a polynomial. Twice the candidates per layer, ~2x the layer
@@ -180,15 +180,15 @@ train:
 
   # Survivor selection. 'plain' keeps the top-16 candidates by individual dev
   # error, which on this data are near-duplicates of the same best pair (a head
-  # over them beat the best single neuron by only 0.002 dev error). 'omp_mixed'
+  # over them beat the best single neuron by only 0.002 dev error). 'greedy_orth'
   # walks candidates in error order and drops any whose output is mostly
   # explained by the survivors already chosen (Gram-Schmidt on dev, keep if
   # >= 30% of the norm survives), so the head gets a decorrelated basis.
-  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), omp_mixed
+  # Measured, single model: plain 0.1972 / 0.2786 (15 layers), greedy_orth
   # 0.1946 / 0.2731 (11 layers), max_volume 0.1952 / 0.2786 (10 layers). The MSE gain
   # is at the edge of single-run noise (+-0.002); the MAE gain is ~3x it. Also
   # ~30% fewer layers. Not yet confirmed across seeds.
-  neuron_selection_method: omp_mixed
+  neuron_selection_method: greedy_orth
 
   # Optimization — LBFGS is a quasi-Newton method that estimates the inverse
   # Hessian from a rolling history of (s = Δw, y = Δgrad) pairs. On a convex
