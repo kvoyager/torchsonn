@@ -16,6 +16,9 @@ class BatchedAdam(BaseOptimizer):
         theta = theta - lr * m_hat / (sqrt(v_hat) + eps)
         m_hat = m / (1 - b1^t),     v_hat = v / (1 - b2^t)
 
+    With `weight_decay` wd > 0 the decay is decoupled from the gradient, as
+    in AdamW: theta = theta - lr * wd * theta - lr * m_hat / (sqrt(v_hat) + eps).
+
     Members with `active_mask` False in `step` keep their parameters; their
     moment buffers still advance.
 
@@ -37,6 +40,8 @@ class BatchedAdam(BaseOptimizer):
         Decay rates b1, b2 of the moment estimates. Default (0.9, 0.999).
     eps : float
         Added to sqrt(v_hat) in the denominator. Default 1e-8.
+    weight_decay : float
+        Decoupled weight decay wd, applied to every parameter. Default 0.0.
     """
 
     def __init__(
@@ -49,10 +54,12 @@ class BatchedAdam(BaseOptimizer):
         clip_value: float | None = None,
         clip_norm: float | None = None,
         shared_param_lr_multiplier: float = 1.0,
+        weight_decay: float = 0.0,
     ) -> None:
         super().__init__(shared_param_names, lr, clip_value, clip_norm, shared_param_lr_multiplier)
         self.betas = betas
         self.eps = eps
+        self.weight_decay = float(weight_decay)
         # now store as dict for consistency with torch.func style
         self.m: dict[str, torch.Tensor] = {k: torch.zeros_like(v) for k, v in params.items()}
         self.v: dict[str, torch.Tensor] = {k: torch.zeros_like(v) for k, v in params.items()}
@@ -116,17 +123,20 @@ class BatchedAdam(BaseOptimizer):
             v_hat = v / (1 - self.betas[1] ** self.t)
 
             update = lr * m_hat / (v_hat.sqrt() + self.eps)
+            if self.weight_decay > 0:
+                update = update + lr * self.weight_decay * p
 
             new_params[k] = p - update if k in self.shared_param_names else torch.where(update_mask, p - update, p)
 
         return new_params
 
     def state_dict(self) -> dict[str, Any]:
-        """Return lr, betas, eps, the moment buffers, the step count and the shared-parameter settings."""
+        """Return lr, betas, eps, weight_decay, the moment buffers, the step count and the shared-parameter settings."""
         return {
             "lr": self.lr,
             "betas": self.betas,
             "eps": self.eps,
+            "weight_decay": self.weight_decay,
             "m": {k: v.clone() for k, v in self.m.items()},
             "v": {k: v.clone() for k, v in self.v.items()},
             "t": self.t,
@@ -135,10 +145,12 @@ class BatchedAdam(BaseOptimizer):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore the state written by `state_dict`; every field must be present."""
+        """Restore the state written by `state_dict`; every field must be
+        present, except `weight_decay`, read as 0.0 when missing."""
         self.lr = state_dict["lr"]
         self.betas = state_dict["betas"]
         self.eps = state_dict["eps"]
+        self.weight_decay = float(state_dict.get("weight_decay", 0.0))
         self.m = {k: v.clone() for k, v in state_dict["m"].items()}
         self.v = {k: v.clone() for k, v in state_dict["v"].items()}
         self.t = state_dict["t"]

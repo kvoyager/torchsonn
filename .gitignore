@@ -4,6 +4,7 @@
 *.swp
 *.log
 *.zip
+claude.md
 .ipynb_checkpoints
 temp/
 tmp/
@@ -53,6 +54,7 @@ tutorials/california_housing/outputs
 tutorials/california_housing/experiments
 tutorials/otto/data
 tutorials/otto/outputs
+tutorials/otto/experiments/
 tutorials/ccpp/data
 tutorials/ccpp/outputs
 

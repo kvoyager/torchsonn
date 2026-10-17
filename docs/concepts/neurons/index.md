@@ -29,9 +29,11 @@ row. Their number is the family's weight count:
 | `polyquad` | `dim` | $1 + \text{dim} + \text{dim}(\text{dim}+1)/2$ with squares | [Power-basis polynomials](polynomial.md) |
 | `legendre`, `chebyshev` | `dim` (default 2) | $1 + \text{dim} \cdot \text{degree} + \binom{\text{dim}}{2}$ | [Orthogonal polynomials](orthogonal.md) |
 | `rbf` | `dim` (default 2) | $M + \text{dim}$, with $M$ centres | [Gaussian RBF](rbf.md) |
+| `mlp` | `dim` (default 2) | $1 + F + H$, with $F$ expanded inputs and $H$ hidden units | [MLP](mlp.md) |
 
 The `rbf` family also learns where its bumps sit and how wide they are, on
-top of its weights.
+top of its weights. The `mlp` family's design row includes its hidden
+units, whose own weights are learned along with the neuron's.
 
 ## Candidates
 
@@ -102,6 +104,9 @@ ranking — which works best depends on the data:
   degrees, which can make the search more stable.
 - **RBF** (`rbf`) fits local structure rather than a global polynomial
   surface, at the cost of more parameters.
+- **MLP** (`mlp`) learns its own terms with a small hidden layer, on top
+  of a polynomial of its inputs, at the cost of more parameters than the
+  polynomial families and a fit that depends on its starting weights.
 - **More inputs per neuron** (a higher `dim`) lets a single neuron capture
   joint interactions that pairwise neurons reach only indirectly.
 
@@ -114,7 +119,7 @@ them.
 ## The knobs
 
 `model.ref_functions` and its per-entry options, `model.max_neuron_models`,
-and for the orthogonal families `model.squash_method`,
+and for the orthogonal and MLP families `model.squash_method`,
 `model.squash_n_sigma` and `model.squash_core_range`. All are described in
 [Configuration keys](../../reference/config.md).
 

@@ -67,7 +67,8 @@ inputs make 120 pairs but 4,368 tuples of 5.
   per step, at the cost of a copy of every split's layer inputs: rows times
   input width numbers per split, which grows with depth under `shortcut`.
   No measurements of either are recorded.
-- **The input pass.** A layer with an orthogonal or RBF family first runs
+- **The input pass.** A layer with an orthogonal or RBF family, or an MLP
+  family that standardizes or squashes its inputs, first runs
   the frozen layers once over the train split to collect its input
   statistics and, for RBF, a sample for k-means; streaming k-means adds
   `train.rbf_kmeans_passes` passes when the split is larger than

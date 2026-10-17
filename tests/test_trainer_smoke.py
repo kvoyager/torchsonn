@@ -1058,6 +1058,64 @@ def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
         assert p.requires_grad
 
 
+# --- The MLP family through the trainer --------------------------------------
+
+from torchsonn.neurons import MLPNeuron as _MLPNeuron
+
+
+@pytest.mark.parametrize("opts", [{}, {"cov": True, "squares": True, "standardize": True, "squash": True}])
+def test_mlp_family_trains_end_to_end(tmp_path, opts):
+    """Input pass (when a transform is on), joint candidate fit of the readout
+    and the hidden layer, selection with the survivor report, prune, inference
+    and the checkpoint round trip."""
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=2),
+        OmegaConf.create({"model": {"ref_functions": [{"mlp": opts}], "shortcut": True}}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(64)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    assert len(trained.layers) >= 1
+    mlp_seen = False
+    for layer in trained.layers:
+        for nm in layer.neuron_models:
+            if isinstance(nm, _MLPNeuron):
+                mlp_seen = True
+                assert torch.isfinite(nm.hidden_weight).all() and torch.isfinite(nm.weight).all()
+                assert "hidden readout" in nm.fit_report()
+                if opts.get("standardize"):
+                    assert not torch.equal(nm.in_std, torch.ones_like(nm.in_std))
+    assert mlp_seen
+    x = torch.randn(5, 4)
+    with torch.inference_mode():
+        pred = trained.infer(x)
+    fresh = SONN(cfg, d_model=4)
+    trainer.load_model_checkpoint(fresh, "cpu")
+    with torch.inference_mode():
+        assert torch.allclose(fresh.infer(x), pred, atol=1e-6)
+    trainer.prune(trained)
+    with torch.inference_mode():
+        assert torch.allclose(trained.infer(x), pred, atol=1e-6)
+
+
+def test_mlp_candidate_fit_trains_the_hidden_layer(tmp_path):
+    """The vmapped candidate fit trains the hidden layer, not just the
+    readout: after one layer the survivors' hidden biases (zero at the
+    start) have moved."""
+    cfg = OmegaConf.merge(
+        _cfg(tmp_path, max_layer_count=1, steps=40),
+        OmegaConf.create({"model": {"ref_functions": ["mlp"], "shortcut": False}}),
+    )
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    dl = _make_dl(96)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    nm = trained.layers[0].neuron_models[0]
+    assert isinstance(nm, _MLPNeuron) and isinstance(nm.hidden_bias, torch.nn.Parameter)
+    assert nm.hidden_bias.detach().abs().max() > 1e-4
+
+
 # --- Candidate early stop on the training loss (train.early_stop_source) ----
 
 @pytest.mark.parametrize("source", ["dev", "train"])

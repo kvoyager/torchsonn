@@ -176,8 +176,9 @@ data; it is too few rows to measure its accuracy precisely.
   `use_neuron_proj: True` (which needs `soft_binner: False`) gives every
   candidate its own. `use_output_projection` adds a linear head over the
   last layer's survivors (see [Classification](../concepts/classification.md)).
-- **Class weights**: pass `class_weights` to the `Trainer` when some
-  classes are rare.
+- **Class weights**: pass `class_weights` to the `Trainer` when recall
+  on rare classes matters more than the log loss (see
+  [Class weights](../concepts/classification.md#class-weights)).
 - **The search**: more neuron families, more survivors and deeper networks,
   as in the [regression quickstart](quickstart-regression.md#what-to-change-first).
   The [Otto tutorial](../tutorials/otto.md) is a larger classification

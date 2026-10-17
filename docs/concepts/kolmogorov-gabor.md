@@ -92,6 +92,11 @@ a linear part, with learnable bump centres and widths. A network with `rbf` surv
 GMDH-type network whose partial descriptions are not polynomials, and the
 Kolmogorov-Gabor picture describes only its polynomial neurons.
 
+**The MLP family** is not a polynomial either. Its partial description is
+a small one-hidden-layer network of smooth units, read out together with a
+polynomial of its inputs. That polynomial is the only part of an `mlp`
+survivor the Kolmogorov-Gabor picture describes.
+
 [Neuron families](neurons/index.md) gives every family's formula and
 options.
 

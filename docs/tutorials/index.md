@@ -11,7 +11,7 @@ fine-tuning that runs for hours.
 | [California housing](california-housing.md) | `regressor`, 20,640 rows | `legendre` or `rbf` | feature engineering, an output head and the end-to-end pass, a comparison with gradient boosting | about 45 s on a GPU |
 | [Concrete](concrete.md) | `regressor`, 1,030 rows | `linear_cov`, `quadratic`, `cubic`, `polyquad` | four families side by side, a 30-layer network on a small dataset | about 8 min on a CPU |
 | [CCPP](ccpp.md) | `regressor`, 9,568 rows, 5×2 cross-validation | power-basis and `legendre` | the published benchmark protocol, the squash, the three fine-tuning passes | 12 min on a CPU to 14.7 h on a GPU, by config |
-| [Otto](otto.md) | `multi-class`, 9 classes, 61,878 rows | `polyquad` | class weights, a projection per candidate, the per-layer fine-tune, a head over 93 survivors | about 2 min on a GPU |
+| [Otto](otto.md) | `multi-class`, 9 classes, 61,878 rows | `polyquad` | a projection per candidate, the per-layer fine-tune, a head over 93 survivors | about 3 min on a GPU |
 
 The run times are single runs of the shipped configurations; the CCPP
 range covers its configs, each over all ten folds.

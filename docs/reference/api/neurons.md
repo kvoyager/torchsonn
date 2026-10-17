@@ -28,6 +28,8 @@ for the options.
 
 ::: torchsonn.neurons.rbf.RBFNeuron
 
+::: torchsonn.neurons.mlp.MLPNeuron
+
 ::: torchsonn.neurons.base.generate_unique_pairs
 
 ::: torchsonn.neurons.base.generate_unique_combinations

@@ -5,8 +5,7 @@ count features, on the Otto Group Product Classification dataset. The
 score is the multi-class log loss, the metric of the Kaggle competition
 the dataset comes from. The tutorial is the largest of the five: a
 5-input quadratic family, 93 survivors per layer, a projection per
-candidate, the per-layer fine-tune, an output head and class weights, on a
-GPU.
+candidate, the per-layer fine-tune and an output head, on a GPU.
 
 ```bash
 python tutorials/otto/otto_classification.py
@@ -36,12 +35,11 @@ then applies a LayerNorm without learned parameters to every input row
 (`SONN(..., preprocessing=...)`).
 
 The classes are imbalanced: the two largest hold about half of the
-products, the smallest about 3%. The script weights each class by the
-inverse of its frequency (see [Classification](../concepts/classification.md#class-weights)):
-
-```text
-class weights: [3.565 0.426 0.859 2.554 2.511 0.486 2.422 0.812 1.387]
-```
+products, the smallest about 3%. The model trains without class weights
+all the same. The score is the unweighted log loss, and inverse-frequency
+weights would make the model predict as if every class were equally
+common, which over-predicts the small classes and worsens both the log
+loss and the accuracy (see [Classification](../concepts/classification.md#class-weights)).
 
 ## The configuration
 
@@ -62,24 +60,24 @@ class weights: [3.565 0.426 0.859 2.554 2.511 0.486 2.422 0.812 1.387]
 
 ## Results
 
-One run on an RTX 5080 GPU took about 2 minutes. The search used all three
+One run on an RTX 5080 GPU took about 3 minutes. The search used all three
 layers allowed, each better than the one before:
 
 | Layer | 0 | 1 | 2 |
 |---|---|---|---|
-| Dev error | 0.8318 | 0.7339 | 0.6943 |
+| Dev error | 0.7371 | 0.6898 | 0.6337 |
 
 After the head fit:
 
 | Split | Log loss | Accuracy |
 |---|---|---|
-| Train | 0.6144 | 0.7587 |
-| Dev | 0.7257 | 0.7271 |
-| Test | 0.7317 | 0.7334 |
+| Train | 0.5095 | 0.8032 |
+| Dev | 0.6153 | 0.7782 |
+| Test | 0.6206 | 0.7734 |
 
 The script also prints a per-class report and the test confusion matrix.
-The class weights trade precision on the large classes for recall on the
-small ones: the smallest class is found 68% of the time, at a precision of
-43%.
+The small classes are the hard ones: the smallest is found 43% of the time,
+at a precision of 56%. The largest share of the errors, about 40%, is
+`Class_2` and `Class_3` taken for each other.
 
-<small>Checked against TorchSONN 0.1.5.</small>
+<small>Checked against TorchSONN 0.1.7.</small>

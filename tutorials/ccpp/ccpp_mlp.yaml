@@ -1,0 +1,36 @@
+# Legendre + MLP variant of ccpp_legendre_finetune.yaml: the MLP neuron
+# (src/torchsonn/neurons/mlp.py) added next to the Legendre pair family, the
+# best mix on California housing (that tutorial's california_housing_mlp.yaml,
+# Legendre + standardized MLP). Everything else (pools, seed, the three
+# fine-tuning stages, the 5x2cv protocol) comes from ccpp_legendre_finetune.yaml
+# through the defaults list.
+#
+#   python -m tutorials.ccpp.ccpp --config-name=ccpp_mlp train.device=cuda
+#
+# Results, 2026-10-13, 5x2cv, cuda (logs in experiments/logs/MLP_*.log):
+#   ccpp_legendre_finetune   MAE 3.1803 +- 0.0591   RMSE 4.1138 +- 0.0762   R2 0.9419    7 min
+#   this file                MAE 3.1729 +- 0.0507   RMSE 4.1129 +- 0.0703   R2 0.9419   20 min
+#   paired over the 10 folds: MAE -0.0074, RMSE -0.0009, better in 5 of 10 folds (a tie)
+defaults:
+  - ccpp_legendre_finetune
+  - _self_
+
+model:
+  ref_functions:
+    - legendre:
+        degree: 3
+        squash: True
+        activation: ""
+    - mlp:
+        dim: 2
+        hidden: null
+        cov: false
+        squares: false
+        skip: true
+        hidden_activation: silu
+        standardize: true
+        squash: false
+        activation: ""
+
+train:
+  checkpoint_dir: "checkpoints/checkpoints_mlp"

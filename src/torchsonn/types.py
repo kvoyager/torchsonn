@@ -19,6 +19,7 @@ class RefFunctionType(Enum):
     rfLegendre = 5
     rfChebyshev = 6
     rfRBF = 7
+    rfMLP = 8
 
     @classmethod
     def get_name(cls, value: "RefFunctionType") -> str:
@@ -41,6 +42,8 @@ class RefFunctionType(Enum):
             return 'Chebyshev'
         elif value == cls.rfRBF:
             return 'RBF'
+        elif value == cls.rfMLP:
+            return 'MLP'
         else:
             return 'Unknown'
 
@@ -49,7 +52,7 @@ class RefFunctionType(Enum):
         """Resolve a config name or alias to a `RefFunctionType`.
 
         Accepted names: 'linear', 'linear_cov', 'quadratic', 'cubic',
-        'polyquad', 'legendre', 'chebyshev', 'rbf'. A `RefFunctionType` is
+        'polyquad', 'legendre', 'chebyshev', 'rbf', 'mlp'. A `RefFunctionType` is
         returned unchanged.
 
         Raises
@@ -75,6 +78,8 @@ class RefFunctionType(Enum):
             return RefFunctionType.rfChebyshev
         elif arg == 'rbf':
             return RefFunctionType.rfRBF
+        elif arg == 'mlp':
+            return RefFunctionType.rfMLP
         else:
             raise ValueError(arg)
 

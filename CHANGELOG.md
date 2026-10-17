@@ -53,6 +53,55 @@ Welling and Kingma, 2018), `group_lasso_penalty` and its proximal step
 `nbest` / `method` overrides, and `Trainer.prune` cuts a layer through the
 new `Trainer._keep_columns`, which the joint mode shares.
 
+### Added — `mlp`: a one-hidden-layer network neuron family
+
+`MLPNeuron` (`ref_functions: - mlp`) reads `dim` inputs (2 by default),
+expands them to the inputs plus, optionally, their pairwise products
+(`cov`) and squares (`squares`), and passes that through one hidden layer
+of `hidden` units (default `2 * dim + 1`, activation `hidden_activation`,
+default `silu`). The output is a weighted sum of the hidden units and, with
+`skip` (on by default), of the expanded inputs too, so the neuron contains
+the polynomial over the same terms. The hidden layer is fitted with the
+output weights by the candidate fit, the layer fine-tune and the end-to-end
+pass; `train.ridge_alpha` applies to the output weights only. The inputs
+can be standardized (`standardize`) and squashed (`squash`, with
+`squash_method`, `squash_n_sigma` and `squash_core_range` defaulting to the
+`model.squash_*` keys); both are off by default, and the input pass runs
+only when one is on. The short name is `MLP<hidden>`, with `x<dim>` when
+`dim` is not 2. The concept page is Neuron families / MLP.
+
+### Added — `weight_decay` for the `adam` candidate optimizer
+
+`train.optimizer.optimizer_params.weight_decay` now applies to `adam` as
+well as `sgd`. For `adam` the decay is decoupled from the gradient, as in
+AdamW: every step shrinks each candidate's parameters by the factor
+1 - lr * weight_decay before the Adam update. The default 0.0 leaves the
+candidate fits unchanged.
+
+### Changed — the Otto tutorial trains without class weights
+
+`otto_classification.py` and `otto.ipynb` no longer pass inverse-frequency
+`class_weights` to the `Trainer`. Otto is scored by the unweighted log loss,
+and the weights made the model predict a flat class prior. Test log loss
+goes from 0.7317 to 0.6206 and accuracy from 0.7334 to 0.7734 (seed 42,
+same configuration otherwise). The classification concept page now says
+what class weights do to the predicted probabilities.
+
+## 0.1.7
+
+### Fixed — the PyPI project page
+
+PyPI renders the README as the project description, and parts of it only
+worked on GitHub.
+
+- **Links and the network image.** Every link and image in the README is
+  an absolute URL, so they work on PyPI as well as on GitHub. Links to
+  documentation pages go to the documentation site.
+- **The growth diagram.** PyPI does not render Mermaid, so the README shows
+  the diagram as an image, `img/growth.svg`, rendered from `img/growth.mmd`.
+- **Install.** The section starts with `pip install torchsonn` and names no
+  version; installing `main` from GitHub comes after it.
+
 ## 0.1.6
 
 ### Removed — compatibility code for older names, entry forms and checkpoints

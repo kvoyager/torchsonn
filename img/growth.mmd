@@ -1,0 +1,12 @@
+%% The README's growth diagram. PyPI does not render Mermaid, so the README
+%% shows img/growth.svg, rendered from this file. After a change, re-render:
+%%   npx -y @mermaid-js/mermaid-cli@11.4.2 -i img/growth.mmd -o img/growth.svg -c img/growth.mermaid.json -b white
+%% growth.mermaid.json turns HTML labels off: they are written into
+%% <foreignObject>, which a browser drops when the SVG is shown through <img>.
+flowchart TB
+    F[Features] --> L0[Layer 0]
+    L0 --> L1[Layer 1]
+    F --> L1
+    L1 --> L2[...]
+    F --> L2
+    L2 --> P[Prediction]

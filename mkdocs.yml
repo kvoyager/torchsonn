@@ -1,5 +1,5 @@
 site_name: TorchSONN
-site_description: "Self-organizing deep neural networks on PyTorch: polynomial, orthogonal-polynomial and RBF neurons grown layer by layer, in the GMDH family."
+site_description: "Self-organizing deep neural networks on PyTorch: polynomial, orthogonal-polynomial, RBF and MLP neurons grown layer by layer, in the GMDH family."
 site_url: https://kvoyager.github.io/torchsonn/
 repo_url: https://github.com/kvoyager/torchsonn
 repo_name: kvoyager/torchsonn
@@ -119,6 +119,7 @@ nav:
           - Power-basis polynomials: concepts/neurons/polynomial.md
           - Orthogonal polynomials: concepts/neurons/orthogonal.md
           - Gaussian RBF: concepts/neurons/rbf.md
+          - MLP: concepts/neurons/mlp.md
       - Criteria: concepts/criteria.md
       - Splits and stopping: concepts/splits-and-stopping.md
       - Survivor selection: concepts/selection.md

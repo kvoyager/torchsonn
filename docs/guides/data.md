@@ -55,7 +55,8 @@ as by location or by time.
 - The orthogonal families squash their inputs themselves (see
   [Orthogonal polynomials](../concepts/neurons/orthogonal.md#the-squash)),
   and the RBF family standardizes its own; the power-basis families use the
-  inputs as they come.
+  inputs as they come, and so does the MLP family unless its `standardize`
+  or `squash` option is on.
 
 ## Batch size
 

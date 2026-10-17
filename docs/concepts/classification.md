@@ -130,14 +130,22 @@ class_weights = torch.tensor(counts.sum() / (len(counts) * counts),
 trainer = Trainer(config, class_weights=class_weights)
 ```
 
-This is the Otto tutorial's choice: each class weighted by the inverse of
-its frequency, so that every class carries the same total weight. For
-`multi-class`, the tensor has one weight per class. For `binary`, it has one
-element, the weight of the positive class.
+Here each class is weighted by the inverse of its frequency, so that every
+class carries the same total weight. For `multi-class`, the tensor has one
+weight per class. For `binary`, it has one element, the weight of the
+positive class.
 
 The weights change the training loss of the candidates, the head fit and
 the fine-tune passes. The criterion that selects the survivors and decides
 the depth stays unweighted.
+
+Weights change what the predicted probabilities mean. A model trained on
+weighted cross entropy estimates probabilities proportional to w_k p(k|x):
+with inverse-frequency weights it predicts as if every class were equally
+common, so it over-predicts the small classes. That raises recall on them
+and worsens the unweighted log loss and the accuracy. When the score is the
+unweighted log loss or the accuracy, train without weights; the
+[Otto tutorial](../tutorials/otto.md) does.
 
 ## The knobs
 
@@ -146,4 +154,4 @@ the depth stays unweighted.
 `train.shared_proj_lr_multiplier`, `model.use_output_projection`. See
 [Configuration keys](../reference/config.md#multi-class-heads).
 
-<small>Checked against TorchSONN 0.1.5.</small>
+<small>Checked against TorchSONN 0.1.7.</small>

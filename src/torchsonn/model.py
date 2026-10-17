@@ -29,6 +29,7 @@ from torchsonn.neurons import (
     LegendrePolynomNeuron,
     ChebyshevPolynomNeuron,
     RBFNeuron,
+    MLPNeuron,
 )
 from torchsonn.loss import NormMSE
 from torchsonn.types import RefFunctionType, CriterionType, LayerCreationError
@@ -916,15 +917,16 @@ class SONN(SONNModule):
             RefFunctionType.rfLegendre:      LegendrePolynomNeuron,   # Legendre basis, degree `degree`
             RefFunctionType.rfChebyshev:     ChebyshevPolynomNeuron,  # Chebyshev basis, degree `degree`
             RefFunctionType.rfRBF:           RBFNeuron,               # Gaussian bumps, `centers` per neuron
+            RefFunctionType.rfMLP:           MLPNeuron,               # one hidden layer, `hidden` units
         }
 
         neuron_models = []
         for ref_type, options in self.ref_functions:
             neuron_cls = neuron_cls_by_type[ref_type]
             a, kw = _make_neuron_args(options)
-            if issubclass(neuron_cls, BaseOrthogonalNeuron):
-                # Only the orthogonal-polynomial families squash their inputs;
-                # handing these kwargs to e.g. LinearPolynomNeuron would be a
+            if issubclass(neuron_cls, (BaseOrthogonalNeuron, MLPNeuron)):
+                # Only the orthogonal-polynomial and MLP families squash their
+                # inputs; handing these kwargs to e.g. LinearPolynomNeuron would be a
                 # TypeError. setdefault so a per-entry override in the YAML
                 # (`- legendre: {squash_method: tanh}`) still wins over the
                 # model-wide default.
