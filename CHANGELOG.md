@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added — joint selection: a diversity term, `restore_weights` and `selection_mode: joint_last`
+
+`train.joint_sparsity.diversity_lam` (default 0, off) adds a diversity
+term to the joint loss: the mean squared correlation between the pool's
+neuron outputs on the batch, each pair weighted by the product of the two
+neurons' gates, or of the norms of their head columns under `group_lasso`.
+It pushes the kept neurons apart. `diversity_tau` (default 0) ignores
+correlations up to that value. The function is `diversity_loss` in
+`torchsonn.modules`, and the log reports the term at every evaluation.
+
+`train.joint_sparsity.restore_weights: true` makes the pass only select:
+after the cut the survivors' coefficients go back to their own fits from
+before the pass, as a greedy layer keeps them.
+
+`train.layer_finetune` now also runs under `model.selection_mode: joint`,
+on the survivors after the cut. The survivors' own dev errors that the
+growth rule reads are taken before the fine-tune.
+
+`model.selection_mode: joint_last` grows the network greedily at every
+layer; once growth stops, the last kept layer is built again from the same
+input and selected jointly, a fresh output head is fitted over it and the
+end-to-end pass follows as usual. It has the same requirements as `joint`.
+
 ### Changed — the Otto tutorial selects survivors with `omp_mixed`
 
 `otto.yaml` sets `train.neuron_selection_method: omp_mixed` (reserve 0.2,
