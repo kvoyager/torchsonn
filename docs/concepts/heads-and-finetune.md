@@ -125,7 +125,9 @@ preds, targets = trainer.infer(model, test_dl)
 the optimizer (`adam`, `adamw` or `sgd`; there is no LBFGS here), the
 learning rate, the plateau schedule, the step limit and the early stop.
 The early stop reads the dev split, or the validation split when
-`train.stop_source` is `val`.
+`train.stop_source` is `val`. `train.finetune_train.dropout` drops the
+head's inputs, the survivors' outputs it reads, at every training step;
+evaluations and inference see the full inputs.
 
 With a head and a block like the one below, the pass typically stops on its
 own within a couple of thousand steps, a few minutes on a CPU:
@@ -149,9 +151,16 @@ end-to-end pass improves on both.
 
 Things to know before using it:
 
-- **Use a small learning rate.** Every weight moves at once, so the pass
-  wants a far gentler step than the head fit: AdamW at around `1e-4` to
-  `1e-5` is a good starting range.
+- **Use a small learning rate, unless the pass is strongly regularized.**
+  Every weight moves at once, so the pass wants a far gentler step than the
+  head fit: AdamW at around `1e-4` to `1e-5` is a good starting range. With
+  a strong decoupled weight decay and head dropout it can take a much larger
+  step, such as AdamW at `1e-2` with `weight_decay` 0.5 and `dropout` 0.4.
+- **Keep the layers it can use.** The growth rule keeps the layers up to the
+  one with the lowest layer error, which is measured before the pass. A
+  layer that does not lower that error can still pay once every layer
+  trains together; `train.layer_keep: all` keeps every layer built, with
+  `train.max_layer_count` setting the depth.
 - **Check that it converged.** The log prints `finetune early stop at step
   ...` when the pass stops on its own. Without that line, it ran to
   `max_steps` and its result is cut short, which is worse and more variable;
@@ -175,8 +184,8 @@ Things to know before using it:
   `Trainer.infer` before the pass makes the pass fail (see
   [Troubleshooting](../guides/troubleshooting.md#known-problems)).
 
-On a CUDA device with `adam` or `adamw`, the pass runs as a captured CUDA
-graph, which is much faster (see [Performance](../guides/performance.md#the-end-to-end-pass-on-a-gpu)).
+On a CUDA device with `adam` or `adamw` and no head dropout, the pass runs
+as a captured CUDA graph, which is much faster (see [Performance](../guides/performance.md#the-end-to-end-pass-on-a-gpu)).
 
 The three passes together, the per-layer fine-tune, the head and the
 end-to-end pass, are what the tutorials' `*_finetune` configs add. On some
@@ -242,7 +251,7 @@ neurons survive, since the prediction reaches back into every layer.
 
 `model.use_output_projection`, `model.num_out_neurons`,
 `train.layer_finetune`, `train.layer_err_source`, `train.out_proj_train`,
-`train.finetune_train`, `train.stop_source`. See
+`train.finetune_train`, `train.stop_source`, `train.layer_keep`. See
 [Head fit and per-layer fine-tune](../reference/config.md#head-fit-and-per-layer-fine-tune)
 and [End-to-end pass](../reference/config.md#end-to-end-pass).
 

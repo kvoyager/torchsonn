@@ -2,6 +2,7 @@
 replayed CUDA graph), its batch source and the per-layer pass."""
 import logging
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Callable
 
@@ -258,9 +259,13 @@ def train_layer_finetune(
     """
     # Reuse the out_proj_train hyperparam block — same shape, same
     # adam/sgd/lbfgs + ReduceLROnPlateau knobs. Keeps the YAML surface
-    # small; if you need different settings per pass, the easiest path
-    # is to clone the block before launching.
+    # small; only the weight decay can be set apart, through
+    # train.layer_finetune_weight_decay, on a copy of the block.
     cfg         = model.param.train.out_proj_train
+    layer_wd    = getattr(model.param.train, "layer_finetune_weight_decay", None)
+    if layer_wd is not None:
+        cfg = deepcopy(cfg)
+        cfg.weight_decay = float(layer_wd)
     device      = model.device
     # Multi-class uses log_softmax + NLL → head outputs num_classes
     # logits. Regression / binary uses raw scalar output + the model's
@@ -290,6 +295,7 @@ def train_layer_finetune(
     # the end: the temporary head is discarded, and with frozen neurons
     # there is nothing to copy.
     lbfgs_tag = " (lbfgs)" if cfg.optimizer == "lbfgs" else ""
+    head_dropout = float(getattr(cfg, "dropout", 0.0))
     best_weights = keep_best.record(neuron_params, cfg,
                                     f"layer_{layer.layer_index}_finetune",
                                     f"layer {layer.layer_index} finetune{lbfgs_tag}",
@@ -344,6 +350,8 @@ def train_layer_finetune(
         # last-layer guard.
         if layer.layer_norm is not None and not model.concat_inputs:
             z = layer.layer_norm(z)
+        if head_dropout > 0.0 and head.training:
+            z = F.dropout(z, p=head_dropout, training=True)
         proj = head(z)
         # Regression: return raw scalar (N,); the configured loss_fn
         # (NormMSE) compares against the (N,) target directly. Multi-

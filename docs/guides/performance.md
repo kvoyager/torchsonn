@@ -82,11 +82,14 @@ batched tensor operation. The fit can also be split across several GPUs
 
 `Trainer.train_finetune` trains a network of many small layers, so each
 step launches hundreds of tiny kernels and spends most of its time
-launching them. On a CUDA device with `adam` or `adamw` and
-`train.finetune_train.cuda_graph: true` (the default), the pass records
+launching them. On a CUDA device with `adam` or `adamw`,
+`train.finetune_train.cuda_graph: true` (the default) and no head dropout
+(`train.finetune_train.dropout` at 0, the default), the pass records
 the whole training step once as a CUDA graph and replays it for every
 batch. A batch of another shape, such as the last batch of an epoch, runs
-the same step without the graph, so no row is lost. On California housing
+the same step without the graph, so no row is lost. Head dropout runs every
+step without the graph, because a replayed graph would reuse one dropout
+mask. On California housing
 the captured pass takes 8 to 11 s and gives the same test numbers as the
 uncaptured pass to the fourth decimal (changelog).
 

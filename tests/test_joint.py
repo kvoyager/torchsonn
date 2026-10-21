@@ -251,6 +251,18 @@ def test_joint_grows_layers_on_frozen_earlier_layers(tmp_path, monkeypatch, capl
     assert torch.allclose(model.infer(x), pred, atol=1e-6)
 
 
+@pytest.mark.parametrize("keep, layers", [("best", 1), ("all", 2)])
+def test_joint_layer_keep_all_keeps_a_layer_the_growth_rule_would_drop(tmp_path, monkeypatch, keep, layers):
+    from torchsonn.trainer import GrowthCriterion
+    real = GrowthCriterion.update
+    monkeypatch.setattr(GrowthCriterion, "update",
+                        lambda self, layer_index, err: real(self, layer_index, [1.0, 2.0][layer_index]))
+    model, _ = _train(_deep_cfg(tmp_path, max_layer_count=2, layer_keep=keep))
+    assert len(model.layers) == layers
+    assert model.out_proj.in_features == 3
+    assert torch.isfinite(model.infer(torch.randn(7, 5))).all()
+
+
 def test_survivors_carry_their_own_dev_error_after_the_pass(tmp_path):
     cfg = _cfg(tmp_path)
     model, _ = _train(cfg)

@@ -71,7 +71,10 @@ from the last improving layer rather than from the layer just before. The
 search stops after `train.criterion_minimum_width` (5) layers in a row
 without an improvement, or at `train.max_layer_count` layers, and the model
 keeps the layers up to the one with the lowest error, whether or not that
-layer cleared the margin.
+layer cleared the margin. `train.layer_keep: all` keeps every layer built
+instead, for a model whose end-to-end pass makes use of layers the per-layer
+error does not reward; set `train.max_layer_count` to the depth wanted
+then.
 
 ### A worked example
 

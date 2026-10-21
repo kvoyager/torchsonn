@@ -74,6 +74,7 @@ See [Splits and stopping](../concepts/splits-and-stopping.md#the-growth-rule).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `train.max_layer_count` | int | 999 | The most layers the search builds. |
+| `train.layer_keep` | str | `best` | Which layers the model keeps once the search ends: `best` keeps the layers up to the one with the lowest layer error, `all` every layer built. With `all`, set `train.max_layer_count` to the depth wanted: the search still stops only at that limit or by the growth rule, and every layer it built is kept. |
 | `train.criterion_minimum_width` | int | 5 | Stop after this many layers in a row without an improvement. |
 | `train.stop_train_epsilon_condition` | float | 0.001 | Relative part of the improvement margin: this fraction of the best layer error so far. |
 | `train.stop_train_min_delta` | float | 0.0 | Absolute part of the improvement margin, in units of the layer error. The margin is the larger of the two. Set it near the noise level of the dev error. |
@@ -141,6 +142,7 @@ and the per-layer fine-tune. See
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `train.layer_finetune` | bool | false | After selection, train each layer's survivors jointly through a temporary linear head, on every layer. Under `model.selection_mode: joint` it runs after the joint cut. Use it with `model.use_output_projection`: the pass turns the survivors into inputs for a head, and a model without one predicts poorly. Fails on binary models. |
+| `train.layer_finetune_weight_decay` | float or null | null | The weight decay of the per-layer fine-tune alone; every other fine-tune setting comes from `train.out_proj_train`. null uses `train.out_proj_train.weight_decay`. Set it to regularize the layers and the final head differently. |
 | `train.out_proj_train.optimizer` | str | `adam` | `adam`, `sgd` (momentum 0.9) or `lbfgs` (full batch, no plateau schedule). |
 | `train.out_proj_train.lr` | float | 0.001 | Learning rate. |
 | `train.out_proj_train.weight_decay` | float | 0.0 | L2 penalty; added to the loss under `lbfgs`. |
@@ -150,6 +152,7 @@ and the per-layer fine-tune. See
 | `train.out_proj_train.early_stop_min_delta` | float | 1e-4 | The smallest drop in dev loss that counts as an improvement. |
 | `train.out_proj_train.keep_best_weights` | bool | false | End the head fit and the per-layer fine-tune on the weights of their lowest dev loss instead of their last step. See [Last step or best evaluation](../concepts/heads-and-finetune.md#last-step-or-best-evaluation). |
 | `train.out_proj_train.best_weights_copy` | str | `device` | Where `keep_best_weights` keeps the copy of the best weights: `device` (next to the parameters, in GPU memory on CUDA), `cpu` (host memory) or `disk` (a file in the run folder, deleted when the pass ends). |
+| `train.out_proj_train.dropout` | float | 0.0 | Dropout on the head's inputs at every training step of the head fit and the per-layer fine-tune; evaluations see the full inputs. Needs a minibatch optimizer, not `lbfgs`. |
 | `train.out_proj_train.lr_patience` | int | 5 | Evaluations without improvement before the plateau schedule cuts the learning rate. Not used by `lbfgs`. |
 | `train.out_proj_train.lr_factor` | float | 0.5 | Factor of each cut. Not used by `lbfgs`. |
 | `train.out_proj_train.lr_min` | float | 1e-5 | Lowest learning rate of the plateau schedule. Not used by `lbfgs`. |
@@ -176,6 +179,7 @@ the optimizers differ and two keys only matter here.
 | `train.finetune_train.early_stop_min_delta` | float | 1e-4 | The smallest drop in loss that counts as an improvement. |
 | `train.finetune_train.keep_best_weights` | bool | false | End the pass on the parameters of its lowest evaluated loss instead of its last step. See [Last step or best evaluation](../concepts/heads-and-finetune.md#last-step-or-best-evaluation). |
 | `train.finetune_train.best_weights_copy` | str | `device` | Where `keep_best_weights` keeps the copy of the whole model's parameters: `device`, `cpu` or `disk`, as for the head fit. |
+| `train.finetune_train.dropout` | float | 0.0 | Dropout on the head's inputs at every training step of the end-to-end pass. The pass then runs without the CUDA graph. |
 | `train.finetune_train.lr_patience` | int | 5 | Evaluations without improvement before the plateau schedule cuts the learning rate. |
 | `train.finetune_train.lr_factor` | float | 0.5 | Factor of each cut. |
 | `train.finetune_train.lr_min` | float | 1e-5 | Lowest learning rate of the plateau schedule. |

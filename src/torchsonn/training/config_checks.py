@@ -22,6 +22,7 @@ def validate_config(config: Any) -> None:
     _validate_optimizer_name(config)
     _validate_checkpoint_dir(config)
     _validate_joint_selection(config)
+    _validate_layer_keep(config)
 
 
 def checkpoint_root(config: Any) -> Path:
@@ -108,7 +109,8 @@ def _validate_layer_err_source(config: Any) -> None:
 
 
 def _validate_best_weights_copy(config: Any) -> None:
-    """Reject an unknown `best_weights_copy` in `train.out_proj_train` or `train.finetune_train`."""
+    """Reject an unknown `best_weights_copy` or a bad `dropout` in `train.out_proj_train` or
+    `train.finetune_train`, and a negative `train.layer_finetune_weight_decay`."""
     train_cfg = getattr(config, "train", None) if config is not None else None
     if train_cfg is None:
         return
@@ -118,6 +120,28 @@ def _validate_best_weights_copy(config: Any) -> None:
             raise ValueError(
                 f"train.{block}.best_weights_copy={where!r}; expected 'device', 'cpu' or 'disk'."
             )
+        block_cfg = getattr(train_cfg, block, None)
+        p = float(getattr(block_cfg, "dropout", 0.0))
+        if not 0.0 <= p < 1.0:
+            raise ValueError(f"train.{block}.dropout={p}; expected a value in [0, 1).")
+        if p > 0.0 and str(getattr(block_cfg, "optimizer", "adam")) == "lbfgs":
+            raise ValueError(
+                f"train.{block}.dropout={p} needs a minibatch optimizer: LBFGS needs a "
+                "deterministic objective."
+            )
+    wd = getattr(train_cfg, "layer_finetune_weight_decay", None)
+    if wd is not None and float(wd) < 0.0:
+        raise ValueError(f"train.layer_finetune_weight_decay={wd}; expected a value of at least 0.")
+
+
+def _validate_layer_keep(config: Any) -> None:
+    """Reject a `train.layer_keep` other than 'best' or 'all'."""
+    train_cfg = getattr(config, "train", None) if config is not None else None
+    if train_cfg is None:
+        return
+    keep = str(getattr(train_cfg, "layer_keep", "best"))
+    if keep not in ("best", "all"):
+        raise ValueError(f"train.layer_keep={keep!r}; expected 'best' or 'all'.")
 
 
 def _validate_optimizer_name(config: Any) -> None:

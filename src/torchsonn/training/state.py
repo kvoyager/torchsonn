@@ -1,5 +1,6 @@
 """Growth state of `Trainer.train`: the stop rule, the per-layer accumulator
 and the step checkpoint snapshot."""
+import logging
 import sys
 from dataclasses import dataclass, field, fields
 
@@ -7,6 +8,8 @@ import torch
 
 from torchsonn.model import SONN
 from torchsonn.optimizers import BaseOptimizer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,6 +57,20 @@ class GrowthCriterion:
         self.last_gain, self.last_margin = gain, margin
         self.last_since = layer_index - self.last_improved_index
         return layer_index > 0 and self.last_since >= int(self.width)
+
+    def kept_index(self, layer_keep: str, layer_count: int) -> int:
+        """Return the index of the last layer the model keeps once the search ends.
+
+        `train.layer_keep` 'best' keeps the layers up to `best_index`, 'all'
+        every layer built (`layer_count` of them).
+        """
+        if str(layer_keep) != "all":
+            return self.best_index
+        last = layer_count - 1
+        if last > self.best_index:
+            logger.info(f"train.layer_keep='all': keeping {layer_count} layers; the lowest layer error "
+                        f"is at layer {self.best_index}")
+        return last
 
     def describe(self, layer_index: int, err: float) -> str:
         """Return a one-line log message on the last `update`: error, best layer, gain and margin, layers without improvement."""

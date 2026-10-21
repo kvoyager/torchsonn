@@ -439,26 +439,26 @@ class Trainer:
             logger.info(growth.describe(layer.layer_index, stop_err))
             if error_stopped_decrease or not (layer.layer_index < self.config.train.max_layer_count - 1):
                 break
-        error_min_index = growth.best_index
+        kept_index = growth.kept_index(getattr(self.config.train, "layer_keep", "best"), len(model.layers))
 
         model.layer_err.clear()
         for i in range(0, len(model.layers)):
             model.layer_err.append(model.layers[i].err)
 
-        # delete unused layers keeping only error_min_index layers
-        for layer_idx in range(error_min_index + 1, len(model.layers)):
+        # delete the layers after kept_index
+        for layer_idx in range(kept_index + 1, len(model.layers)):
             self.cleanup_layer_checkpoints(layer_idx)
-        del model.layers[error_min_index + 1:]
+        del model.layers[kept_index + 1:]
 
         for layer in model.layers:
             layer.set_neuron_module()
 
-        # Restore the projection that was co-trained with the optimal layer depth.
+        # Restore the projection that was co-trained with the last kept layer.
         # Each train_layer call overwrites model.shared_proj in the shared-proj path;
         # without this restore the checkpoint contains the projection from the
-        # last trained layer (a different input space than layers[error_min_index]).
-        if model.shared_proj is not None and error_min_index in shared_proj_states:
-            model.shared_proj.load_state_dict(shared_proj_states[error_min_index])
+        # last trained layer (a different input space than layers[kept_index]).
+        if model.shared_proj is not None and kept_index in shared_proj_states:
+            model.shared_proj.load_state_dict(shared_proj_states[kept_index])
 
         if mode == "joint_last":
             self._joint_last_layer(model, train_dl, dev_dl, val_dl, verbose)
@@ -1223,9 +1223,12 @@ class Trainer:
         # output + whatever loss_fn was configured (NormMSE for the regressor
         # SONN ctor path).
         is_regressor = model.param.model.type == "regressor"
+        head_dropout = float(getattr(cfg, "dropout", 0.0))
 
         def _head_loss(features_batch: torch.Tensor, targets_batch: torch.Tensor) -> torch.Tensor:
             sel = head_fit.select_out_proj_inputs(features_batch, cols_t, k)
+            if head_dropout > 0.0 and model.out_proj.training:
+                sel = F.dropout(sel, p=head_dropout, training=True)
             proj = model.out_proj(sel)
             if is_regressor:
                 return model.loss_fn(proj.squeeze(-1), targets_batch).mean()
@@ -1373,7 +1376,12 @@ class Trainer:
             p.requires_grad_(True)
 
         on_cuda = torch.device(device).type == "cuda"
-        use_graph = bool(getattr(cfg, "cuda_graph", True)) and on_cuda and cfg.optimizer in ("adam", "adamw")
+        # Dropout on the head's input during the pass; a captured graph would
+        # replay one mask, so the steps run eagerly while it is on.
+        head_dropout = float(getattr(cfg, "dropout", 0.0))
+        model.head_dropout = head_dropout
+        use_graph = (bool(getattr(cfg, "cuda_graph", True)) and on_cuda
+                     and cfg.optimizer in ("adam", "adamw") and head_dropout == 0.0)
         # A device-tensor lr is what lets the captured optimizer step pick up
         # the plateau schedule's changes (the value is copied in place).
         lr = torch.tensor(float(cfg.lr), device=device) if use_graph else cfg.lr
@@ -1503,6 +1511,7 @@ class Trainer:
             model.train()
 
         tbar.close()
+        model.head_dropout = 0.0
         if use_graph:
             logger.info("end-to-end pass: %d steps replayed, %d eager (warm-up and tail batches)",
                         stepper.graph_steps, stepper.eager_steps)
@@ -1636,12 +1645,12 @@ class Trainer:
             if stopped or not (layer_index < model.param.train.max_layer_count - 1):
                 break
 
-        best = growth.best_index
+        keep = growth.kept_index(getattr(model.param.train, "layer_keep", "best"), len(model.layers))
         model.layer_err.clear()
         model.layer_err.extend(l.err for l in model.layers)
-        for layer_idx in range(best + 1, len(model.layers)):
+        for layer_idx in range(keep + 1, len(model.layers)):
             self.cleanup_layer_checkpoints(layer_idx)
-        del model.layers[best + 1:]
+        del model.layers[keep + 1:]
         for layer in model.layers:
             layer.set_neuron_module()
 

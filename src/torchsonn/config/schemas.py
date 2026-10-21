@@ -63,6 +63,13 @@ class OutProjTrainConfig:
     #   'disk'   - best_<pass>.ckpt in the run folder, rewritten on every new
     #              best and deleted when the pass ends; no memory held
     best_weights_copy: str = "device"
+    # Dropout on the head's inputs (the survivors' outputs it reads) at every
+    # training step: in the head fit and the per-layer fine-tune for
+    # out_proj_train, in the end-to-end pass for finetune_train. Evaluations
+    # and inference see the full inputs. 0 is off. Needs a minibatch
+    # optimizer (not lbfgs); the end-to-end pass runs without the CUDA graph
+    # while it is on.
+    dropout: float = 0.0
 
     # LBFGS-only tuning. history_size matches PyTorch's default; max_iter is the
     # number of inner LBFGS iterations per opt.step() call. For Otto-sized
@@ -382,6 +389,14 @@ class TrainConfig:
     error_normalization: str = "variance"
 
     max_layer_count: int = 999
+    # Which layers the model keeps once the growth search ends:
+    #   'best' - the layers up to the one with the lowest layer error.
+    #   'all'  - every layer the search built. The growth rule below still
+    #            decides when the search stops, so set `max_layer_count` to
+    #            the depth wanted. For models finished by an end-to-end pass,
+    #            where a layer that does not lower the per-layer error can
+    #            still pay once all layers train together.
+    layer_keep: str = "best"
     # Layer-growth stop rule (Trainer.train, GrowthCriterion). A layer counts
     # as an improvement when it lowers the error of the last accepted
     # improvement by at least
@@ -605,6 +620,11 @@ class TrainConfig:
     # Hyperparameters are shared with `out_proj_train` to keep the config
     # surface small.
     layer_finetune: bool = False
+    # The one exception to that sharing: the per-layer fine-tune's weight
+    # decay. null uses `out_proj_train.weight_decay`. A value sets it for the
+    # fine-tune alone, so the layers and the final head can be regularized
+    # differently. Same meaning per optimizer as in `OutProjTrainConfig`.
+    layer_finetune_weight_decay: Optional[float] = None
 
     device: str = "cpu"
     batch_size: int = 1

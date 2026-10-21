@@ -968,6 +968,14 @@ class SONN(SONNModule):
 
         return layer
 
+    def _dropout_head_input(self, x: torch.Tensor) -> torch.Tensor:
+        """Dropout on the head's input while training, at `self.head_dropout`
+        (set by `Trainer.train_finetune`; 0 otherwise)."""
+        p = float(getattr(self, "head_dropout", 0.0))
+        if p > 0.0 and self.training:
+            return F.dropout(x, p=p, training=True)
+        return x
+
     def infer(self, x: torch.Tensor) -> torch.Tensor:
         """
         Predict with the trained model.
@@ -998,7 +1006,7 @@ class SONN(SONNModule):
             if cols.numel() < k:
                 pad = torch.zeros(selected.shape[0], k - cols.numel(), device=selected.device, dtype=selected.dtype)
                 selected = torch.cat([selected, pad], dim=-1)
-            proj_out = self.out_proj(selected)
+            proj_out = self.out_proj(self._dropout_head_input(selected))
             if self.param.model.type == "multi-class":
                 return F.log_softmax(proj_out, dim=-1)
             # Regression / binary: out_proj is Linear(num_out, 1) — squeeze

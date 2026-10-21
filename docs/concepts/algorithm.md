@@ -144,7 +144,8 @@ $e_{\text{best}}$ is the lowest layer error so far.
 The search stops after `train.criterion_minimum_width` layers in a row
 without an improvement, or at `train.max_layer_count` layers. The model
 then keeps the layers up to the one with the lowest error, whether or not
-that layer cleared the margin, and saves itself as `model_last.ckpt` in the
+that layer cleared the margin (under `train.layer_keep: all` it keeps every
+layer built), and saves itself as `model_last.ckpt` in the
 run's folder. The rule reads the dev error, or the validation split's
 under `train.stop_source: val`. [Splits and stopping](splits-and-stopping.md)
 has worked examples.

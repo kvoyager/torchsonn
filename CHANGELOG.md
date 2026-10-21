@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added — head dropout and `train.layer_finetune_weight_decay`
+
+`dropout` in `train.out_proj_train` and `train.finetune_train` (default 0,
+off) drops the head's inputs, the survivors' outputs it reads, at every
+training step: `out_proj_train.dropout` in the head fit and the per-layer
+fine-tune, `finetune_train.dropout` in the end-to-end pass. Evaluations and
+inference see the full inputs. It needs a minibatch optimizer, not `lbfgs`,
+and the end-to-end pass runs without the CUDA graph while it is on.
+
+`train.layer_finetune_weight_decay` (default null) sets the weight decay of
+the per-layer fine-tune alone; null keeps using
+`train.out_proj_train.weight_decay`, so the layers and the final head can be
+regularized differently.
+
+### Added — `train.layer_keep`: keep every layer the search builds
+
+`train.layer_keep: all` keeps every layer the growth search built instead of
+cutting back to the layer with the lowest layer error; `best`, the default,
+keeps the layers up to that one. The growth rule and `train.max_layer_count`
+still end the search, so `all` with `max_layer_count` gives a fixed depth.
+Meant for models finished by the end-to-end pass, where a layer that does
+not lower the per-layer error can still pay once every layer trains
+together. It applies to the greedy, `joint` and `joint_last` modes.
+
 ### Changed — `Trainer`'s helpers live in the new `torchsonn.training` package
 
 `trainer.py` held 4668 lines. `Trainer` now keeps the training steps

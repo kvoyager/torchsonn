@@ -1853,3 +1853,159 @@ def test_omp_mixed_fills_the_reserve_when_omp_stops_early(tmp_path):
     normalization.fit_layer_inputs(model, layer, _make_dl(48), batch_callback=None)
     trainer.train_layer(model, layer, _make_dl(48), _make_dl(16), None)
     assert len(layer) == 2
+
+
+# --- train.layer_keep ---------------------------------------------------------
+
+def _script_layer_errors(monkeypatch, errors):
+    """Make the growth rule see `errors[i]` for layer i, whatever the layer scored."""
+    from torchsonn.trainer import GrowthCriterion
+    real = GrowthCriterion.update
+    monkeypatch.setattr(GrowthCriterion, "update",
+                        lambda self, layer_index, err: real(self, layer_index, errors[layer_index]))
+
+
+@pytest.mark.parametrize("keep, layers", [("best", 1), ("all", 2)])
+def test_layer_keep_all_keeps_a_layer_the_growth_rule_would_drop(tmp_path, monkeypatch, keep, layers):
+    _script_layer_errors(monkeypatch, [1.0, 2.0])
+    cfg = _cfg(tmp_path, max_layer_count=2, criterion_minimum_width=5, layer_keep=keep)
+    model = SONN(cfg, d_model=4)
+    trained = Trainer(config=cfg).train(model, _make_dl(64), _make_dl(64), _make_dl(64), verbose=False)
+    assert len(trained.layers) == layers
+    assert torch.isfinite(trained.infer(torch.randn(5, 4))).all()
+
+
+@pytest.mark.parametrize("keep, layer_index", [("best", 0), ("all", 1)])
+def test_layer_keep_restores_the_shared_projection_of_the_last_kept_layer(tmp_path, monkeypatch, keep,
+                                                                           layer_index):
+    _script_layer_errors(monkeypatch, [1.0, 2.0])
+    saved = []
+    real = Trainer.train_layer
+
+    def spy(self, model, *a, **kw):
+        out = real(self, model, *a, **kw)
+        saved.append({k: v.detach().clone() for k, v in model.shared_proj.state_dict().items()})
+        return out
+
+    monkeypatch.setattr(Trainer, "train_layer", spy)
+    cfg = OmegaConf.merge(_mc_cfg(tmp_path, max_layer_count=2, layer_keep=keep),
+                          OmegaConf.create({"model": {"soft_binner": False}}))
+    model = SONN(cfg, d_model=4)
+    assert model.shared_proj is not None
+    _, dl = _make_mc_dl()
+    trained = Trainer(config=cfg).train(model, dl, dl, dl, verbose=False)
+    assert len(saved) == 2 and len(trained.layers) == layer_index + 1
+    assert any(not torch.equal(saved[0][k], saved[1][k]) for k in saved[0])   # the two layers differ
+    assert all(torch.equal(v, saved[layer_index][k]) for k, v in trained.shared_proj.state_dict().items())
+
+
+def test_unknown_layer_keep_is_rejected(tmp_path):
+    cfg = _cfg(tmp_path, layer_keep="last")
+    with pytest.raises(ValueError, match="layer_keep"):
+        Trainer(config=cfg)
+
+
+# --- Head dropout and train.layer_finetune_weight_decay -----------------------
+
+def _headed_mc_cfg(tmp_path, **train):
+    return OmegaConf.merge(
+        _mc_cfg(tmp_path, **train),
+        OmegaConf.create({"model": {"soft_binner": False, "use_output_projection": True,
+                                    "num_out_neurons": 2}}),
+    )
+
+
+@pytest.mark.parametrize("model_type", ["multi-class", "regressor"])
+def test_head_dropout_runs_in_every_pass(tmp_path, model_type):
+    """Dropout on the head's inputs trains in the layer fine-tune, the head fit
+    and the end-to-end pass, and leaves the model's head dropout off."""
+    passes = {"max_steps": 4, "lr": 1.0e-3, "eval_interval": 2, "early_stop_patience": 5, "dropout": 0.3}
+    train = {"layer_finetune": True, "out_proj_train": {**passes, "optimizer": "adam"},
+             "finetune_train": {**passes, "optimizer": "adamw"}}
+    if model_type == "multi-class":
+        cfg = _headed_mc_cfg(tmp_path, **train)
+        x, dl = _make_mc_dl()
+    else:
+        cfg = OmegaConf.merge(_cfg(tmp_path, max_layer_count=1, **train), OmegaConf.create(
+            {"model": {"use_output_projection": True, "num_out_neurons": 2}}))
+        dl = _make_dl(48)
+        x = np.random.default_rng(1).standard_normal((5, 4)).astype("float32")
+    model = SONN(cfg, d_model=4)
+    trainer = Trainer(config=cfg)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    trainer.train_out_proj(trained, dl, dl)
+    trainer.train_finetune(trained, dl, dl)
+    assert trained.head_dropout == 0.0
+    trained.eval()
+    with torch.no_grad():
+        a = trained.infer(torch.from_numpy(x[:5]))
+        b = trained.infer(torch.from_numpy(x[:5]))
+    assert torch.isfinite(a).all() and torch.equal(a, b)
+
+
+def test_head_dropout_drops_the_head_inputs_only_in_train_mode(tmp_path):
+    cfg = _headed_mc_cfg(tmp_path)
+    model = SONN(cfg, d_model=4)
+    x, dl = _make_mc_dl()
+    Trainer(config=cfg).train(model, dl, dl, dl, verbose=False)
+    xb = torch.from_numpy(x)
+    model.eval()
+    with torch.no_grad():
+        ref = model.infer(xb)
+        model.head_dropout = 0.5
+        assert torch.equal(model.infer(xb), ref)          # eval: full inputs
+        model.train()
+        torch.manual_seed(0)
+        assert not torch.equal(model.infer(xb), ref)      # train: inputs dropped
+    model.head_dropout = 0.0
+
+
+@pytest.mark.parametrize("block", ["out_proj_train", "finetune_train"])
+def test_head_dropout_out_of_range_is_rejected(tmp_path, block):
+    cfg = OmegaConf.merge(_headed_mc_cfg(tmp_path),
+                          OmegaConf.create({"train": {block: {"dropout": 1.0}}}))
+    with pytest.raises(ValueError, match="dropout"):
+        Trainer(config=cfg)
+
+
+def test_head_dropout_with_lbfgs_is_rejected(tmp_path):
+    cfg = OmegaConf.merge(_headed_mc_cfg(tmp_path), OmegaConf.create({"train": {"out_proj_train": {
+        "optimizer": "lbfgs", "dropout": 0.2}}}))
+    with pytest.raises(ValueError, match="dropout"):
+        Trainer(config=cfg)
+
+
+@pytest.mark.parametrize("layer_wd", [None, 0.05])
+def test_layer_finetune_weight_decay_applies_to_the_fine_tune_only(tmp_path, layer_wd, monkeypatch):
+    import torch.optim
+
+    decays = []
+    real = torch.optim.Adam
+
+    def spy(*a, **kw):
+        decays.append(kw.get("weight_decay"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(torch.optim, "Adam", spy)
+    cfg = _headed_mc_cfg(tmp_path, layer_finetune=True, layer_finetune_weight_decay=layer_wd,
+                         out_proj_train={"optimizer": "adam", "max_steps": 3, "weight_decay": 0.02,
+                                         "eval_interval": 1, "early_stop_patience": 5})
+    model = SONN(cfg, d_model=4)
+    _, dl = _make_mc_dl()
+    trainer = Trainer(config=cfg)
+    trainer.train(model, dl, dl, dl, verbose=False)
+    # The candidate fits use the batched optimizer, so every torch.optim.Adam
+    # built during train() is the per-layer fine-tune's.
+    assert decays, decays
+    assert all(d == (0.02 if layer_wd is None else layer_wd) for d in decays), decays
+    decays.clear()
+    trainer.train_out_proj(model, dl, dl)
+    assert decays == [0.02]
+    assert model.param.train.out_proj_train.weight_decay == 0.02
+
+
+def test_negative_layer_finetune_weight_decay_is_rejected(tmp_path):
+    cfg = OmegaConf.merge(_headed_mc_cfg(tmp_path),
+                          OmegaConf.create({"train": {"layer_finetune_weight_decay": -1.0}}))
+    with pytest.raises(ValueError, match="layer_finetune_weight_decay"):
+        Trainer(config=cfg)
