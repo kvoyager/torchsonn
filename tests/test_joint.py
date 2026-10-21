@@ -9,7 +9,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
-from torchsonn.training import evaluation, normalization
+from torchsonn.training import evaluation, finetune, normalization
 
 
 def _dl(n: int, seed: int, d: int = 5, classes: int = 0) -> DataLoader:
@@ -282,20 +282,20 @@ def test_readout_layer_error_is_the_dev_loss_of_a_head_over_the_survivors(tmp_pa
 
 def test_a_joint_pool_skips_the_per_layer_readout_head(tmp_path, monkeypatch):
     called = []
-    monkeypatch.setattr(Trainer, "_train_layer_finetune", lambda *a, **kw: called.append(1) or 0.0)
+    monkeypatch.setattr(finetune, "train_layer_finetune", lambda *a, **kw: called.append(1) or 0.0)
     _train(_cfg(tmp_path, layer_err_source="readout"))
     assert not called
 
 
 def test_layer_finetune_runs_on_the_survivors_after_the_cut(tmp_path, monkeypatch):
     widths = []
-    original = Trainer._train_layer_finetune
+    original = finetune.train_layer_finetune
 
-    def spy(self, model, layer, *a, **kw):
+    def spy(model, layer, *a, **kw):
         widths.append(len(layer))
-        return original(self, model, layer, *a, **kw)
+        return original(model, layer, *a, **kw)
 
-    monkeypatch.setattr(Trainer, "_train_layer_finetune", spy)
+    monkeypatch.setattr(finetune, "train_layer_finetune", spy)
     model, _ = _train(_deep_cfg(tmp_path, max_layer_count=2, layer_finetune=True))
     # Once per layer grown, on the cut layer rather than the pool.
     assert widths and all(w == 3 for w in widths)
@@ -304,13 +304,13 @@ def test_layer_finetune_runs_on_the_survivors_after_the_cut(tmp_path, monkeypatc
 
 def test_joint_layer_errors_are_taken_before_the_fine_tune(tmp_path, monkeypatch):
     seen = []
-    original = Trainer._train_layer_finetune
+    original = finetune.train_layer_finetune
 
-    def spy(self, model, layer, *a, **kw):
+    def spy(model, layer, *a, **kw):
         seen.append(layer.err_values.clone())
-        return original(self, model, layer, *a, **kw)
+        return original(model, layer, *a, **kw)
 
-    monkeypatch.setattr(Trainer, "_train_layer_finetune", spy)
+    monkeypatch.setattr(finetune, "train_layer_finetune", spy)
     model, _ = _train(_cfg(tmp_path, layer_finetune=True))
     assert len(seen) == 1
     assert torch.equal(model.layers[0].err_values.cpu(), seen[0].cpu())

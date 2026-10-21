@@ -16,7 +16,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
-from torchsonn.training import evaluation, normalization
+from torchsonn.training import evaluation, finetune, normalization
 from torchsonn.optimizers import BatchedAdam as _BatchedAdam
 
 
@@ -1108,7 +1108,7 @@ def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
     trainer.train_layer(model, layer, dl, dl, None)
     nm = layer.neuron_models[0]
     before = nm.centers().detach().clone()
-    trainer._train_layer_finetune(model, layer, dl, dl)
+    finetune.train_layer_finetune(model, layer, dl, dl, batch_callback=None, run_dir=lambda: tmp_path)
     assert not torch.equal(nm.centers().detach(), before)
     for p in model.parameters():
         assert p.requires_grad
@@ -1344,7 +1344,7 @@ def test_head_columns_are_cached_and_invalidated_by_prune(tmp_path):
 
 # --- End-to-end pass: static-batch CUDA graph, batch sources, lr sync -------
 
-from torchsonn.trainer import _FinetuneStep, _finetune_batches
+from torchsonn.training.finetune import FinetuneStep, finetune_batches, finetune_prediction
 
 
 def _trained_head_model(tmp_path, n=64, bs=8, **over):
@@ -1366,7 +1366,7 @@ def test_finetune_batches_resident_visits_every_row_once_per_epoch_with_a_tail()
     y = torch.arange(50, dtype=torch.float32)
     dl = DataLoader(SONNDataset(x, y), batch_size=8, shuffle=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    gen, desc = _finetune_batches(dl, torch.device(device), "true" if device == "cuda" else "false", None)
+    gen, desc = finetune_batches(dl, torch.device(device), "true" if device == "cuda" else "false", None)
     for epoch in range(2):
         seen, shapes = [], []
         while True:
@@ -1390,7 +1390,7 @@ def test_finetune_batches_streamed_matches_the_loader():
     x = torch.randn(30, 4); y = torch.randn(30)
     dl = DataLoader(SONNDataset(x, y), batch_size=7, shuffle=False)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    gen, desc = _finetune_batches(dl, torch.device(device), "false", None)
+    gen, desc = finetune_batches(dl, torch.device(device), "false", None)
     out = []
     while True:
         bx, by = next(gen)
@@ -1404,7 +1404,7 @@ def test_finetune_step_eager_path_trains_and_counts(tmp_path):
     cfg, model, trainer, dl = _trained_head_model(tmp_path)
     model.to("cpu")
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    stepper = _FinetuneStep(model, opt, model.loss_fn, Trainer._finetune_prediction, use_graph=False)
+    stepper = FinetuneStep(model, opt, model.loss_fn, finetune_prediction, use_graph=False)
     x = torch.cat([b[0] for b in dl]); y = torch.cat([b[1] for b in dl])
     first = None
     for _ in range(30):
@@ -1461,8 +1461,8 @@ def test_finetune_graph_matches_eager_and_handles_the_tail(tmp_path):
     lr_g = torch.tensor(1e-3, device="cuda")
     opt_g = torch.optim.AdamW(model.parameters(), lr=lr_g, capturable=True)
     opt_e = torch.optim.AdamW(twin.parameters(), lr=1e-3)
-    g = _FinetuneStep(model, opt_g, model.loss_fn, Trainer._finetune_prediction, use_graph=True)
-    e = _FinetuneStep(twin, opt_e, twin.loss_fn, Trainer._finetune_prediction, use_graph=False)
+    g = FinetuneStep(model, opt_g, model.loss_fn, finetune_prediction, use_graph=True)
+    e = FinetuneStep(twin, opt_e, twin.loss_fn, finetune_prediction, use_graph=False)
     # the graph path runs 1 rehearsal + 3 warm-up steps on the first batch: do the same eagerly
     for _ in range(4):
         e.step(*batches[0])
@@ -1521,12 +1521,12 @@ def test_finetune_graph_falls_back_when_the_capture_fails(tmp_path, caplog):
             nm.to("cuda")
 
     def syncing_pred(m, x):
-        out = Trainer._finetune_prediction(m, x)
+        out = finetune_prediction(m, x)
         float(out.sum().item())        # host sync: not permitted during capture
         return out
 
     opt = torch.optim.AdamW(model.parameters(), lr=torch.tensor(1e-3, device="cuda"), capturable=True)
-    stepper = _FinetuneStep(model, opt, model.loss_fn, syncing_pred, use_graph=True)
+    stepper = FinetuneStep(model, opt, model.loss_fn, syncing_pred, use_graph=True)
     x = torch.randn(16, 4, device="cuda"); y = torch.randn(16, device="cuda")
     for _ in range(5):
         stepper.step(x, y)
@@ -1550,7 +1550,7 @@ def test_headless_model_captures(tmp_path):
         for nm in layer.neuron_models:
             nm.to("cuda")
     opt = torch.optim.AdamW(model.parameters(), lr=torch.tensor(1e-3, device="cuda"), capturable=True)
-    stepper = _FinetuneStep(model, opt, model.loss_fn, Trainer._finetune_prediction, use_graph=True)
+    stepper = FinetuneStep(model, opt, model.loss_fn, finetune_prediction, use_graph=True)
     x = torch.randn(16, 4, device="cuda"); y = torch.randn(16, device="cuda")
     for _ in range(5):
         stepper.step(x, y)
@@ -1705,7 +1705,7 @@ def test_passes_end_on_their_last_step_by_default(tmp_path, scripted_best, which
         trainer.train_finetune(model, dl, dl)
         params = list(model.parameters())
     elif which == "layer_finetune":
-        readout_err = trainer._train_layer_finetune(model, model.layers[-1], dl, dl)
+        readout_err = finetune.train_layer_finetune(model, model.layers[-1], dl, dl, batch_callback=None, run_dir=lambda: tmp_path)
         params = None
     else:
         trainer.train_out_proj(model, dl, dl)
@@ -1746,7 +1746,7 @@ def test_layer_finetune_ends_on_its_best_evaluation(tmp_path, scripted_best, opt
     cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=_pass_settings(optimizer))
     layer = model.layers[-1]
     scripted_best.clear()
-    readout_err = trainer._train_layer_finetune(model, layer, dl, dl)
+    readout_err = finetune.train_layer_finetune(model, layer, dl, dl, batch_callback=None, run_dir=lambda: tmp_path)
     (best,) = scripted_best
     assert readout_err == 0.0
     survivors = [p for nm in layer.neuron_models for name, p in nm.named_parameters()
@@ -1763,7 +1763,7 @@ def test_layer_finetune_with_frozen_neurons_copies_nothing(tmp_path, scripted_be
     layer = model.layers[-1]
     before = [p.detach().clone() for nm in layer.neuron_models for p in nm.parameters()]
     scripted_best.clear()
-    readout_err = trainer._train_layer_finetune(model, layer, dl, dl, freeze_neurons=True)
+    readout_err = finetune.train_layer_finetune(model, layer, dl, dl, freeze_neurons=True, batch_callback=None, run_dir=lambda: tmp_path)
     (best,) = scripted_best
     assert best.params == [] and readout_err == 0.0
     after = [p.detach() for nm in layer.neuron_models for p in nm.parameters()]
@@ -1798,7 +1798,7 @@ def test_a_last_step_between_evaluations_is_evaluated(tmp_path, scripted_best, w
     if which == "finetune":
         trainer.train_finetune(model, dl, dl)
     elif which == "layer_finetune":
-        trainer._train_layer_finetune(model, model.layers[-1], dl, dl)
+        finetune.train_layer_finetune(model, model.layers[-1], dl, dl, batch_callback=None, run_dir=lambda: tmp_path)
     else:
         trainer.train_out_proj(model, dl, dl)
     (best,) = scripted_best

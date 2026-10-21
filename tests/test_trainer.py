@@ -23,7 +23,7 @@ The following Trainer branches are deliberately uncovered:
 
 3. Opt-in features that default to off: `log_layer_diagnostics`,
    `divergence_threshold`-triggered NaN masking, the LBFGS strong-Wolfe
-   branch inside `_train_out_proj_lbfgs`.
+   branch inside `head_fit.train_out_proj_lbfgs`.
 # endregion
 """
 import os
