@@ -60,24 +60,25 @@ loss and the accuracy (see [Classification](../concepts/classification.md#class-
 
 ## Results
 
-One run on an RTX 5080 GPU took about 3 minutes. The search used all three
-layers allowed, each better than the one before:
+One run on an RTX 5080 GPU took about 3 minutes. The search built all three
+layers allowed, and neither later layer beat the first, so the model keeps
+layer 0 alone:
 
 | Layer | 0 | 1 | 2 |
 |---|---|---|---|
-| Dev error | 0.7371 | 0.7224 | 0.7010 |
+| Dev error | 0.7371 | 0.7553 | 0.7559 |
 
 After the head fit:
 
 | Split | Log loss | Accuracy |
 |---|---|---|
-| Train | 0.5370 | 0.7918 |
-| Dev | 0.5914 | 0.7776 |
-| Test | 0.5949 | 0.7752 |
+| Train | 0.4996 | 0.8052 |
+| Dev | 0.5834 | 0.7849 |
+| Test | 0.5852 | 0.7825 |
 
 The script also prints a per-class report and the test confusion matrix.
-The small classes are the hard ones: the smallest is found 44% of the time,
-at a precision of 56%. The largest share of the errors, about 45%, is
+The small classes are the hard ones: the smallest is found 43% of the time,
+at a precision of 55%. The largest share of the errors, about 43%, is
 `Class_2` and `Class_3` taken for each other.
 
 <small>Checked against TorchSONN 0.1.7.</small>

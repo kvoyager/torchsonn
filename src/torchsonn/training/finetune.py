@@ -540,13 +540,17 @@ def _train_layer_finetune_lbfgs(
         opt.zero_grad()
         log_probs = fwd(train_X)
         loss = model.loss_fn(log_probs, train_y).mean()
+        loss.backward()
+        loss = loss.detach()
         if wd > 0.0:
             # Manual L2 — PyTorch's LBFGS does not accept weight_decay.
             # Applied to every trainable parameter (head weight/bias plus
-            # surviving neurons' polynomial weights).
-            l2 = sum((p ** 2).sum() for p in trainable_params)
-            loss = loss + 0.5 * wd * l2
-        loss.backward()
+            # surviving neurons' polynomial weights), backward'd separately
+            # from the data term.
+            l2 = torch.stack([(p ** 2).sum() for p in trainable_params]).sum()
+            penalty = 0.5 * wd * l2
+            penalty.backward()
+            loss = loss + penalty.detach()
         return loss
 
     verbose = model.param.train.verbose

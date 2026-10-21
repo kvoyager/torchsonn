@@ -280,10 +280,18 @@ class TestPolyQuadratic:
         with pytest.raises(NotImplementedError):
             PolyQuadratic(4, 4, None, 0, 0, dim=3, max_neuron_models=None)
 
-    def test_get_args_raises(self):
+    def test_get_args_design_row(self):
         pq = PolyQuadratic(4, 4, None, 0, 0, dim=2)
-        with pytest.raises(NotImplementedError):
-            pq.get_args(torch.randn(2, 2, 2))
+        x = torch.tensor([[[2.0, 3.0]]])              # one sample, one neuron
+        args = pq.get_args(x)
+        assert args.shape == (1, 1, pq.num_w)
+        # [1, x1, x2, x1^2, x1*x2, x2^2] — upper triangle read row-major.
+        assert torch.allclose(args[0, 0], torch.tensor([1.0, 2.0, 3.0, 4.0, 6.0, 9.0]))
+
+    def test_get_args_excludes_squares(self):
+        pq = PolyQuadratic(4, 4, None, 0, 0, dim=2, squares=False)
+        args = pq.get_args(torch.tensor([[[2.0, 3.0]]]))
+        assert torch.allclose(args[0, 0], torch.tensor([1.0, 2.0, 3.0, 6.0]))
 
 class TestOrthogonalNeurons:
     @pytest.mark.parametrize(

@@ -84,11 +84,15 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
     def closure():
         opt.zero_grad()
         loss = _head_loss(train_X_sel, train_y)
+        loss.backward()
+        loss = loss.detach()
         if wd > 0.0:
             # Manual L2 — PyTorch's LBFGS does not accept weight_decay.
-            l2 = sum((p ** 2).sum() for p in model.out_proj.parameters())
-            loss = loss + 0.5 * wd * l2
-        loss.backward()
+            # Backward'd separately from the data term.
+            l2 = torch.stack([(p ** 2).sum() for p in model.out_proj.parameters()]).sum()
+            penalty = 0.5 * wd * l2
+            penalty.backward()
+            loss = loss + penalty.detach()
         return loss
 
     step = 0

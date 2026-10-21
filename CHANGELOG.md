@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed — `polyquad` neurons and the LBFGS fits round differently
+
+`PolyQuadratic` builds its design row in `get_args`, `[1, x_i, x_i·x_j]`,
+and the shared neuron forward takes one sum over it, where its own
+`forward` added three partial sums. The LBFGS closures of the head fit and
+the per-layer fine-tune backpropagate the L2 penalty apart from the data
+loss. Both compute the same values as before up to float rounding, but the
+small differences grow over training, so results change. The Otto
+tutorial now keeps one layer, its layers 1 and 2 no longer lowering the
+layer error (0.7553 and 0.7559 against 0.7371); on seed 42 the test log
+loss goes from 0.5949 to 0.5852 and the accuracy from 0.7752 to 0.7825.
+Over seeds 42 to 44 the mean test log loss is 0.5962 and the accuracy
+0.7779 (0.6446 and 0.7724 with `greedy_orth` at threshold 0.2). The
+tutorial page, the notebook and the `otto.yaml` header carry the new
+results.
+
 ### Added — head dropout and `train.layer_finetune_weight_decay`
 
 `dropout` in `train.out_proj_train` and `train.finetune_train` (default 0,
