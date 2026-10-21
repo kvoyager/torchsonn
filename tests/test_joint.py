@@ -9,7 +9,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
-from torchsonn.training import evaluation
+from torchsonn.training import evaluation, normalization
 
 
 def _dl(n: int, seed: int, d: int = 5, classes: int = 0) -> DataLoader:
@@ -185,10 +185,10 @@ def _pool_model(tmp_path):
     model = SONN(cfg, d_model=5)
     trainer = Trainer(config=cfg)
     train_dl, dev_dl = _dl(512, 0), _dl(128, 1)
-    trainer._fit_target_scale(model, train_dl)
+    normalization.fit_target_scale(model, train_dl, "cpu", batch_callback=None)
     layer = model.create_layer(0)
     model.layers.append(layer)
-    trainer.fit_layer_inputs(model, layer, train_dl)
+    normalization.fit_layer_inputs(model, layer, train_dl, batch_callback=None)
     trainer.train_layer(model, layer, train_dl, dev_dl, None, nbest=10, selection_method="plain")
     model.out_proj = torch.nn.Linear(10, 1)
     trainer.train_out_proj(model, train_dl, dev_dl)
@@ -373,7 +373,7 @@ def test_train_layer_selection_overrides(tmp_path):
     trainer = Trainer(config=cfg)
     layer = model.create_layer(0)
     model.layers.append(layer)
-    trainer.fit_layer_inputs(model, layer, _dl(256, 0))
+    normalization.fit_layer_inputs(model, layer, _dl(256, 0), batch_callback=None)
     trainer.train_layer(model, layer, _dl(256, 0), _dl(64, 1), None, nbest=6, selection_method="max_volume")
     assert len(layer) == 6
 

@@ -16,7 +16,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
-from torchsonn.training import evaluation
+from torchsonn.training import evaluation, normalization
 from torchsonn.optimizers import BatchedAdam as _BatchedAdam
 
 
@@ -313,7 +313,7 @@ def test_omp_selection_stops_when_gain_is_too_small(tmp_path):
     trainer = Trainer(config=cfg)
     layer = model.create_layer(0)
     model.layers.append(layer)
-    trainer.fit_layer_inputs(model, layer, _make_dl(48))
+    normalization.fit_layer_inputs(model, layer, _make_dl(48), batch_callback=None)
     trainer.train_layer(model, layer, _make_dl(48), _make_dl(16), None)
     assert len(layer) == 1
 
@@ -477,7 +477,7 @@ def test_fit_layer_inputs_matches_actual_layer_inputs(tmp_path):
 
     layer0 = model.create_layer(0)
     model.layers.append(layer0)
-    trainer.fit_layer_inputs(model, layer0, train_dl)
+    normalization.fit_layer_inputs(model, layer0, train_dl, batch_callback=None)
     trainer.train_layer(model, layer0, train_dl, _offset_dl(24, seed=2), None)
 
     layer1 = model.create_layer(1)
@@ -486,7 +486,7 @@ def test_fit_layer_inputs_matches_actual_layer_inputs(tmp_path):
     assert neuron.num_feat == layer0.d_model + model.d_model
 
     before = neuron.squash_norm.mean.clone()
-    trainer.fit_layer_inputs(model, layer1, train_dl)
+    normalization.fit_layer_inputs(model, layer1, train_dl, batch_callback=None)
 
     with torch.no_grad():
         feats = torch.cat([model(b[0], skip_last_layer=True) for b in train_dl], 0)
@@ -513,7 +513,7 @@ def test_fit_layer_inputs_skipped_without_sigma_neurons(tmp_path):
     def _explode(*args, **kwargs):
         raise AssertionError("calibration pass ran for a tanh-squashed layer")
 
-    Trainer(config=cfg).fit_layer_inputs(model, layer, _explode)
+    normalization.fit_layer_inputs(model, layer, _explode, batch_callback=None)
 
 
 def test_trainer_infer_and_prune(tmp_path):
@@ -948,7 +948,7 @@ def test_input_pass_hands_the_whole_split_below_the_cap(tmp_path):
     cfg = _cfg(tmp_path, input_sample_rows=1000)
     model, layer, stub = _stub_layer(cfg, streams=False)
     dl = _make_dl(48)
-    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
     assert len(stub.samples) == 1 and stub.stream_flags == [False]
     assert torch.equal(stub.samples[0], _all_rows(model, dl))
     assert stub.batches == [] and stub.finished == 0
@@ -958,7 +958,7 @@ def test_input_pass_reservoir_above_the_cap_is_seeded_and_from_the_split(tmp_pat
     cfg = _cfg(tmp_path, input_sample_rows=20, rbf_kmeans_mode="sample")
     dl = _make_dl(96)
     model, layer, stub = _stub_layer(cfg)
-    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
     sample = stub.samples[0]
     rows = _all_rows(model, dl)
     assert sample.shape == (20, rows.shape[1])
@@ -970,11 +970,11 @@ def test_input_pass_reservoir_above_the_cap_is_seeded_and_from_the_split(tmp_pat
     assert stub.stream_flags == [False] and stub.batches == [] and stub.finished == 0
     # seeded: a fresh trainer with the same seed reproduces it, another seed does not
     model2, layer2, stub2 = _stub_layer(cfg)
-    Trainer(config=cfg).fit_layer_inputs(model2, layer2, dl)
+    normalization.fit_layer_inputs(model2, layer2, dl, batch_callback=None)
     assert torch.equal(stub2.samples[0], sample)
     cfg3 = _cfg(tmp_path, input_sample_rows=20, rbf_kmeans_mode="sample", seed=99)
     model3, layer3, stub3 = _stub_layer(cfg3)
-    Trainer(config=cfg3).fit_layer_inputs(model3, layer3, dl)
+    normalization.fit_layer_inputs(model3, layer3, dl, batch_callback=None)
     assert not torch.equal(stub3.samples[0], sample)
 
 
@@ -982,14 +982,14 @@ def test_input_pass_streams_above_the_cap_in_auto_mode(tmp_path):
     cfg = _cfg(tmp_path, input_sample_rows=20, rbf_kmeans_passes=2)
     dl = _make_dl(96)          # 12 batches of 8
     model, layer, stub = _stub_layer(cfg)
-    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
     assert stub.stream_flags == [True]
     assert len(stub.batches) == 2 * 12 and stub.finished == 1
     assert torch.equal(torch.cat(stub.batches[:12], 0), _all_rows(model, dl))
     assert torch.equal(torch.cat(stub.batches[12:], 0), _all_rows(model, dl))
     # a module that samples but does not stream is left alone by the pass
     model2, layer2, stub2 = _stub_layer(cfg, streams=False)
-    Trainer(config=cfg).fit_layer_inputs(model2, layer2, dl)
+    normalization.fit_layer_inputs(model2, layer2, dl, batch_callback=None)
     assert stub2.stream_flags == [True] and stub2.batches == [] and stub2.finished == 0
 
 
@@ -997,7 +997,7 @@ def test_input_pass_stream_mode_can_be_forced_below_the_cap(tmp_path):
     cfg = _cfg(tmp_path, input_sample_rows=1000, rbf_kmeans_mode="stream")
     dl = _make_dl(48)
     model, layer, stub = _stub_layer(cfg)
-    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
     assert stub.stream_flags == [True] and len(stub.batches) == 6 and stub.finished == 1
 
 
@@ -1008,7 +1008,7 @@ def test_input_pass_rejects_bad_settings(tmp_path):
         cfg = _cfg(tmp_path, **bad)
         model, layer, stub = _stub_layer(cfg)
         with pytest.raises(ValueError):
-            Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+            normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
 
 
 def test_input_pass_serves_stats_and_sample_in_one_pass(tmp_path):
@@ -1021,7 +1021,7 @@ def test_input_pass_serves_stats_and_sample_in_one_pass(tmp_path):
     stub = _SamplingStub(4, 4, None, 0, 0, max_neuron_models=3, streams=False)
     layer.neuron_models.append(stub)
     dl = _offset_dl(64)
-    Trainer(config=cfg).fit_layer_inputs(model, layer, dl)
+    normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
     leg = layer.neuron_models[0]
     rows = _all_rows(model, dl)
     assert torch.allclose(leg.squash_norm.mean, rows.mean(0)[leg.src_idxs], atol=1e-3)
@@ -1104,7 +1104,7 @@ def test_rbf_layer_finetune_unfreezes_centers(tmp_path):
     dl = _make_dl(64)
     layer = model.create_layer(0)
     model.layers.append(layer)
-    trainer.fit_layer_inputs(model, layer, dl)
+    normalization.fit_layer_inputs(model, layer, dl, batch_callback=None)
     trainer.train_layer(model, layer, dl, dl, None)
     nm = layer.neuron_models[0]
     before = nm.centers().detach().clone()
@@ -1560,8 +1560,8 @@ def test_headless_model_captures(tmp_path):
 # --- The best evaluated weights (best_weights_copy) --------------------------
 
 import torchsonn.trainer as _trainer_mod
-from torchsonn.trainer import _BestWeights
-from torchsonn.training import distributed
+from torchsonn.training import distributed, keep_best
+from torchsonn.training.keep_best import BestWeights
 
 
 @pytest.mark.parametrize("where", ["device", "cpu", "disk"])
@@ -1569,7 +1569,7 @@ def test_best_weights_keeps_the_lowest_loss_and_restores_in_place(tmp_path, wher
     """Strictly the lowest loss wins (NaN never does); the restore writes into
     the same tensor, and the disk copy is gone afterwards."""
     p = torch.nn.Parameter(torch.zeros(3))
-    best = _BestWeights([p], True, where, tmp_path / "best_x.ckpt", "x")
+    best = BestWeights([p], True, where, tmp_path / "best_x.ckpt", "x")
     for step, loss in [(1, 2.0), (2, 1.0), (3, float("nan")), (4, 1.0), (5, 1.5)]:
         with torch.no_grad():
             p.fill_(step)
@@ -1585,7 +1585,7 @@ def test_best_weights_keeps_the_lowest_loss_and_restores_in_place(tmp_path, wher
 @pytest.mark.parametrize("where", ["device", "cpu", "disk"])
 def test_best_weights_off_copies_nothing_and_ends_on_the_last_step(tmp_path, where):
     p = torch.nn.Parameter(torch.zeros(3))
-    best = _BestWeights([p], False, where, tmp_path / "best_x.ckpt", "x")
+    best = BestWeights([p], False, where, tmp_path / "best_x.ckpt", "x")
     for step, loss in [(1, 2.0), (2, 1.0), (3, 1.5)]:
         with torch.no_grad():
             p.fill_(step)
@@ -1595,7 +1595,7 @@ def test_best_weights_off_copies_nothing_and_ends_on_the_last_step(tmp_path, whe
     assert torch.equal(p.detach(), torch.full((3,), 3.0))
     assert (best.best_loss, best.final_loss) == (1.0, 1.5)
     # With no parameters (a head over frozen survivors) the lowest loss is final.
-    head_only = _BestWeights([], False, where, None, "x")
+    head_only = BestWeights([], False, where, None, "x")
     for step, loss in [(1, 2.0), (2, 1.0), (3, 1.5)]:
         head_only.update(step, loss)
     assert head_only.final_loss == 1.0
@@ -1603,7 +1603,7 @@ def test_best_weights_off_copies_nothing_and_ends_on_the_last_step(tmp_path, whe
 
 def test_best_weights_rejects_an_unknown_place(tmp_path):
     with pytest.raises(ValueError, match="best_weights_copy"):
-        _BestWeights([], True, "gpu", None, "x")
+        BestWeights([], True, "gpu", None, "x")
     for block in ("out_proj_train", "finetune_train"):
         cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
             {"train": {block: {"best_weights_copy": "gpu"}}}))
@@ -1615,17 +1615,15 @@ def test_best_weights_disk_file_per_rank(tmp_path, monkeypatch):
     """In a distributed run every rank writes its own file."""
     cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
         {"train": {"finetune_train": {"best_weights_copy": "disk", "keep_best_weights": True}}}))
-    model = SONN(cfg, d_model=4)
-    trainer = Trainer(config=cfg)
     p = torch.nn.Parameter(torch.zeros(2))
     monkeypatch.setattr(distributed, "is_dist", lambda: True)
     monkeypatch.setattr(_trainer_mod.dist, "get_rank", lambda: 3)
-    best = trainer._best_weights(model, [p], cfg.train.finetune_train, "finetune", "finetune")
+    best = keep_best.record([p], cfg.train.finetune_train, "finetune", "finetune", run_dir=lambda: tmp_path)
     assert best.path.name == "best_finetune_rank3.ckpt"
-    assert best.path.parent == trainer.run_dir
+    assert best.path.parent == tmp_path
 
 
-class _ScriptedBest(_BestWeights):
+class _ScriptedBest(BestWeights):
     """Records the parameters at every evaluation and reports a scripted loss
     in place of the real one: the second evaluation is the lowest and every
     later one higher, so a pass must end on the second evaluation's
@@ -1646,7 +1644,7 @@ class _ScriptedBest(_BestWeights):
 @pytest.fixture
 def scripted_best(monkeypatch):
     _ScriptedBest.made = []
-    monkeypatch.setattr(_trainer_mod, "_BestWeights", _ScriptedBest)
+    monkeypatch.setattr(keep_best, "BestWeights", _ScriptedBest)
     return _ScriptedBest.made
 
 
@@ -1852,6 +1850,6 @@ def test_omp_mixed_fills_the_reserve_when_omp_stops_early(tmp_path):
     trainer = Trainer(config=cfg)
     layer = model.create_layer(0)
     model.layers.append(layer)
-    trainer.fit_layer_inputs(model, layer, _make_dl(48))
+    normalization.fit_layer_inputs(model, layer, _make_dl(48), batch_callback=None)
     trainer.train_layer(model, layer, _make_dl(48), _make_dl(16), None)
     assert len(layer) == 2

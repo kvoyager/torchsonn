@@ -70,7 +70,7 @@ Some families need to see the layer's inputs before they train. The
 orthogonal families squash each input into $[-1, 1]$ using its mean and
 standard deviation, the RBF family places its centres by k-means, and the
 MLP family standardizes or squashes its inputs when those options are on.
-For these, `Trainer.fit_layer_inputs` runs the frozen layers below over the
+For these, the trainer runs the frozen layers below over the
 train split once, collects the statistics and, for RBF, a sample of up to
 `train.input_sample_rows` rows. Layers whose families need none of this
 skip the pass.

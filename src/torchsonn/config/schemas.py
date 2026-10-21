@@ -268,8 +268,9 @@ class ModelConfig:
     #       +/-squash_n_sigma through linearly onto +/-squash_core_range, and
     #       saturate only beyond that with a C2 rational tail. The statistics
     #       are measured over the whole training set once per layer, before
-    #       that layer trains (Trainer.fit_layer_inputs), which costs one extra
-    #       forward pass over the training split per layer.
+    #       that layer trains (training.normalization.fit_layer_inputs),
+    #       which costs one extra forward pass over the training split per
+    #       layer.
     #   'tanh' — the historical stateless squash. No calibration pass, but it
     #       compresses the bulk of the distribution: tanh is at 0.76 by 1 sigma.
     squash_method: str = "sigma"
@@ -558,11 +559,12 @@ class TrainConfig:
     # unchanged. Clip predictions to the cap at inference. None = off.
     censor_target_at: Optional[float] = None
 
-    # Per-layer input pass (Trainer.fit_layer_inputs). Besides the streamed
-    # mean / std the orthogonal families' squash needs, a family can ask for
-    # a row sample of the layer input (RBF centers are placed by k-means on
-    # it). `input_sample_rows` caps that sample: a seeded reservoir over the
-    # training split, the whole split when it is smaller. It is a memory
+    # Per-layer input pass (training.normalization.fit_layer_inputs).
+    # Besides the streamed mean / std the orthogonal families' squash needs,
+    # a family can ask for a row sample of the layer input (RBF centers are
+    # placed by k-means on it). `input_sample_rows` caps that sample: a
+    # seeded reservoir over the training split, the whole split when it is
+    # smaller. It is a memory
     # guard, not a quality knob - a handful of centers are pinned to within a
     # few percent from a few thousand rows.
     input_sample_rows: int = 65536

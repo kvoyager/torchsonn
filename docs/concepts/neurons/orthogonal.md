@@ -89,7 +89,7 @@ never reaching $\pm 1$. With the defaults (2 and 0.75):
 The bulk of the data passes through undistorted, and outliers keep their
 order without leaving $(-1, 1)$. The mean and standard deviation are those
 of the layer's actual inputs, measured on the train split in one pass before
-the layer trains (`Trainer.fit_layer_inputs`), separately for every input
+the layer trains, separately for every input
 of every candidate.
 
 **`tanh`** needs no statistics, but it compresses the bulk: it is already at

@@ -39,9 +39,9 @@ defaults (M=16, normalized, linear) a pair neuron has num_w = 18 weights plus
 vmapped candidate fit, which takes every named parameter with in_dims=0.
 
 Initialization happens in the trainer's per-layer input pass
-(`Trainer.fit_layer_inputs`): the module receives the layer's input moments
-(`fit_input_stats`), then a row sample of the layer input (`fit_input_sample`)
-on which it takes the k-means start (`seeding`: the rows at the quantiles of
+(`training.normalization.fit_layer_inputs`): the module receives the layer's
+input moments (`fit_input_stats`), then a row sample of the layer input
+(`fit_input_sample`) on which it takes the k-means start (`seeding`: the rows at the quantiles of
 the first principal axis by default, or a seeded k-means++ draw) and, in
 sample mode, runs Lloyd's iterations batched over the candidates; in stream
 mode (large data) only the start is taken from the sample and the centers

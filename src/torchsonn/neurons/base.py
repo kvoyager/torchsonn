@@ -487,8 +487,8 @@ class BasePolynomNeuron(SONNModule, ABC):
         raise NotImplementedError
 
     # ------------------------------------------------------------------
-    # Per-layer input pass (Trainer.fit_layer_inputs). Once per layer, before
-    # the layer trains, the trainer streams the layer's actual inputs over the
+    # Per-layer input pass (training.normalization.fit_layer_inputs). Once
+    # per layer, before the layer trains, the trainer streams the layer's actual inputs over the
     # training split and hands each neuron model what it asks for through
     # these hooks. All of them are no-ops here; families that calibrate
     # something data-dependent override the ones they need:
@@ -580,8 +580,8 @@ class BasePolynomNeuron(SONNModule, ABC):
         Anything with a leading `num_neurons` axis must be index_select'd here
         alongside `weight`, or it goes out of alignment with the surviving
         neurons. This matters most for registered buffers, which
-        `Trainer.create_loss_functions` vmaps with in_dims=0. Subclasses that
-        override this must call `super()._prune_extra(idxs)`.
+        `training.ensemble.create_loss_functions` vmaps with in_dims=0.
+        Subclasses that override this must call `super()._prune_extra(idxs)`.
         """
         return
 

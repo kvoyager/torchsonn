@@ -1,6 +1,5 @@
 import gc
 import math
-import os
 import sys
 import torch
 from torchsonn.model import SONN, _linear_from_seed
@@ -10,8 +9,6 @@ import logging
 from torch import nn
 from dataclasses import replace
 from copy import deepcopy
-from functools import partial
-from torch.func import vmap, grad
 from torch.utils.data import DataLoader
 from pathlib import Path
 from torchsonn.optimizers import optimizer_map
@@ -22,8 +19,9 @@ import numpy as np
 import random
 
 from torchsonn.utils import timed_block, abbrev_floats, fmt_err
-from torchsonn.loss import NormMSE
-from torchsonn.training import config_checks, distributed, evaluation, runs, selection
+from torchsonn.training import (
+    config_checks, distributed, ensemble, evaluation, keep_best, normalization, runs, selection,
+)
 from torchsonn.training.state import GrowthCriterion, LayerAccumulator, StepCheckpoint
 
 logger = logging.getLogger(__name__)
@@ -214,103 +212,6 @@ def _finetune_batches(train_dl: DataLoader, device: torch.device, mode: str, bat
             yield None, None   # epoch boundary
 
     return epochs(), desc
-
-
-# Where a pass keeps the copy of its best evaluation's weights
-# (OutProjTrainConfig.best_weights_copy).
-
-
-class _BestWeights:
-    """A pass's evaluations, and the weights it ends with.
-
-    A head fit, per-layer fine-tune or end-to-end pass calls `update` after
-    every evaluation, its last step included. With `keep`
-    (`OutProjTrainConfig.keep_best_weights`) the parameters are copied
-    whenever the loss is the lowest so far (strictly lower, without the
-    early stop's `early_stop_min_delta`; NaN never is), and `restore`
-    copies the best ones back in place, so the tensors a captured CUDA
-    graph holds stay valid, and logs which step's weights the pass ends
-    with. Without it nothing is copied and the pass ends on its last step.
-    Where the copy is kept (`OutProjTrainConfig.best_weights_copy`):
-
-    - 'device': tensors next to the parameters (GPU memory on CUDA);
-    - 'cpu': host tensors, pinned when the parameters are on CUDA;
-    - 'disk': the file `path`, rewritten through a temporary name on every
-      new best and deleted by `restore`.
-
-    `final_loss` is the evaluated loss of the weights the pass ends with.
-    With no parameters (a head fitted over frozen survivors, which is then
-    discarded) only the losses are tracked, and `final_loss` is the lowest.
-    """
-
-    def __init__(self, params: list[torch.Tensor], keep: bool, where: str,
-                 path: Path | None, label: str, split: str = "dev") -> None:
-        if where not in config_checks.BEST_WEIGHTS_COPIES:
-            raise ValueError(
-                f"best_weights_copy={where!r}; expected 'device', 'cpu' or 'disk'.")
-        if keep and where == "disk" and params and path is None:
-            raise ValueError("best_weights_copy='disk' needs a file path.")
-        self.params = list(params)
-        self.keep = bool(keep)
-        self.where, self.path, self.label, self.split = where, path, label, split
-        self.best_loss = float("inf")
-        self.best_step: int | None = None
-        self.last_loss = float("nan")
-        self.last_step: int | None = None
-        self._copies: list[torch.Tensor] | None = None
-
-    def update(self, step: int, loss: float) -> None:
-        """Record the evaluation at `step`; copy the parameters on a new best."""
-        self.last_step, self.last_loss = step, loss
-        if not loss < self.best_loss:
-            return
-        self.best_step, self.best_loss = step, loss
-        if not self.keep or not self.params:
-            return
-        with torch.no_grad():
-            if self.where == "disk":
-                tmp = self.path.with_name(self.path.name + ".tmp")
-                torch.save([p.detach().cpu() for p in self.params], tmp)
-                os.replace(tmp, self.path)
-                return
-            if self._copies is None:
-                if self.where == "cpu":
-                    pin = any(p.is_cuda for p in self.params)
-                    self._copies = [torch.empty(p.shape, dtype=p.dtype, pin_memory=pin)
-                                    for p in self.params]
-                else:
-                    self._copies = [torch.empty_like(p) for p in self.params]
-            for c, p in zip(self._copies, self.params):
-                c.copy_(p.detach())
-
-    @property
-    def final_loss(self) -> float:
-        """The evaluated loss of the weights the pass ends with (inf if there is none)."""
-        if self.keep or not self.params:
-            return self.best_loss
-        return self.last_loss if self.last_step is not None else float("inf")
-
-    def restore(self) -> None:
-        """Copy the best evaluation's parameters back, unless the last one is the best."""
-        if not self.keep or not self.params or self.best_step is None:
-            return
-        if self.best_step == self.last_step:
-            logger.info(f"{self.label}: kept the last step's weights (step {self.last_step}, "
-                        f"the lowest {self.split} loss, {self.best_loss:.4f})")
-        else:
-            if self.where == "disk":
-                saved = torch.load(self.path, map_location="cpu", weights_only=True)
-            else:
-                saved = self._copies
-            with torch.no_grad():
-                for p, c in zip(self.params, saved):
-                    p.copy_(c)
-            logger.info(f"{self.label}: kept the weights of step {self.best_step} "
-                        f"({self.split} loss {self.best_loss:.4f}); the last evaluation, "
-                        f"step {self.last_step}, gave {self.last_loss:.4f}")
-        self._copies = None
-        if self.where == "disk":
-            self.path.unlink(missing_ok=True)
 
 
 class _CountControl:
@@ -874,7 +775,7 @@ class Trainer:
         # Fix the NormMSE denominator to the training-set target spread before
         # any layer trains. Re-measured on resume too — it describes the data,
         # not the checkpoint.
-        self._fit_target_scale(model, train_dl)
+        normalization.fit_target_scale(model, train_dl, self.config.train.device, batch_callback=self.batch_callback)
 
         if joint:
             return self.train_joint(model, train_dl, dev_dl, verbose=verbose, val_dl=val_dl)
@@ -906,7 +807,7 @@ class Trainer:
                 # path: a layer resumed mid-training keeps the state its
                 # checkpoint carries, which was fit on this same training set
                 # before it started.
-                self.fit_layer_inputs(model, layer, train_dl)
+                normalization.fit_layer_inputs(model, layer, train_dl, batch_callback=self.batch_callback)
 
             with timed_block(f"train layer #{layer_index}", verbose=verbose):
                 self.train_layer(model, layer, train_dl, dev_dl, checkpoint_data)
@@ -1045,7 +946,7 @@ class Trainer:
             # survivors selection keeps. The bias criterion's two half-fits
             # below only score the candidates.
             loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names = (
-                self.create_loss_functions(model, neuron_model))
+                ensemble.create_loss_functions(model, neuron_model))
             accumulator, trained_params, last_ckpt = self.train_model_ensemble(
                 model,
                 neuron_model,
@@ -1082,7 +983,7 @@ class Trainer:
                 dev_dl_b   = self._split_loader(dev_feat_dl,   1)
 
                 loss_fn_vmapped_a, eval_loss_fn_vmapped_a, pred_fn_vmapped_a, params_batch_a, buffers_batch_a, shared_param_names_a = (
-                    self.create_loss_functions(model, neuron_model))
+                    ensemble.create_loss_functions(model, neuron_model))
                 accumulator, trained_params_a, last_ckpt = self.train_model_ensemble(
                     model,
                     neuron_module_a,
@@ -1100,7 +1001,7 @@ class Trainer:
                     features_precomputed=precompute)
 
                 loss_fn_vmapped_b, eval_loss_fn_vmapped_b, pred_fn_vmapped_b, params_batch_b, buffers_batch_b, shared_param_names_b = (
-                    self.create_loss_functions(model, neuron_model))
+                    ensemble.create_loss_functions(model, neuron_model))
                 accumulator, trained_params_b, last_ckpt = self.train_model_ensemble(
                     model,
                     neuron_module_b,
@@ -1572,8 +1473,8 @@ class Trainer:
                 save_interval = model.param.train.save_interval
                 if (save_interval != -1 and global_step % save_interval == 0) or (step == train_dl_len - 1 and not model.param.train.skip_saving_at_epoch_end):
                     _ckpt_params = distributed.gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch
-                    self.write_back_params(neuron_model, _ckpt_params)
-                    self._write_back_shared_params(model, _ckpt_params)
+                    ensemble.write_back_params(neuron_model, _ckpt_params)
+                    ensemble.write_back_shared_params(model, _ckpt_params)
                     last_ckpt = StepCheckpoint(
                         model=model,
                         opt=opt,
@@ -1611,8 +1512,8 @@ class Trainer:
 
         # Restore the full ensemble shape before write-back and error evaluation.
         params_batch = distributed.gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch
-        self.write_back_params(neuron_model, params_batch)
-        self._write_back_shared_params(model, params_batch)
+        ensemble.write_back_params(neuron_model, params_batch)
+        ensemble.write_back_shared_params(model, params_batch)
         last_ckpt = StepCheckpoint(
             model=model,
             opt=opt,
@@ -1644,340 +1545,7 @@ class Trainer:
         del opt, buffers_batch
         return accumulator, params_batch, last_ckpt
 
-    @staticmethod
-    def _write_back_shared_params(model: "SONN", params_batch: dict) -> None:
-        """Copy shared_proj params back into model.shared_proj after each optimizer step."""
-        if model.shared_proj is not None and "shared_proj_weight" in params_batch:
-            with torch.no_grad():
-                model.shared_proj.weight.copy_(params_batch["shared_proj_weight"])
-                model.shared_proj.bias.copy_(params_batch["shared_proj_bias"])
-
-    @classmethod
-    def write_back_params(
-        cls,
-        model: nn.Module,
-        new_params: dict[str, torch.Tensor],
-        new_buffers: dict[str, torch.Tensor] | None = None,
-    ) -> None:
-        """
-        Copy updated batched parameters & buffers into the model.
-
-        Parameters
-        ----------
-        model : nn.Module
-            The module to update in place.
-        new_params : dict of str -> torch.Tensor
-            Updated batched parameters.
-        new_buffers : dict of str -> torch.Tensor, optional
-            Updated buffers.
-        """
-        # Write back parameters
-        for name, param in model.named_parameters():
-            if name in new_params:
-                with torch.no_grad():
-                    param.copy_(new_params[name])
-
-        # Write back buffers
-        if new_buffers is not None:
-            for name, buf in model.named_buffers():
-                if name in new_buffers:
-                    buf.copy_(new_buffers[name])
-
-    def create_loss_functions(
-        self, model: SONN, module: BasePolynomNeuron,
-    ) -> tuple[Callable, Callable, Callable, dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
-        """
-        Build the vmapped loss functions for one neuron module's candidates.
-
-        Parameters
-        ----------
-        model : SONN
-            The model being grown.
-        module : BasePolynomNeuron
-            The neuron module whose candidates are trained.
-
-        Returns
-        -------
-        loss_fn_vmapped : callable
-            Per-candidate gradient of the training loss, including the
-            `train.ridge_alpha` penalty.
-        eval_loss_fn_vmapped : callable
-            Per-candidate loss without the penalty.
-        pred_fn_vmapped : callable
-            Per-candidate predictions.
-        params_batch : dict of str to tensor
-            The module's parameters, plus the shared projection for
-            multi-class models that use one.
-        buffers_batch : dict of str to tensor
-            The module's buffers and `src_idxs`.
-        shared_param_names : list of str
-            Names of the parameters shared by all candidates (not vmapped).
-        """
-        # prepare params & buffers as dicts
-        params = dict(module.named_parameters())
-        buffers = dict(module.named_buffers())
-        buffers["src_idxs"] = module.src_idxs
-
-        params_batch = params
-        buffers_batch = buffers
-
-        # set in_dims for dicts
-        params_in_dims = {k: 0 for k in params_batch}
-        buffers_in_dims = {k: 0 for k in buffers_batch}
-
-        if isinstance(model.loss_fn, nn.NLLLoss) and model.soft_binner is None and model.shared_proj is not None:
-            # shared_proj is trained jointly by all ensemble members (in_dims=None).
-            # The optimizer's shared path averages their gradients into one update.
-            # use_neuron_proj: proj_weight/proj_bias live on the neuron module and
-            # are already in params via named_parameters() with in_dims=0.
-            params["shared_proj_weight"] = model.shared_proj.weight
-            params["shared_proj_bias"] = model.shared_proj.bias
-            params_in_dims["shared_proj_weight"] = None
-            params_in_dims["shared_proj_bias"] = None
-            shared_param_names = ["shared_proj_weight", "shared_proj_bias"]
-        else:
-            shared_param_names = []
-
-        # Ridge α applies to the training-loss partial only. The eval and
-        # pred partials are pinned to 0.0 so the dev loss used for
-        # neuron_selection, the layer-error reported in the log, and the
-        # final R² / RMSE in report() all reflect pure data fit, not the
-        # penalised training objective. This is the conventional ridge
-        # tuning regime: "train regularized, evaluate raw".
-        ridge_alpha = float(model.param.train.ridge_alpha)
-
-        # create loss function that is vmapped & differentiated
-        loss_fn_vmapped = vmap(
-            grad(partial(model.compute_loss, module, model.loss_fn, model.param.model.type, model.soft_binner, ridge_alpha)),
-            in_dims=(params_in_dims, buffers_in_dims, None, None)
-        )
-
-        # Create vmapped evaluation loss function (no gradient)
-        eval_loss_fn_vmapped = vmap(
-            partial(model.compute_loss, module, model.loss_fn, model.param.model.type, model.soft_binner, 0.0),
-            in_dims=(params_in_dims, buffers_in_dims, None, None)
-        )
-
-        pred_fn_vmapped = vmap(
-            partial(model.compute_loss, module, None, model.param.model.type, model.soft_binner, 0.0),
-            in_dims=(params_in_dims, buffers_in_dims, None, None)
-        )
-
-        return loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names
-
-    def fit_layer_inputs(self, model: SONN, layer: SONNLayer, train_dl: DataLoader) -> None:
-        """Per-layer input pass: calibrate every neuron model on the layer's
-        actual inputs before the layer trains.
-
-        The inputs have to be the features that reach *this* layer: the
-        (preprocessed) raw inputs for layer 0, the frozen prefix's outputs —
-        plus the shortcut-concatenated originals — deeper down. So this runs
-        once per layer, after create_layer and before any of the layer's
-        neurons train, and measures `model(x, skip_last_layer=True)` exactly
-        as train_layer will feed it. Three things come out of it, each only
-        when some neuron model in the layer asks (see the hooks on
-        `BasePolynomNeuron`):
-
-          * mean / std per input feature (`needs_input_stats`): the sigma
-            squash of the orthogonal families. Streamed in float64.
-          * a seeded reservoir sample of up to `train.input_sample_rows` rows
-            (`needs_input_sample`), the whole split when it is smaller, taken
-            in the same pass. Handed to `fit_input_sample(sample, stream)`.
-          * a streaming pass (`needs_input_stream`, and only when the mode
-            resolves to 'stream': `train.rbf_kmeans_mode` 'stream', or 'auto'
-            with more rows than the cap): `train.rbf_kmeans_passes` further
-            passes over the split feeding `stream_input_batch(x_batch)`, then
-            `finish_input_stream()` once.
-
-        Costs one forward pass over the training split per layer, plus one
-        per streaming pass. Skipped outright when no neuron in the layer asks
-        for anything, so configs that use none of it pay nothing.
-        """
-        modules = list(layer.neuron_models)
-        want_stats = any(nm.needs_input_stats for nm in modules)
-        want_sample = any(nm.needs_input_sample for nm in modules)
-        if not (want_stats or want_sample):
-            return
-
-        cfg = model.param.train
-        max_rows = int(cfg.input_sample_rows)
-        if want_sample and max_rows <= 0:
-            raise ValueError(f"train.input_sample_rows must be > 0, got {max_rows}")
-        mode = str(cfg.rbf_kmeans_mode).lower()
-        if mode not in ("auto", "sample", "stream"):
-            raise ValueError(
-                f"train.rbf_kmeans_mode must be 'auto', 'sample' or 'stream', got {cfg.rbf_kmeans_mode!r}")
-
-        device = modules[0].device
-        # Accumulate in float64 whatever the inputs' type is: a running sum of
-        # squares over a large split bleeds precision badly in float32, and
-        # this runs once per layer so the extra width is free.
-        total: torch.Tensor | None = None
-        total_sq: torch.Tensor | None = None
-        count = 0
-        reservoir: torch.Tensor | None = None
-        filled = 0
-        gen = torch.Generator(device="cpu").manual_seed(int(cfg.seed) + 7919 * (layer.layer_index + 1))
-
-        was_training = model.training
-        model.eval()
-        # no_grad rather than inference_mode: these statistics get copied into
-        # buffers that autograd reads during training, and inference tensors
-        # are barred from autograd-enabled ops.
-        with torch.no_grad():
-            for batch in train_dl:
-                x_inp, _ = self.batch_callback(batch) if self.batch_callback else batch
-                feats = model(x_inp.to(device=device), skip_last_layer=True)
-                f64 = feats.double()
-                batch_sum = f64.sum(dim=0)
-                batch_sq = (f64 * f64).sum(dim=0)
-                total = batch_sum if total is None else total + batch_sum
-                total_sq = batch_sq if total_sq is None else total_sq + batch_sq
-                if want_sample:
-                    reservoir, filled = evaluation.reservoir_add(reservoir, filled, count, feats, max_rows, gen)
-                count += feats.shape[0]
-        model.train(was_training)
-
-        if count == 0:
-            logger.warning(
-                "Layer #%d input pass skipped: training set is empty. "
-                "Neurons keep their identity stats (mean 0, std 1).",
-                layer.layer_index,
-            )
-            return
-
-        mean = total / count
-        # Var as E[x^2] - E[x]^2. Clamped because the cancellation can land a
-        # hair below zero for a near-constant feature; SigmaSquashNorm then
-        # reads the resulting std == 0 as a constant feature and neutralizes it.
-        std = (total_sq / count - mean * mean).clamp(min=0.0).sqrt()
-
-        if want_stats:
-            # Back from the float64 accumulators to the parameters' type.
-            dtype = torch.get_default_dtype()
-            layer.fit_input_stats(mean.to(dtype=dtype), std.to(dtype=dtype))
-            logger.info(
-                "Layer #%d squash calibrated on %d training samples over %d input "
-                "feature(s); |mean| max %.4g, std range [%.4g, %.4g]",
-                layer.layer_index, count, mean.numel(),
-                mean.abs().max().item(), std.min().item(), std.max().item(),
-            )
-
-        if not want_sample:
-            return
-        sample = reservoir[:filled]
-        stream = mode == "stream" or (mode == "auto" and count > max_rows)
-        seed = int(cfg.seed) + 7919 * (layer.layer_index + 1)
-        for nm in modules:
-            if nm.needs_input_sample:
-                nm.fit_input_sample(sample, stream=stream, seed=seed, iters=int(cfg.rbf_kmeans_iters))
-        logger.info(
-            "Layer #%d input sample: %d of %d training rows kept (%s); k-means mode %s",
-            layer.layer_index, filled, count,
-            "whole split" if filled == count else "seeded reservoir",
-            "stream" if stream else "sample",
-        )
-        if not stream:
-            return
-        streamers = [nm for nm in modules if nm.needs_input_stream]
-        if not streamers:
-            return
-        passes = int(cfg.rbf_kmeans_passes)
-        if passes < 1:
-            raise ValueError(f"train.rbf_kmeans_passes must be >= 1, got {passes}")
-        model.eval()
-        with torch.no_grad():
-            for _ in range(passes):
-                for batch in train_dl:
-                    x_inp, _ = self.batch_callback(batch) if self.batch_callback else batch
-                    feats = model(x_inp.to(device=device), skip_last_layer=True)
-                    for nm in streamers:
-                        nm.stream_input_batch(feats)
-        model.train(was_training)
-        for nm in streamers:
-            nm.finish_input_stream()
-        logger.info("Layer #%d streaming pass done: %d pass(es) over %d rows for %d neuron model(s)",
-                    layer.layer_index, passes, count, len(streamers))
-
-    def _fit_target_scale(self, model: SONN, train_dl: DataLoader) -> None:
-        """Fix the NormMSE denominator to the training-set target spread.
-
-        One streaming pass over `train_dl`'s targets — no model forward, the
-        labels are all this needs. Sets `model.loss_fn.scale` to the per-sample
-        variance of the training targets (or their mean square under
-        `error_normalization: energy`), so the regressor's training loss is
-        `Σ(y-ŷ)² / (n_batch · scale)`.
-
-        Fixing the scale rather than recomputing it per batch is what keeps the
-        loss batch-size-independent, safe on a degenerate batch, and on the same
-        scale as the dev-set regularity criterion — see NormMSE's docstring.
-
-        No-op unless the model is a regressor (only that path uses NormMSE).
-        """
-        if not isinstance(model.loss_fn, NormMSE):
-            return
-
-        device = self.config.train.device
-        # float64: `sum_y2 - sum_y**2 / n` cancels, and on a target whose mean
-        # dominates its spread the two terms can differ by several decades —
-        # more than float32 can absorb.
-        n = 0
-        sum_y = torch.zeros((), dtype=torch.float64, device=device)
-        sum_y2 = torch.zeros((), dtype=torch.float64, device=device)
-        for batch in train_dl:
-            _, targets = self.batch_callback(batch) if self.batch_callback else batch
-            t = targets.to(device=device, dtype=torch.float64).reshape(-1)
-            n += t.numel()
-            sum_y += t.sum()
-            sum_y2 += (t * t).sum()
-
-        acc = torch.stack([torch.as_tensor(float(n), dtype=torch.float64, device=device),
-                           sum_y, sum_y2])
-        if distributed.is_dist():
-            # Every rank must use the same denominator, or the per-neuron losses
-            # they compare are on different scales. Correct whether or not the
-            # loader is sharded: `scale` is invariant to a common factor on all
-            # three accumulators, so summing an unsharded loader across W ranks
-            # gives the same answer as not reducing at all.
-            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
-
-        n, sum_y, sum_y2 = acc.tolist()
-        if n <= 0:
-            logger.warning("empty train dataloader; leaving the NormMSE denominator per-batch")
-            return
-
-        scale = (sum_y2 - sum_y * sum_y / n) / n if model.error_centered else sum_y2 / n
-        if not (scale > model.loss_fn.eps):
-            logger.warning(
-                "training targets have no spread (measured scale %.3g); leaving the NormMSE "
-                "denominator per-batch. A constant target makes the normalized error undefined.",
-                scale,
-            )
-            return
-
-        model.loss_fn.scale = scale
-        logger.info(
-            "NormMSE denominator fixed to the training-set target %s: %.6g",
-            "variance" if model.error_centered else "mean square", scale,
-        )
-
     # endregion
-
-    def _best_weights(self, model: SONN, params: list[torch.Tensor], cfg: Any, name: str,
-                      label: str, split: str = "dev") -> _BestWeights:
-        """A pass's evaluation record; it copies the best weights under `cfg.keep_best_weights`.
-
-        The copy is kept where `cfg.best_weights_copy` says. Under 'disk' the
-        file is `best_<name>.ckpt` in the run folder (with `_rank<N>` in a
-        distributed run, where every rank keeps its own).
-        """
-        keep = bool(getattr(cfg, "keep_best_weights", False))
-        where = str(getattr(cfg, "best_weights_copy", "device"))
-        path = None
-        if keep and where == "disk" and params:
-            rank = f"_rank{dist.get_rank()}" if distributed.is_dist() else ""
-            path = self._ensure_run_dir(model) / f"best_{name}{rank}.ckpt"
-        return _BestWeights(params, keep, where, path, label, split)
 
     def train_out_proj(self, model: SONN, train_dl: DataLoader, dev_dl: DataLoader) -> None:
         """Train model.out_proj with all other parameters frozen.
@@ -2077,8 +1645,9 @@ class Trainer:
                     val_loss += _head_loss(vfeatures, vt).item()
             return val_loss / len(dev_feat_dl)
 
-        best_weights = self._best_weights(model, list(model.out_proj.parameters()), cfg,
-                                          "out_proj", "out_proj")
+        best_weights = keep_best.record(list(model.out_proj.parameters()), cfg,
+                                        "out_proj", "out_proj",
+                                        run_dir=lambda: self._ensure_run_dir(model))
 
         verbose = model.param.train.verbose
         tbar = tqdm(total=cfg.max_steps, desc="out_proj", file=sys.stdout,
@@ -2210,8 +1779,9 @@ class Trainer:
         dev_X_sel   = self._select_out_proj_inputs(dev_X,   cols_t, k)
         del train_X, dev_X
 
-        best_weights = self._best_weights(model, list(model.out_proj.parameters()), cfg,
-                                          "out_proj", "out_proj (lbfgs)")
+        best_weights = keep_best.record(list(model.out_proj.parameters()), cfg,
+                                        "out_proj", "out_proj (lbfgs)",
+                                        run_dir=lambda: self._ensure_run_dir(model))
 
         verbose = model.param.train.verbose
         tbar = tqdm(total=cfg.max_steps, desc="out_proj (lbfgs)", file=sys.stdout,
@@ -2412,8 +1982,9 @@ class Trainer:
                     ).mean().item()
             return val_loss / len(stop_dl)
 
-        best_weights = self._best_weights(model, list(model.parameters()), cfg,
-                                          "finetune", "finetune", split=stop_split)
+        best_weights = keep_best.record(list(model.parameters()), cfg,
+                                        "finetune", "finetune", split=stop_split,
+                                        run_dir=lambda: self._ensure_run_dir(model))
 
         verbose = model.param.train.verbose
         tbar = tqdm(total=cfg.max_steps, desc="finetune", file=sys.stdout,
@@ -2586,7 +2157,7 @@ class Trainer:
             layer_index = len(model.layers)
             layer = model.create_layer(layer_index)
             model.layers.append(layer)
-            self.fit_layer_inputs(model, layer, train_dl)
+            normalization.fit_layer_inputs(model, layer, train_dl, batch_callback=self.batch_callback)
             with timed_block(f"train joint layer #{layer_index}", verbose=verbose):
                 self._train_joint_layer(model, layer, train_dl, dev_dl, stop_dl, stop_split, n_out, verbose)
 
@@ -2650,7 +2221,7 @@ class Trainer:
         del model.layers[idx]
         layer = model.create_layer(idx)
         model.layers.append(layer)
-        self.fit_layer_inputs(model, layer, train_dl)
+        normalization.fit_layer_inputs(model, layer, train_dl, batch_callback=self.batch_callback)
         with timed_block(f"train joint layer #{idx}", verbose=verbose):
             self._train_joint_layer(model, layer, train_dl, dev_dl, stop_dl, stop_split, n_out, verbose)
         errs = layer.err_values
@@ -2733,7 +2304,7 @@ class Trainer:
         model.eval()
         with torch.no_grad():
             for module in layer.neuron_models:
-                _, _, pred_fn, params, buffers, _ = self.create_loss_functions(model, module)
+                _, _, pred_fn, params, buffers, _ = ensemble.create_loss_functions(model, module)
                 errs.append(evaluation.regularity_err(model, pred_fn, params, buffers, dl, device, batch_callback=self.batch_callback).detach())
         return torch.cat(errs).to(device=layer.module_idxs.device)
 
@@ -3024,9 +2595,10 @@ class Trainer:
         # the end: the temporary head is discarded, and with frozen neurons
         # there is nothing to copy.
         lbfgs_tag = " (lbfgs)" if cfg.optimizer == "lbfgs" else ""
-        best_weights = self._best_weights(model, neuron_params, cfg,
-                                          f"layer_{layer.layer_index}_finetune",
-                                          f"layer {layer.layer_index} finetune{lbfgs_tag}")
+        best_weights = keep_best.record(neuron_params, cfg,
+                                        f"layer_{layer.layer_index}_finetune",
+                                        f"layer {layer.layer_index} finetune{lbfgs_tag}",
+                                        run_dir=lambda: self._ensure_run_dir(model))
 
         # Features through layers 0..N-1. Current `layer` is model.layers[-1],
         # so skip_last_layer=True is "everything but this one".
@@ -3199,7 +2771,7 @@ class Trainer:
             train_feat_dl: DataLoader,
             dev_feat_dl: DataLoader,
             cfg,
-            best_weights: _BestWeights,
+            best_weights: keep_best.BestWeights,
     ) -> float:
         """Full-batch LBFGS path for `_train_layer_finetune`.
 

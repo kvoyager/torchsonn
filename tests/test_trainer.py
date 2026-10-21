@@ -40,7 +40,7 @@ from torchsonn.data.dataset import SONNDataset
 from torchsonn.loss import regularity_error
 from torchsonn.model import SONN
 from torchsonn.trainer import LayerAccumulator, StepCheckpoint, Trainer
-from torchsonn.training import distributed, evaluation, runs
+from torchsonn.training import distributed, evaluation, normalization, runs
 
 
 def _make_cfg(**overrides) -> OmegaConf:
@@ -196,27 +196,24 @@ class TestFitTargetScale:
         y, _ = _shifted_targets()
         x = torch.randn(y.numel(), 2)
         model = SONN(_norm_cfg(tmp_path, "variance"), d_model=2)
-        trainer = Trainer(_norm_cfg(tmp_path, "variance"))
 
-        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=5))
+        normalization.fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=5), "cpu", batch_callback=None)
         assert model.loss_fn.scale == pytest.approx(y.var(unbiased=False).item(), rel=1e-5)
 
     def test_energy_uses_mean_square(self, tmp_path):
         y, _ = _shifted_targets()
         x = torch.randn(y.numel(), 2)
         model = SONN(_norm_cfg(tmp_path, "energy"), d_model=2)
-        trainer = Trainer(_norm_cfg(tmp_path, "energy"))
 
-        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=5))
+        normalization.fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=5), "cpu", batch_callback=None)
         assert model.loss_fn.scale == pytest.approx((y * y).mean().item(), rel=1e-5)
 
     def test_constant_target_leaves_scale_unset(self, tmp_path):
         y = torch.full((8,), 7.0)
         x = torch.randn(8, 2)
         model = SONN(_norm_cfg(tmp_path, "variance"), d_model=2)
-        trainer = Trainer(_norm_cfg(tmp_path, "variance"))
 
-        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=4))
+        normalization.fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=4), "cpu", batch_callback=None)
         # falls back to the per-call denominator rather than dividing by ~0
         assert model.loss_fn.scale is None
 
@@ -227,10 +224,9 @@ class TestFitTargetScale:
             train={"checkpoint_dir": str(tmp_path)},
         )
         model = SONN(cfg, d_model=2)
-        trainer = Trainer(cfg)
         x, y = torch.randn(8, 2), torch.randint(0, 3, (8,))
         # NLLLoss has no `scale`; the helper must not touch it
-        trainer._fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=4))
+        normalization.fit_target_scale(model, DataLoader(SONNDataset(x, y), batch_size=4), "cpu", batch_callback=None)
         assert not hasattr(model.loss_fn, "scale")
 
 

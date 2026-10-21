@@ -121,8 +121,9 @@ class SONNLayer(SONNModule):
 
         `mean` / `std` are length-`num_feat` vectors over the features that
         feed this layer, measured on the training set. Called by
-        `Trainer.fit_layer_inputs` after the layer is created and before it
-        trains; a no-op for neuron families that calibrate nothing.
+        `training.normalization.fit_layer_inputs` after the layer is created
+        and before it trains; a no-op for neuron families that calibrate
+        nothing.
         """
         for neuron_model in self.neuron_models:
             neuron_model.fit_input_stats(mean, std)

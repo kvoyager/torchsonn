@@ -312,7 +312,7 @@ class TestOrthogonalNeurons:
         assert n.squash_method == "sigma"
         assert n.squash_norm is not None
         # Per-neuron-input-slot stats: the leading axis must match num_neurons
-        # because Trainer.create_loss_functions vmaps every buffer at in_dims=0.
+        # because training.ensemble.create_loss_functions vmaps every buffer at in_dims=0.
         assert n.squash_norm.mean.shape == (n.num_neurons, n.dim)
         assert "sigma-squashed" in n.get_name()
 

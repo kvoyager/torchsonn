@@ -39,7 +39,7 @@ confined to [-1, 1].
   * "sigma" (default) — SigmaSquashNorm: standardize by the per-feature
     mean/std measured on the training set, pass the bulk through linearly, and
     saturate only the tail. Needs calibrating, which `fit_input_stats` does once per
-    layer before that layer trains (see Trainer.fit_layer_inputs).
+    layer before that layer trains (see training.normalization.fit_layer_inputs).
   * "tanh" — a stateless squash, and the standard trick in
     Chebyshev-KAN. Needs no statistics, but spends its useful slope on the bulk
     of the data: tanh is already at 0.76 by 1 sigma, so typical samples get
@@ -130,8 +130,8 @@ class BaseOrthogonalNeuron(BaseTupleNeuron):
         )
         # The squash statistics are per neuron *input slot*, so they carry the
         # same leading `num_neurons` axis as self.weight. That is load-bearing:
-        # Trainer.create_loss_functions vmaps every buffer with in_dims=0, so a
-        # differently-shaped buffer would silently misalign the ensemble. It
+        # training.ensemble.create_loss_functions vmaps every buffer with
+        # in_dims=0, so a differently-shaped buffer would silently misalign the ensemble. It
         # also means prune() has to index them alongside the weight — see
         # _prune_extra. Built with identity stats (mean 0, std 1) so the neuron
         # is usable before calibration and so a checkpoint restore has correctly
