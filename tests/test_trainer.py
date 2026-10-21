@@ -11,8 +11,8 @@ End-to-end `train()` runs live in `test_trainer_smoke.py`.
 # region uncovered
 The following Trainer branches are deliberately uncovered:
 
-1. `torch.distributed` paths (init_distributed, _gather_ensemble_params /
-   _allreduce_shared_grads with world_size > 1, sharded ensemble training).
+1. `torch.distributed` paths (init_distributed, gather_ensemble_params /
+   allreduce_shared_grads with world_size > 1, sharded ensemble training).
    These require `torchrun --nproc_per_node=N` and cannot be exercised
    inside a single-process pytest without monkey-patching every `dist.*`
    call — which tests the patch, not the production code.
@@ -40,6 +40,7 @@ from torchsonn.data.dataset import SONNDataset
 from torchsonn.loss import regularity_error
 from torchsonn.model import SONN
 from torchsonn.trainer import LayerAccumulator, StepCheckpoint, Trainer
+from torchsonn.training import distributed
 
 
 def _make_cfg(**overrides) -> OmegaConf:
@@ -421,39 +422,39 @@ class TestSplitLoader:
 class TestDistributedHelpers:
     def test_is_dist_false_when_not_initialized(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: False)
-        assert Trainer._is_dist() is False
+        assert distributed.is_dist() is False
 
     def test_ensemble_slice_none_when_not_initialized(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: False)
-        assert Trainer._ensemble_slice(16) is None
+        assert distributed.ensemble_slice(16) is None
 
     def test_ensemble_slice_world_size_1(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: True)
         monkeypatch.setattr("torch.distributed.get_world_size", lambda: 1)
-        assert Trainer._ensemble_slice(16) is None
+        assert distributed.ensemble_slice(16) is None
 
     def test_ensemble_slice_non_divisible(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: True)
         monkeypatch.setattr("torch.distributed.get_world_size", lambda: 4)
         monkeypatch.setattr("torch.distributed.get_rank", lambda: 0)
-        assert Trainer._ensemble_slice(10) is None
+        assert distributed.ensemble_slice(10) is None
 
     def test_ensemble_slice_divisible(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: True)
         monkeypatch.setattr("torch.distributed.get_world_size", lambda: 4)
         monkeypatch.setattr("torch.distributed.get_rank", lambda: 1)
-        s = Trainer._ensemble_slice(16)
+        s = distributed.ensemble_slice(16)
         assert s == (4, 8)
 
     def test_gather_passthrough_when_world_size_1(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: False)
         p = {"w": torch.zeros(3, 2)}
-        assert Trainer._gather_ensemble_params(p, []) is p
+        assert distributed.gather_ensemble_params(p, []) is p
 
     def test_allreduce_noop_when_not_distributed(self, monkeypatch):
         monkeypatch.setattr("torch.distributed.is_initialized", lambda: False)
         g = {"w": torch.zeros(3)}
-        Trainer._allreduce_shared_grads(g, ["w"])  # should not raise
+        distributed.allreduce_shared_grads(g, ["w"])  # should not raise
 
 
 class TestSetSeed:

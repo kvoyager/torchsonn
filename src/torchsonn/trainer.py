@@ -9,13 +9,13 @@ from torchsonn.modules import HardConcreteGate, diversity_loss, group_lasso_pena
 from tqdm import tqdm
 import logging
 from torch import nn
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import replace
 from copy import deepcopy
 from functools import partial
 from torch.func import vmap, grad
 from torch.utils.data import DataLoader
 from pathlib import Path
-from torchsonn.optimizers import optimizer_map, BaseOptimizer
+from torchsonn.optimizers import optimizer_map
 from torchsonn.layer import SONNLayer, NeuronModuleList
 from torchsonn.neurons import BasePolynomNeuron
 from torchsonn.data.dataset import SONNDataset
@@ -25,7 +25,8 @@ import random
 from torchsonn.utils import timed_block, abbrev_floats, fmt_err
 from torchsonn.logger import attach_run_log
 from torchsonn.loss import NormMSE, bias_error, bias_error_l2, bias_error_js
-from torchsonn.training import selection
+from torchsonn.training import config_checks, distributed, selection
+from torchsonn.training.state import GrowthCriterion, LayerAccumulator, StepCheckpoint
 
 logger = logging.getLogger(__name__)
 import re
@@ -38,123 +39,6 @@ import torch.nn.functional as F
 _RUN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})(?:-(\d+))?")
 # A step checkpoint the trainer writes, with its optional `_last` copy.
 _STEP_CKPT_RE = re.compile(r"model_layer_(\d+)_neuron_(\d+)_step_(\d+)(_last)?\.ckpt")
-
-
-@dataclass
-class GrowthCriterion:
-    """The layer-growth stop rule of `Trainer.train`, kept out of the loop so
-    it can be tested on a scripted sequence of layer errors.
-
-    A layer *improves* when it lowers the error of the last accepted
-    improvement (`ref_error`) by at least `max(min_delta, epsilon * best)`,
-    so several small steps down add up instead of each failing the margin
-    on its own; the search stops after `width` consecutive layers without
-    an improvement. `best_index` (the layer with the lowest error, margin or
-    not) is what the trainer keeps; the window is counted from
-    `last_improved_index`. Layer 0 always improves.
-    """
-    width: int
-    epsilon: float
-    min_delta: float = 0.0
-    min_error: float = field(default=sys.float_info.max)
-    ref_error: float = field(default=sys.float_info.max)
-    best_index: int = 0
-    last_improved_index: int = 0
-    # Filled by the last `update` for the log.
-    last_gain: float = 0.0
-    last_margin: float = 0.0
-    last_since: int = 0
-
-    def update(self, layer_index: int, err: float) -> bool:
-        """Record a layer's error; returns True when the search should stop."""
-        err = float(err)
-        if layer_index == 0 or self.min_error == sys.float_info.max:
-            margin = 0.0
-            gain = float("inf")
-            improved = True
-        else:
-            margin = max(float(self.min_delta), float(self.epsilon) * self.min_error)
-            gain = self.ref_error - err
-            improved = gain >= margin - 1e-12
-        if err < self.min_error:
-            self.min_error = err
-            self.best_index = layer_index
-        if improved:
-            self.last_improved_index = layer_index
-            self.ref_error = err
-        self.last_gain, self.last_margin = gain, margin
-        self.last_since = layer_index - self.last_improved_index
-        return layer_index > 0 and self.last_since >= int(self.width)
-
-    def describe(self, layer_index: int, err: float) -> str:
-        """Return a one-line log message on the last `update`: error, best layer, gain and margin, layers without improvement."""
-        gain = "first layer" if self.last_gain == float("inf") else f"improved by {self.last_gain:+.4f} (margin {self.last_margin:.4f})"
-        return (f"Layer #{layer_index}: error {float(err):.4f}, best {self.min_error:.4f} at layer "
-                f"{self.best_index}; {gain}; {self.last_since} of {int(self.width)} layers without improvement")
-
-
-@dataclass
-class LayerAccumulator:
-    """Mutable per-layer state accumulated across neuron-model training calls.
-
-    Only lives in memory — never serialized directly.  train_layer creates one
-    at the start and passes it through every train_model_ensemble call so the
-    growing err / module_idxs lists are available when building StepCheckpoints.
-    """
-    err: list[torch.Tensor] = field(default_factory=list)
-    module_idxs: list[torch.Tensor] = field(default_factory=list)
-    # Per-neuron-model (C_i, N_val) raw scalar outputs on the dev split.
-    # neuron_selection cats along dim 0 → (C_total, N_val) and uses it for
-    # OMP-style decorrelation alongside err / module_idxs.
-    z_val: list[torch.Tensor] = field(default_factory=list)
-    # Dev split targets in the same order as z_val's columns, (N_val,) or
-    # (N_val, O). The same for every neuron model, so it is kept once.
-    y_val: torch.Tensor | None = None
-    layer_completed: bool = False
-
-
-@dataclass
-class StepCheckpoint:
-    """Immutable snapshot of all state needed to save or resume a training step.
-
-    All fields are required so the type checker can catch a missing
-    assignment at construction time rather than at serialization time.
-    Built explicitly at each save site inside train_model_ensemble; never
-    mutated after construction (use dataclasses.replace() for variants).
-    """
-    # serialization anchor — also used for checkpoint_dir / keep_last_n lookups
-    model: SONN
-    opt: BaseOptimizer
-    # positional context
-    layer_idx: int
-    neuron_model_idx: int
-    # step counters
-    epoch: int
-    step: int
-    global_step: int
-    # per-ensemble training state
-    best_val_losses: torch.Tensor
-    smoothed_val_losses: torch.Tensor
-    last_steps_improve: torch.Tensor
-    early_stop_flags: torch.Tensor
-    lr: torch.Tensor
-    neuron_model_completed: bool
-    # layer-level state (needed to resume across neuron-model iterations)
-    layer_completed: bool
-    err: list[torch.Tensor]
-    module_idxs: list[torch.Tensor]
-
-    def to_dict(self) -> dict:
-        """Return the snapshot as a dict, with `state_dict()` in place of any object that has one and None fields left out."""
-        def safe_value(v):
-            if hasattr(v, "state_dict"):
-                return v.state_dict()
-            return v
-        return {
-            f.name: safe_value(getattr(self, f.name))
-            for f in fields(self)
-            if getattr(self, f.name) is not None
-        }
 
 
 class _FinetuneStep:
@@ -343,7 +227,6 @@ def _finetune_batches(train_dl: DataLoader, device: torch.device, mode: str, bat
 
 # Where a pass keeps the copy of its best evaluation's weights
 # (OutProjTrainConfig.best_weights_copy).
-_BEST_WEIGHTS_COPIES = ("device", "cpu", "disk")
 
 
 class _BestWeights:
@@ -371,7 +254,7 @@ class _BestWeights:
 
     def __init__(self, params: list[torch.Tensor], keep: bool, where: str,
                  path: Path | None, label: str, split: str = "dev") -> None:
-        if where not in _BEST_WEIGHTS_COPIES:
+        if where not in config_checks.BEST_WEIGHTS_COPIES:
             raise ValueError(
                 f"best_weights_copy={where!r}; expected 'device', 'cpu' or 'disk'.")
         if keep and where == "disk" and params and path is None:
@@ -686,167 +569,8 @@ class Trainer:
         self.config = config
         self.class_weights = class_weights
         self._run_dir: Path | None = None
-        self._validate_layer_err_source(config)
-        self._validate_best_weights_copy(config)
-        self._validate_optimizer_name(config)
-        self._validate_checkpoint_dir(config)
-        self._validate_joint_selection(config)
-        self._apply_deterministic_algorithms(config)
-
-    @staticmethod
-    def _apply_deterministic_algorithms(config: Any) -> None:
-        """Switch PyTorch to deterministic kernels under `train.use_deterministic_algorithms`.
-
-        Process-wide, like `set_seed`. cuBLAS gives repeatable results only
-        with `CUBLAS_WORKSPACE_CONFIG` set, and raises without it once the
-        flag is on, so it is set to `:4096:8` when absent; a value already set
-        is kept. When the key is false nothing changes, so a flag the caller
-        switched on stays on.
-        """
-        train_cfg = getattr(config, "train", None) if config is not None else None
-        if not bool(getattr(train_cfg, "use_deterministic_algorithms", False)):
-            return
-        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-        torch.use_deterministic_algorithms(True)
-
-    @staticmethod
-    def _validate_layer_err_source(config: Any) -> None:
-        """Reject `train.layer_err_source` settings the rest of the config cannot honour.
-
-        'readout' scores a layer by the dev loss of a head fitted over its
-        survivors (the `layer_finetune` head when that pass is on, otherwise a
-        temporary head over the frozen survivors), so it only makes sense when
-        inference goes through a head (`use_output_projection`); otherwise the
-        criterion would optimise depth for a readout the model never uses.
-        Multi-class is left out until measured.
-        """
-        # Some callers (checkpoint-housekeeping tests, tooling) build a Trainer
-        # with no config or a partial one; there is nothing to validate then.
-        train_cfg = getattr(config, "train", None) if config is not None else None
-        model_cfg = getattr(config, "model", None) if config is not None else None
-        if train_cfg is None or model_cfg is None:
-            return
-        source = str(getattr(train_cfg, "layer_err_source", "neuron"))
-        if source not in ("neuron", "readout"):
-            raise ValueError(
-                f"train.layer_err_source={source!r}; expected 'neuron' or 'readout'."
-            )
-        if source != "readout":
-            return
-        if not bool(model_cfg.use_output_projection):
-            raise ValueError(
-                "train.layer_err_source='readout' requires model.use_output_projection=true: "
-                "without an output head, inference reads the single best neuron, so the "
-                "growth criterion must score that neuron (layer_err_source='neuron')."
-            )
-        if str(model_cfg.type) == "multi-class":
-            raise NotImplementedError(
-                "train.layer_err_source='readout' is implemented for regressor / binary "
-                "models only."
-            )
-
-    @staticmethod
-    def _validate_best_weights_copy(config: Any) -> None:
-        """Reject an unknown `best_weights_copy` in `train.out_proj_train` or `train.finetune_train`."""
-        train_cfg = getattr(config, "train", None) if config is not None else None
-        if train_cfg is None:
-            return
-        for block in ("out_proj_train", "finetune_train"):
-            where = str(getattr(getattr(train_cfg, block, None), "best_weights_copy", "device"))
-            if where not in _BEST_WEIGHTS_COPIES:
-                raise ValueError(
-                    f"train.{block}.best_weights_copy={where!r}; expected 'device', 'cpu' or 'disk'."
-                )
-
-    @staticmethod
-    def _validate_optimizer_name(config: Any) -> None:
-        """Reject a `train.optimizer.name` that `optimizer_map` does not hold.
-
-        Checked when the Trainer is built, so a wrong name fails before any
-        data is read or a run folder made, instead of as a `KeyError` at the
-        first candidate fit.
-        """
-        train_cfg = getattr(config, "train", None) if config is not None else None
-        name = getattr(getattr(train_cfg, "optimizer", None), "name", None)
-        if name is None or str(name) in optimizer_map:
-            return
-        names = [repr(k) for k in optimizer_map]
-        raise ValueError(
-            f"train.optimizer.name={str(name)!r}; expected {', '.join(names[:-1])} or {names[-1]}."
-        )
-
-    @staticmethod
-    def _validate_checkpoint_dir(config: Any) -> None:
-        """Reject an empty `train.checkpoint_dir` when the Trainer is built, before any run folder is made."""
-        train_cfg = getattr(config, "train", None) if config is not None else None
-        if getattr(train_cfg, "checkpoint_dir", None) is not None:
-            Trainer._checkpoint_root(config)
-
-    @staticmethod
-    def _validate_joint_selection(config: Any) -> None:
-        """Reject a `model.selection_mode` / `train.joint_sparsity` setting the joint mode cannot honour."""
-        train_cfg = getattr(config, "train", None) if config is not None else None
-        model_cfg = getattr(config, "model", None) if config is not None else None
-        js = getattr(train_cfg, "joint_sparsity", None)
-        if js is None:
-            return
-        kind = str(js.kind)
-        if kind not in ("gates", "group_lasso"):
-            raise ValueError(f"train.joint_sparsity.kind={kind!r}; expected 'gates' or 'group_lasso'.")
-        if not (float(js.gamma) < 0.0 and float(js.zeta) > 1.0):
-            raise ValueError(
-                f"train.joint_sparsity needs gamma < 0 and zeta > 1, got gamma={js.gamma}, zeta={js.zeta}."
-            )
-        if not float(js.beta) > 0.0:
-            raise ValueError(f"train.joint_sparsity.beta={js.beta}; expected a positive temperature.")
-        if not 0.0 < float(js.init_open) < 1.0:
-            raise ValueError(f"train.joint_sparsity.init_open={js.init_open}; expected a value in (0, 1).")
-        control = str(js.lam_control)
-        if control not in ("fixed", "anneal", "adaptive"):
-            raise ValueError(
-                f"train.joint_sparsity.lam_control={control!r}; expected 'fixed', 'anneal' or 'adaptive'."
-            )
-        prefilter = str(js.prefilter)
-        if prefilter not in ("none", "plain", "greedy_orth", "max_volume", "omp", "omp_mixed"):
-            raise ValueError(
-                f"train.joint_sparsity.prefilter={prefilter!r}; expected 'none', 'plain', 'greedy_orth', "
-                "'max_volume', 'omp' or 'omp_mixed'."
-            )
-        for key, ok, what in (
-            ("lam", float(js.lam) >= 0.0, "a value >= 0"),
-            ("lam_warmup_frac", 0.0 <= float(js.lam_warmup_frac) <= 1.0, "a value in [0, 1]"),
-            ("diversity_lam", float(js.diversity_lam) >= 0.0, "a value >= 0"),
-            ("diversity_tau", 0.0 <= float(js.diversity_tau) < 1.0, "a value in [0, 1)"),
-            ("prune_threshold", float(js.prune_threshold) >= 0.0, "a value >= 0"),
-            ("prefilter_mult", float(js.prefilter_mult) >= 1.0, "a value >= 1"),
-            ("lr", float(js.lr) > 0.0, "a positive value"),
-            ("gate_lr", float(js.gate_lr) > 0.0, "a positive value"),
-            ("weight_decay", float(js.weight_decay) >= 0.0, "a value >= 0"),
-            ("max_steps", int(js.max_steps) >= 1, "at least 1"),
-            ("eval_interval", int(js.eval_interval) >= 1, "at least 1"),
-            ("lam_step", float(js.lam_step) > 1.0, "a value above 1"),
-            ("count_margin", float(js.count_margin) >= 0.0, "a value >= 0"),
-            ("count_patience", int(js.count_patience) >= 1, "at least 1"),
-        ):
-            if not ok:
-                raise ValueError(f"train.joint_sparsity.{key}={getattr(js, key)}; expected {what}.")
-        if model_cfg is None:
-            return
-        mode = str(getattr(model_cfg, "selection_mode", "greedy"))
-        if mode not in ("greedy", "joint", "joint_last"):
-            raise ValueError(f"model.selection_mode={mode!r}; expected 'greedy', 'joint' or 'joint_last'.")
-        if mode == "greedy":
-            return
-        if not bool(model_cfg.use_output_projection) or str(model_cfg.type) == "binary":
-            raise ValueError(
-                f"model.selection_mode={mode!r} trains the pool through the output head: it needs "
-                "model.use_output_projection=true and a regressor or multi-class model."
-            )
-        if bool(model_cfg.use_layer_norm):
-            raise ValueError(
-                f"model.selection_mode={mode!r} removes neurons from a trained layer, which changes "
-                "what a LayerNorm over the layer computes; it does not work with model.use_layer_norm."
-            )
+        config_checks.validate_config(config)
+        config_checks.apply_deterministic(config)
 
     @staticmethod
     def _split_loader(dl: DataLoader, split: int) -> DataLoader:
@@ -895,22 +619,7 @@ class Trainer:
     @property
     def checkpoint_root(self) -> Path:
         """The folder that holds the run folders: `train.checkpoint_dir` of the trainer's configuration, `checkpoints` in the working directory by default."""
-        return self._checkpoint_root(self.config)
-
-    @staticmethod
-    def _checkpoint_root(config: Any) -> Path:
-        """`train.checkpoint_dir` of `config`, taken from the working directory when relative.
-
-        Raises `ValueError` when it is empty: `Path("")` is the working
-        directory itself, so the run folders would land loose in it.
-        """
-        checkpoint_dir = str(config.train.checkpoint_dir)
-        if checkpoint_dir == "":
-            raise ValueError(
-                "train.checkpoint_dir is empty; set the folder that holds the run folders "
-                "(the default is 'checkpoints', in the working directory)."
-            )
-        return Path(checkpoint_dir)
+        return config_checks.checkpoint_root(self.config)
 
     @classmethod
     def run_folders(cls, root: str | Path) -> list[Path]:
@@ -966,7 +675,7 @@ class Trainer:
     def _ensure_run_dir(self, model: SONN) -> Path:
         """The current run folder, or a new one when the trainer has none yet."""
         if self._run_dir is None:
-            self._run_dir = self._new_run_dir(self._checkpoint_root(model.param))
+            self._run_dir = self._new_run_dir(config_checks.checkpoint_root(model.param))
         return self._run_dir
 
     def _start_run(self, model: SONN, resume: bool | str) -> bool:
@@ -976,8 +685,8 @@ class Trainer:
         rank 0 picks or creates the folder and sends its path to the others,
         and only rank 0 writes `train.log`.
         """
-        root = self._checkpoint_root(model.param)
-        rank0 = not self._is_dist() or dist.get_rank() == 0
+        root = config_checks.checkpoint_root(model.param)
+        rank0 = not distributed.is_dist() or dist.get_rank() == 0
         choice: list[Any] = [None, False]
         if rank0:
             run_dir, resumed = None, False
@@ -990,7 +699,7 @@ class Trainer:
             if run_dir is None:
                 run_dir = self._new_run_dir(root)
             choice = [str(run_dir), resumed]
-        if self._is_dist():
+        if distributed.is_dist():
             dist.broadcast_object_list(choice, src=0)
         self._run_dir = Path(choice[0])
         resumed = bool(choice[1])
@@ -1135,7 +844,7 @@ class Trainer:
             If there is no such run folder, or no run folder holds a
             `model_last.ckpt`.
         """
-        root = self._checkpoint_root(model.param)
+        root = config_checks.checkpoint_root(model.param)
         if run is not None:
             run_dir = self._resolve_run(root, run)
         elif self._run_dir is not None:
@@ -1209,82 +918,7 @@ class Trainer:
         Sets LOCAL_RANK as the active CUDA device so each rank uses a
         distinct GPU within the node.
         """
-        dist.init_process_group(backend=backend)
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(local_rank)
-
-    @staticmethod
-    def _is_dist() -> bool:
-        return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
-
-    @staticmethod
-    def _ensemble_slice(ensemble_size: int) -> tuple[int, int] | None:
-        """Return (start, end) indices for this rank's ensemble slice, or None.
-
-        Returns None when not running under torch.distributed or when
-        ensemble_size is not divisible by world_size.  In the latter case a
-        warning is emitted on rank 0 and the caller falls back to
-        single-device mode for that neuron model.  Set nbest_neurons (and
-        max_neuron_models) to a multiple of world_size to avoid the fallback.
-        """
-        if not (dist.is_available() and dist.is_initialized()):
-            return None
-        world_size = dist.get_world_size()
-        if world_size == 1:
-            return None
-        if ensemble_size % world_size != 0:
-            if dist.get_rank() == 0:
-                logger.warning(
-                    f"ensemble_size={ensemble_size} is not divisible by "
-                    f"world_size={world_size}; falling back to single-device "
-                    "mode for this neuron model. Pad ensemble_size to a "
-                    "multiple of world_size to enable ensemble-parallel training."
-                )
-            return None
-        local_size = ensemble_size // world_size
-        start = dist.get_rank() * local_size
-        return start, start + local_size
-
-    @staticmethod
-    def _gather_ensemble_params(params: dict, shared_param_names: list) -> dict:
-        """All-gather non-shared params from all ranks, concatenating along dim 0.
-
-        Restores the full (ensemble_size, ...) shape after each rank trained
-        its local slice.  Shared params (e.g. shared_proj_weight) are the
-        same on all ranks after all-reduce and are passed through unchanged.
-        Requires equal local_size on every rank, which _ensemble_slice
-        guarantees by only returning a slice when ensemble_size % world_size == 0.
-        """
-        if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() == 1:
-            return params
-        world_size = dist.get_world_size()
-        shared = set(shared_param_names)
-        result = {}
-        for k, v in params.items():
-            if k in shared:
-                result[k] = v
-                continue
-            v_c = v.contiguous()
-            gathered = [torch.empty_like(v_c) for _ in range(world_size)]
-            dist.all_gather(gathered, v_c)
-            result[k] = torch.cat(gathered, dim=0)
-        return result
-
-    @staticmethod
-    def _allreduce_shared_grads(grads: dict, shared_param_names: list) -> None:
-        """Average shared-param gradients across all ranks in-place.
-
-        Called immediately after loss_fn_vmapped so every rank applies the
-        same shared-param update regardless of which ensemble members it owns.
-        Non-shared param grads are left untouched — each rank's optimizer
-        already operates on its local slice independently.
-        """
-        if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() == 1:
-            return
-        shared = set(shared_param_names)
-        for k in shared:
-            if k in grads:
-                dist.all_reduce(grads[k], op=dist.ReduceOp.AVG)
+        distributed.init_distributed(backend)
     # endregion
 
     # =======================================
@@ -1839,7 +1473,7 @@ class Trainer:
         # ensemble batch dimension so all N GPUs work in parallel.
         # Shared params (e.g. shared_proj) are NOT sliced — their gradients are
         # averaged across ranks via all_reduce after every forward-backward pass.
-        dist_slice = self._ensemble_slice(ensemble_size)
+        dist_slice = distributed.ensemble_slice(ensemble_size)
         if dist_slice is not None:
             _local_start, _local_end = dist_slice
             _local_size = _local_end - _local_start
@@ -1904,7 +1538,7 @@ class Trainer:
         # blasted the bar to 100% and printed a fresh line. A single
         # outer-level bar advanced by 1 per optimizer step gives a stable,
         # Lightning-style single-line readout regardless of batches per epoch.
-        _rank0 = not self._is_dist() or dist.get_rank() == 0
+        _rank0 = not distributed.is_dist() or dist.get_rank() == 0
         tbar = tqdm(
             total=int(model.param.train.steps),
             initial=int(global_step),
@@ -1946,7 +1580,7 @@ class Trainer:
                 grads = loss_fn_vmapped(params_batch, buffers_batch, x, targets)
                 grads = {k: g.detach() for k, g in grads.items()}
                 # Synchronize shared-param gradients so every rank applies the same update.
-                self._allreduce_shared_grads(grads, shared_param_names)
+                distributed.allreduce_shared_grads(grads, shared_param_names)
                 params_batch = opt.step(params_batch, grads, active_mask=~early_stop_flags)
 
                 if global_step > 0 and ((eval_step_interval != -1 and global_step % eval_step_interval == 0) or (eval_step_interval == -1 and step == train_dl_len - 1)):
@@ -2008,7 +1642,7 @@ class Trainer:
                     # decision reflects the full ensemble, not just the local slice.
                     completed = early_stop_flags.sum()
                     all_stopped = early_stop_flags.all()
-                    if self._is_dist():
+                    if distributed.is_dist():
                         dist.all_reduce(completed, op=dist.ReduceOp.SUM)
                         _all_t = all_stopped.to(torch.uint8)
                         dist.all_reduce(_all_t, op=dist.ReduceOp.MIN)
@@ -2072,7 +1706,7 @@ class Trainer:
 
                 save_interval = model.param.train.save_interval
                 if (save_interval != -1 and global_step % save_interval == 0) or (step == train_dl_len - 1 and not model.param.train.skip_saving_at_epoch_end):
-                    _ckpt_params = self._gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch
+                    _ckpt_params = distributed.gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch
                     self.write_back_params(neuron_model, _ckpt_params)
                     self._write_back_shared_params(model, _ckpt_params)
                     last_ckpt = StepCheckpoint(
@@ -2093,7 +1727,7 @@ class Trainer:
                         err=list(accumulator.err),
                         module_idxs=list(accumulator.module_idxs),
                     )
-                    if not self._is_dist() or dist.get_rank() == 0:
+                    if not distributed.is_dist() or dist.get_rank() == 0:
                         self.save_checkpoint(last_ckpt)
 
             epoch += 1
@@ -2111,7 +1745,7 @@ class Trainer:
             )
 
         # Restore the full ensemble shape before write-back and error evaluation.
-        params_batch = self._gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch
+        params_batch = distributed.gather_ensemble_params(params_batch, shared_param_names) if dist_slice else params_batch
         self.write_back_params(neuron_model, params_batch)
         self._write_back_shared_params(model, params_batch)
         last_ckpt = StepCheckpoint(
@@ -2132,7 +1766,7 @@ class Trainer:
             err=list(accumulator.err),
             module_idxs=list(accumulator.module_idxs),
         )
-        if not self._is_dist() or dist.get_rank() == 0:
+        if not distributed.is_dist() or dist.get_rank() == 0:
             self.save_checkpoint(last_ckpt)
             if model.param.train.save_last_layer:
                 self.save_checkpoint(last_ckpt, suffix="last")
@@ -2552,7 +2186,7 @@ class Trainer:
 
         acc = torch.stack([torch.as_tensor(float(n), dtype=torch.float64, device=device),
                            sum_y, sum_y2])
-        if self._is_dist():
+        if distributed.is_dist():
             # Every rank must use the same denominator, or the per-neuron losses
             # they compare are on different scales. Correct whether or not the
             # loader is sharded: `scale` is invariant to a common factor on all
@@ -2767,7 +2401,7 @@ class Trainer:
         where = str(getattr(cfg, "best_weights_copy", "device"))
         path = None
         if keep and where == "disk" and params:
-            rank = f"_rank{dist.get_rank()}" if self._is_dist() else ""
+            rank = f"_rank{dist.get_rank()}" if distributed.is_dist() else ""
             path = self._ensure_run_dir(model) / f"best_{name}{rank}.ckpt"
         return _BestWeights(params, keep, where, path, label, split)
 

@@ -14,6 +14,7 @@ from torchsonn.config.schemas import TrainConfig
 from torchsonn.layer import NeuronModuleList, SONNLayer
 from torchsonn.model import SONN
 from torchsonn.neurons import BasePolynomNeuron
+from torchsonn.training.state import LayerAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +267,7 @@ def compute_z_val(
 def neuron_selection(
         model: SONN,
         layer: SONNLayer,
-        accumulator: "LayerAccumulator",
+        accumulator: LayerAccumulator,
         trained_params_per_model: dict[int, dict],
         device: torch.device | str,
         nbest: int | None = None,

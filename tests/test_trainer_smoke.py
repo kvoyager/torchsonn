@@ -846,6 +846,18 @@ def test_known_optimizer_names_are_accepted(tmp_path, name):
     Trainer(config=OmegaConf.merge(_cfg(tmp_path), OmegaConf.create({"train": {"optimizer": {"name": name}}})))
 
 
+@pytest.mark.parametrize("method", ["omp-mixed", "bogus"])
+def test_unknown_selection_method_is_rejected_when_the_trainer_is_built(tmp_path, method):
+    with pytest.raises(ValueError, match=f"train.neuron_selection_method='{method}'; expected 'plain', "
+                                         "'greedy_orth', 'max_volume', 'omp' or 'omp_mixed'"):
+        Trainer(config=_cfg(tmp_path, neuron_selection_method=method))
+
+
+@pytest.mark.parametrize("method", ["plain", "greedy_orth", "max_volume", "omp", "omp_mixed"])
+def test_known_selection_methods_are_accepted(tmp_path, method):
+    Trainer(config=_cfg(tmp_path, neuron_selection_method=method))
+
+
 @pytest.mark.parametrize("layer_finetune", [True, False])
 def test_layer_err_source_readout_scores_layers_by_head_dev_loss(tmp_path, layer_finetune):
     """Under 'readout' the layer error is a head's dev loss, not the best neuron's.
@@ -1548,6 +1560,7 @@ def test_headless_model_captures(tmp_path):
 
 import torchsonn.trainer as _trainer_mod
 from torchsonn.trainer import _BestWeights
+from torchsonn.training import distributed
 
 
 @pytest.mark.parametrize("where", ["device", "cpu", "disk"])
@@ -1604,7 +1617,7 @@ def test_best_weights_disk_file_per_rank(tmp_path, monkeypatch):
     model = SONN(cfg, d_model=4)
     trainer = Trainer(config=cfg)
     p = torch.nn.Parameter(torch.zeros(2))
-    monkeypatch.setattr(Trainer, "_is_dist", staticmethod(lambda: True))
+    monkeypatch.setattr(distributed, "is_dist", lambda: True)
     monkeypatch.setattr(_trainer_mod.dist, "get_rank", lambda: 3)
     best = trainer._best_weights(model, [p], cfg.train.finetune_train, "finetune", "finetune")
     assert best.path.name == "best_finetune_rank3.ckpt"
