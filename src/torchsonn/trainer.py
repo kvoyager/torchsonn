@@ -1,4 +1,3 @@
-import datetime
 import gc
 import math
 import os
@@ -23,22 +22,14 @@ import numpy as np
 import random
 
 from torchsonn.utils import timed_block, abbrev_floats, fmt_err
-from torchsonn.logger import attach_run_log
-from torchsonn.loss import NormMSE, bias_error, bias_error_l2, bias_error_js
-from torchsonn.training import config_checks, distributed, selection
+from torchsonn.loss import NormMSE
+from torchsonn.training import config_checks, distributed, evaluation, runs, selection
 from torchsonn.training.state import GrowthCriterion, LayerAccumulator, StepCheckpoint
 
 logger = logging.getLogger(__name__)
-import re
 from typing import Any, Callable
 import torch.distributed as dist
 import torch.nn.functional as F
-
-# A run folder: `YYYY-MM-DD-HH-MM-SS`, with `-<n>` for runs started in the
-# same second.
-_RUN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})(?:-(\d+))?")
-# A step checkpoint the trainer writes, with its optional `_last` copy.
-_STEP_CKPT_RE = re.compile(r"model_layer_(\d+)_neuron_(\d+)_step_(\d+)(_last)?\.ckpt")
 
 
 class _FinetuneStep:
@@ -640,102 +631,13 @@ class Trainer:
         list of Path
             The run folders; empty when `root` does not exist.
         """
-        root = Path(root)
-        if not root.is_dir():
-            return []
-        runs = []
-        for path in root.iterdir():
-            m = _RUN_NAME_RE.fullmatch(path.name)
-            if m and path.is_dir():
-                runs.append(((m.group(1), int(m.group(2) or 1)), path))
-        return [path for _, path in sorted(runs)]
-
-    @staticmethod
-    def _new_run_dir(root: Path) -> Path:
-        """Create `root/<YYYY-MM-DD-HH-MM-SS>`, adding `-2`, `-3`, ... when that name is taken."""
-        root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        n = 1
-        while True:
-            run_dir = root / (stamp if n == 1 else f"{stamp}-{n}")
-            try:
-                run_dir.mkdir()
-                return run_dir
-            except FileExistsError:
-                n += 1
-
-    @staticmethod
-    def _resolve_run(root: Path, run: str | Path) -> Path:
-        """A run folder given by its name in `root`, or by its path."""
-        for candidate in (root / str(run), Path(run)):
-            if candidate.is_dir():
-                return candidate
-        raise FileNotFoundError(f"no run folder {str(run)!r} in {root}")
+        return runs.run_folders(root)
 
     def _ensure_run_dir(self, model: SONN) -> Path:
         """The current run folder, or a new one when the trainer has none yet."""
         if self._run_dir is None:
-            self._run_dir = self._new_run_dir(config_checks.checkpoint_root(model.param))
+            self._run_dir = runs.new_run_dir(config_checks.checkpoint_root(model.param))
         return self._run_dir
-
-    def _start_run(self, model: SONN, resume: bool | str) -> bool:
-        """Open the run folder of a `train` call and attach its `train.log`.
-
-        Returns True when an existing run is resumed. With several processes,
-        rank 0 picks or creates the folder and sends its path to the others,
-        and only rank 0 writes `train.log`.
-        """
-        root = config_checks.checkpoint_root(model.param)
-        rank0 = not distributed.is_dist() or dist.get_rank() == 0
-        choice: list[Any] = [None, False]
-        if rank0:
-            run_dir, resumed = None, False
-            if isinstance(resume, str):
-                run_dir, resumed = self._resolve_run(root, resume), True
-            elif resume:
-                runs = [r for r in self.run_folders(root) if self._step_checkpoints(r, include_last=True)]
-                if runs:
-                    run_dir, resumed = runs[-1], True
-            if run_dir is None:
-                run_dir = self._new_run_dir(root)
-            choice = [str(run_dir), resumed]
-        if distributed.is_dist():
-            dist.broadcast_object_list(choice, src=0)
-        self._run_dir = Path(choice[0])
-        resumed = bool(choice[1])
-        if rank0:
-            attach_run_log(self._run_dir / "train.log", append=resumed)
-        if resumed:
-            logger.info("Resuming the run in %s", self._run_dir)
-        else:
-            if resume:
-                logger.info("No run to resume in %s; starting a new run", root)
-            logger.info("Run folder: %s", self._run_dir)
-        return resumed
-
-    @staticmethod
-    def _step_checkpoints(folder: Path, include_last: bool = False,
-                          layer_idx: int | None = None) -> list[Path]:
-        """The step-checkpoint files directly in `folder`.
-
-        Only regular files named `model_layer_<L>_neuron_<N>_step_<S>.ckpt`
-        count, and their `_last` copies when `include_last` is set;
-        `layer_idx` keeps one layer's. Everything else in the folder, such as
-        `train.log`, `model_last.ckpt` or a subfolder, is left out.
-        """
-        if not folder.is_dir():
-            return []
-        files = []
-        for path in folder.iterdir():
-            m = _STEP_CKPT_RE.fullmatch(path.name)
-            if not m or not path.is_file():
-                continue
-            if m.group(4) and not include_last:
-                continue
-            if layer_idx is not None and int(m.group(1)) != layer_idx:
-                continue
-            files.append(path)
-        return files
 
     @classmethod
     def parse_checkpoint_step(cls, fname: str) -> tuple[int, int, int]:
@@ -755,13 +657,7 @@ class Trainer:
             does not match, so that such files sort below every real
             checkpoint.
         """
-        m = re.search(r"model_layer_(\d+)_neuron_(\d+)_step_(\d+)(?:_last)?\.ckpt$", fname)
-        if m:
-            return int(m.group(1)), int(m.group(2)), int(m.group(3))
-        # Same arity as the match path so max()/sorted() compare apples to apples;
-        # the (-1, -1, -1) sentinel sorts strictly below any real (layer, neuron,
-        # step) tuple, so stray non-matching files never get picked as "latest".
-        return -1, -1, -1
+        return runs.parse_checkpoint_step(fname)
 
     def from_checkpoint(self, run_dir: str | Path | None = None) -> dict[str, Any] | None:
         """
@@ -786,11 +682,7 @@ class Trainer:
         folder = Path(run_dir) if run_dir is not None else self._run_dir
         if folder is None:
             return None
-        checkpoints = self._step_checkpoints(folder, include_last=True)
-        if not checkpoints:
-            return None
-        latest = max(checkpoints, key=lambda path: self.parse_checkpoint_step(path.name))
-        return torch.load(latest, weights_only=False)
+        return runs.latest_step_checkpoint(folder)
 
     def save_checkpoint(self, ckpt: StepCheckpoint, suffix: str = "") -> None:
         """
@@ -808,14 +700,7 @@ class Trainer:
         suffix : str
             Optional suffix for the file name, such as "last". Default "".
         """
-        run_dir = self._ensure_run_dir(ckpt.model)
-        if suffix:
-            suffix = "_" + suffix
-        checkpoint_filename = f"model_layer_{ckpt.layer_idx}_neuron_{ckpt.neuron_model_idx}_step_{ckpt.global_step}{suffix}.ckpt"
-        d = ckpt.to_dict()
-        d["config"] = ckpt.model.param
-        torch.save(d, run_dir / checkpoint_filename)
-        self.cleanup_checkpoints(run_dir, keep_last_n=ckpt.model.param.train.keep_last_n)
+        runs.save_step_checkpoint(self._ensure_run_dir(ckpt.model), ckpt, suffix)
 
     def load_model_checkpoint(self, model: SONN, device: torch.device | str = "cpu",
                               run: str | Path | None = None) -> None:
@@ -844,30 +729,13 @@ class Trainer:
             If there is no such run folder, or no run folder holds a
             `model_last.ckpt`.
         """
-        root = config_checks.checkpoint_root(model.param)
-        if run is not None:
-            run_dir = self._resolve_run(root, run)
-        elif self._run_dir is not None:
-            run_dir = self._run_dir
-        else:
-            saved = [r for r in self.run_folders(root) if (r / "model_last.ckpt").is_file()]
-            if not saved:
-                raise FileNotFoundError(f"no run folder with a model_last.ckpt in {root}")
-            run_dir = saved[-1]
-        checkpoint_data = torch.load(run_dir / "model_last.ckpt", weights_only=False)
-        # restore model architecture
-        model.restore_from_checkpoint_metadata(checkpoint_data["model"])
-        # load weights
-        model.load_state_dict(checkpoint_data["model"], strict=False)
-        model.to(device=device)
+        run_dir = runs.model_run_dir(config_checks.checkpoint_root(model.param), run, self._run_dir)
+        runs.load_model(model, run_dir, device)
         self._run_dir = run_dir
 
     def save_model_checkpoint(self, model: SONN) -> None:
         """Save the model's state dict as `model_last.ckpt` in the run folder (a new one if the trainer has none yet)."""
-        run_dir = self._ensure_run_dir(model)
-        torch.save({
-            'model': model.state_dict(),
-        }, run_dir / "model_last.ckpt")
+        runs.save_model(model, self._ensure_run_dir(model))
 
     def cleanup_checkpoints(self, checkpoint_dir: str | Path, keep_last_n: int = 10) -> None:
         """
@@ -885,10 +753,7 @@ class Trainer:
         keep_last_n : int
             Number of most recent step checkpoints to keep. Default 10.
         """
-        checkpoints = sorted(self._step_checkpoints(Path(checkpoint_dir)),
-                             key=lambda path: self.parse_checkpoint_step(path.name))
-        for path in checkpoints[:max(0, len(checkpoints) - keep_last_n)]:
-            path.unlink()
+        runs.cleanup_checkpoints(Path(checkpoint_dir), keep_last_n)
 
     def cleanup_layer_checkpoints(self, layer_idx: int) -> None:
         """
@@ -901,8 +766,7 @@ class Trainer:
         """
         if self._run_dir is None:
             return
-        for path in self._step_checkpoints(self._run_dir, include_last=True, layer_idx=layer_idx):
-            path.unlink()
+        runs.cleanup_layer_checkpoints(self._run_dir, layer_idx)
     # endregion
 
     # =======================================
@@ -996,8 +860,8 @@ class Trainer:
             epsilon=float(self.config.train.stop_train_epsilon_condition),
             min_delta=float(getattr(self.config.train, "stop_train_min_delta", 0.0)),
         )
-        stop_source = self._stop_source(val_dl)
-        resumed = self._start_run(model, resume)
+        stop_source = evaluation.stop_source(self.config, val_dl)
+        self._run_dir, resumed = runs.start_run(config_checks.checkpoint_root(model.param), resume)
         model.layers = nn.ModuleList()
         model.layer_val_err = []
         checkpoint_data = None
@@ -1068,7 +932,7 @@ class Trainer:
             # and, under stop_source 'val', is what the growth rule reads.
             stop_err = layer.err
             if val_dl is not None:
-                val_err = self._layer_val_err(model, layer, val_dl)
+                val_err = evaluation.layer_val_err(model, layer, val_dl, batch_callback=self.batch_callback)
                 layer.val_err = val_err
                 model.layer_val_err.append(val_err)
                 logger.info(f"Layer #{layer.layer_index}: dev {fmt_err(layer.err)} | val {fmt_err(val_err)} "
@@ -1146,8 +1010,8 @@ class Trainer:
         # deeper layers.
         precompute = bool(model.param.train.precompute_features)
         if precompute:
-            train_feat_dl = self._precompute_dl(model, train_dl, device)
-            dev_feat_dl   = self._precompute_dl(model, dev_dl,   device)
+            train_feat_dl = evaluation.precompute_dl(model, train_dl, device, batch_callback=self.batch_callback)
+            dev_feat_dl   = evaluation.precompute_dl(model, dev_dl,   device, batch_callback=self.batch_callback)
         else:
             train_feat_dl = train_dl
             dev_feat_dl   = dev_dl
@@ -1199,11 +1063,11 @@ class Trainer:
                 features_precomputed=precompute)
             trained_params_per_model[neuron_model_idx] = trained_params
             if model.need_regularity_err:
-                regularity_err = self.regularity_err(model, pred_fn_vmapped, trained_params, buffers_batch, dev_feat_dl, device, skip_model_fwd=precompute)
+                regularity_err = evaluation.regularity_err(model, pred_fn_vmapped, trained_params, buffers_batch, dev_feat_dl, device, skip_model_fwd=precompute, batch_callback=self.batch_callback)
             # Cache the per-candidate raw scalar outputs on the full dev
             # split for neuron_selection's OMP decorrelation.
             z_val, y_val = selection.compute_z_val(
-                neuron_model, self._iter_eval_batches(model, dev_feat_dl, device, precompute))
+                neuron_model, evaluation.iter_eval_batches(model, dev_feat_dl, device, precompute, batch_callback=self.batch_callback))
             accumulator.z_val.append(z_val)
             if accumulator.y_val is None:
                 accumulator.y_val = y_val
@@ -1252,7 +1116,7 @@ class Trainer:
                     buffers_batch_b,
                     shared_param_names_b,
                     features_precomputed=precompute)
-                bias_err = self.bias_err(
+                bias_err = evaluation.bias_err(
                     model,
                     pred_fn_vmapped_a,
                     pred_fn_vmapped_b,
@@ -1264,7 +1128,8 @@ class Trainer:
                     train_dl_b,
                     device,
                     bias_method=model.param.train.bias_ce_type,
-                    skip_model_fwd=precompute)
+                    skip_model_fwd=precompute,
+                    batch_callback=self.batch_callback)
 
             module_err = model.get_error(model.criterion_type, regularity_err, bias_err)
             accumulator.module_idxs.append(
@@ -1380,7 +1245,7 @@ class Trainer:
             self.save_checkpoint(layer_end_ckpt)
             del layer_end_ckpt
 
-        # Release per-layer GPU state before the next layer's _precompute_dl
+        # Release per-layer GPU state before the next layer's precompute_dl
         # runs — otherwise trained_params_per_model (full ensemble params for
         # every candidate neuron model) and the optimizer state inside
         # last_ckpt stay resident in the CUDA caching allocator and stack up
@@ -1592,7 +1457,7 @@ class Trainer:
                             # member; the dev split is left to selection.
                             val_losses = eval_loss_fn_vmapped(params_batch, buffers_batch, x, targets).detach()
                         else:
-                            val_losses = self.ds_loss(model, eval_loss_fn_vmapped, params_batch, buffers_batch, dev_dl, device, features_precomputed)
+                            val_losses = evaluation.ds_loss(model, eval_loss_fn_vmapped, params_batch, buffers_batch, dev_dl, device, features_precomputed, batch_callback=self.batch_callback)
 
                     # Exclude models that have diverged. NaN is unrecoverable.
                     # The absolute val-loss threshold is configurable via
@@ -1969,7 +1834,7 @@ class Trainer:
                 total = batch_sum if total is None else total + batch_sum
                 total_sq = batch_sq if total_sq is None else total_sq + batch_sq
                 if want_sample:
-                    reservoir, filled = self._reservoir_add(reservoir, filled, count, feats, max_rows, gen)
+                    reservoir, filled = evaluation.reservoir_add(reservoir, filled, count, feats, max_rows, gen)
                 count += feats.shape[0]
         model.train(was_training)
 
@@ -2034,124 +1899,6 @@ class Trainer:
         logger.info("Layer #%d streaming pass done: %d pass(es) over %d rows for %d neuron model(s)",
                     layer.layer_index, passes, count, len(streamers))
 
-    def _stop_source(self, val_dl: DataLoader | None) -> str:
-        source = str(getattr(self.config.train, "stop_source", "dev")).lower()
-        if source not in ("dev", "val"):
-            raise ValueError(f"train.stop_source must be 'dev' or 'val', got {self.config.train.stop_source!r}")
-        if source == "val" and val_dl is None:
-            raise ValueError("train.stop_source='val' needs a validation loader (val_dl)")
-        return source
-
-    def _layer_val_err(self, model: SONN, layer: SONNLayer, dl: DataLoader) -> float:
-        """Best surviving neuron's error of the (last) layer on a split, under the
-        model's loss: the counterpart of `layer.err` (`layer_err_criterion:
-        top`, `layer_err_source: neuron`) on rows that selected nothing.
-        Regression / binary only; a multi-class model gets NaN (its neurons
-        are scored through a projection this helper does not rebuild)."""
-        if model.param.model.type == "multi-class":
-            return float("nan")
-        device = layer.neuron_models[0].device
-        was_training = model.training
-        model.eval()
-        total: torch.Tensor | None = None
-        rows = 0
-        with torch.no_grad():
-            for batch in dl:
-                x_inp, targets = self.batch_callback(batch) if self.batch_callback else batch
-                out = model(x_inp.to(device=device))                       # (B, d_layer)
-                targets = targets.to(device=device)
-                losses = torch.stack([model.loss_fn(out[:, j], targets).mean() for j in range(out.shape[1])])
-                n = out.shape[0]
-                total = losses * n if total is None else total + losses * n
-                rows += n
-        model.train(was_training)
-        if total is None or rows == 0:
-            return float("nan")
-        return float((total / rows).min().item())
-
-    @staticmethod
-    def _reservoir_add(
-        reservoir: torch.Tensor | None, filled: int, seen: int, feats: torch.Tensor,
-        max_rows: int, gen: torch.Generator,
-    ) -> tuple[torch.Tensor, int]:
-        """Feed one batch into a reservoir sample of `max_rows` rows.
-
-        Algorithm R, vectorized per batch: the first `max_rows` rows fill the
-        reservoir; a later row at 0-based position `p` over the whole stream
-        replaces a uniformly random slot with probability `max_rows / (p + 1)`.
-        Two replacements landing on one slot inside a batch resolve to the
-        later row, a negligible bias for a k-means start. `seen` is the
-        number of rows streamed before this batch; the generator is on the
-        CPU so the sample is reproducible for a fixed loader order.
-        """
-        b = feats.shape[0]
-        if reservoir is None:
-            reservoir = torch.empty((max_rows, feats.shape[1]), dtype=feats.dtype, device=feats.device)
-        take = min(b, max_rows - filled)
-        if take > 0:
-            reservoir[filled:filled + take] = feats[:take]
-            filled += take
-        rest = feats[take:]
-        if rest.shape[0] > 0:
-            pos = torch.arange(seen + take, seen + b, dtype=torch.float64)
-            keep = torch.rand(pos.shape[0], generator=gen, dtype=torch.float64) < (max_rows / (pos + 1.0))
-            n_keep = int(keep.sum().item())
-            if n_keep > 0:
-                slots = torch.randint(0, max_rows, (n_keep,), generator=gen)
-                reservoir[slots.to(device=feats.device)] = rest[keep.to(device=feats.device)]
-        return reservoir, filled
-
-    def _precompute_dl(
-        self,
-        model: SONN,
-        dl: DataLoader,
-        device: torch.device | str,
-        skip_last_layer: bool = True,
-    ) -> DataLoader:
-        """Run the frozen model over the full DataLoader once and cache features.
-
-        skip_last_layer=True  → model(x, skip_last_layer=True): used by train_layer
-                                 so the candidate ensemble sees frozen-prefix outputs.
-        skip_last_layer=False → model(x): used by train_out_proj / train_finetune
-                                 so the output head trains on full model features.
-
-        Returns a new DataLoader yielding (features, targets).  Pass with
-        skip_model_fwd=True so _iter_eval_batches skips the redundant forward.
-        """
-        all_x, all_targets = [], []
-        model.eval()
-        with torch.inference_mode():
-            for batch in dl:
-                x_inp, targets = self.batch_callback(batch) if self.batch_callback else batch
-                x = model(x_inp.to(device=device), skip_last_layer=skip_last_layer)
-                all_x.append(x.cpu())
-                all_targets.append(targets)
-        new_ds = SONNDataset(torch.cat(all_x, dim=0), torch.cat(all_targets, dim=0))
-        shuffle = isinstance(dl.sampler, torch.utils.data.RandomSampler)
-        return DataLoader(new_ds, batch_size=dl.batch_size, shuffle=shuffle,
-                          num_workers=dl.num_workers, drop_last=dl.drop_last)
-
-    def _iter_eval_batches(self, model: SONN, dl: DataLoader, device: torch.device | str,
-                           skip_model_fwd: bool = False):
-        """Shared eval-loop boilerplate for ds_loss / regularity_err / bias_err.
-
-        Yields (x, targets) per batch where:
-          * both tensors are on `device`
-          * `x` is the SONN forward output with `skip_last_layer=True`
-          * if skip_model_fwd=True the dl already contains pre-transformed
-            features (from _precompute_dl) — the model forward is skipped.
-        """
-        for batch in tqdm(dl, total=len(dl), disable=True):
-            x_inp, targets = self.batch_callback(batch) if self.batch_callback else batch
-            x_inp = x_inp.to(device=device)
-            targets = targets.to(device=device)
-            if skip_model_fwd:
-                yield x_inp, targets
-            else:
-                with torch.inference_mode():
-                    x = model(x_inp, skip_last_layer=True)
-                    yield x, targets
-
     def _fit_target_scale(self, model: SONN, train_dl: DataLoader) -> None:
         """Fix the NormMSE denominator to the training-set target spread.
 
@@ -2213,179 +1960,6 @@ class Trainer:
             "NormMSE denominator fixed to the training-set target %s: %.6g",
             "variance" if model.error_centered else "mean square", scale,
         )
-
-    def ds_loss(
-            self,
-            model: SONN,
-            eval_loss_fn_vmapped: Callable,
-            params_batch: dict[str, torch.Tensor],
-            buffers_batch: dict[str, torch.Tensor],
-            dl: DataLoader,
-            device: torch.device | str,
-            skip_model_fwd: bool = False) -> torch.Tensor:
-        """
-        Mean evaluation loss of every candidate over a loader.
-
-        Parameters
-        ----------
-        model : SONN
-            The model being grown.
-        eval_loss_fn_vmapped : callable
-            Per-candidate loss, from `create_loss_functions`.
-        params_batch, buffers_batch : dict of str to tensor
-            Stacked candidate parameters and buffers.
-        dl : DataLoader
-            The split to evaluate on.
-        device : torch.device or str
-            Device the batches are moved to.
-        skip_model_fwd : bool
-            The loader already yields the layer's input features, so the
-            model forward is skipped. Default False.
-
-        Returns
-        -------
-        loss : (num_candidates,) tensor
-            Per-candidate loss, averaged over the batches.
-        """
-        err_nom, err_denom = [], []
-        for x, targets in self._iter_eval_batches(model, dl, device, skip_model_fwd):
-            val_losses = eval_loss_fn_vmapped(params_batch, buffers_batch, x, targets)
-            err_nom.append(val_losses)
-            err_denom.append(torch.ones_like(val_losses))
-        # Element-wise divide: per-neuron mean over batches.
-        return torch.stack(err_nom, dim=1).sum(dim=-1) / torch.stack(err_denom, dim=1).sum(dim=-1)
-
-    def regularity_err(
-            self,
-            model: SONN,
-            pred_fn_vmapped: Callable,
-            params_batch: dict[str, torch.Tensor],
-            buffers_batch: dict[str, torch.Tensor],
-            dl: DataLoader,
-            device: torch.device | str,
-            skip_model_fwd: bool = False) -> torch.Tensor:
-        """Per-candidate regularity criterion, computed streaming per batch.
-
-        Regression / binary: normalized MSE (matches regularity_error).
-        Multi-class:         normalized cross-entropy (matches regularity_error_ce).
-
-        The sums are accumulated batch by batch instead of concatenating the
-        predictions into one (ensemble, N, K) tensor first: for Otto-sized
-        ensembles (~17k candidates after shortcut) that tensor would take
-        over 6 GB of GPU memory, twice that inside log_softmax. GPU memory
-        stays at one batch's predictions.
-        """
-        eps = 1e-12
-
-        if model.param.model.type == "multi-class":
-            # streaming NCE: accumulate sum of -log p[i, y_i] across batches,
-            # then divide by total N and by H(Y_B) from concatenated targets.
-            sum_nll: torch.Tensor | None = None
-            all_targets: list[torch.Tensor] = []
-            total_N = 0
-            K: int | None = None
-            for x, targets in self._iter_eval_batches(model, dl, device, skip_model_fwd):
-                logits = pred_fn_vmapped(params_batch, buffers_batch, x, targets)
-                K = logits.size(-1)
-                log_p = F.log_softmax(logits, dim=-1)
-                del logits
-                n_batch = targets.size(0)
-                # broadcast targets across the leading candidate dims for gather along K
-                y_idx = targets.view(*([1] * (log_p.dim() - 2)), n_batch, 1) \
-                                .expand(*log_p.shape[:-1], 1)
-                nll_batch = -log_p.gather(-1, y_idx).squeeze(-1)
-                del log_p, y_idx
-                partial = nll_batch.sum(dim=-1)
-                del nll_batch
-                sum_nll = partial if sum_nll is None else sum_nll + partial
-                total_N += n_batch
-                all_targets.append(targets)
-
-            assert sum_nll is not None and K is not None, "empty dataloader passed to regularity_err"
-            targets_cat = torch.cat(all_targets, dim=0)
-            counts = torch.bincount(targets_cat, minlength=K).float()
-            p_marg = counts / counts.sum()
-            H_Y = torch.special.entr(p_marg).sum().clamp_min(eps)
-            ce_model = sum_nll / total_N
-            return ce_model / H_Y
-        else:
-            # streamed normalized MSE — mirrors loss/errors.py::regularity_error,
-            # which cannot be called directly here because the eval set is only
-            # ever seen one batch at a time.
-            num: torch.Tensor | None = None
-            # float64 accumulators: under `variance` the denominator is
-            # `Σy² - (Σy)²/N`, and that subtraction cancels — on a target whose
-            # mean dominates its spread the two terms can differ by several
-            # decades, more than float32 can absorb.
-            n_total = 0
-            sum_y = torch.zeros((), device=device, dtype=torch.float64)
-            sum_y2 = torch.zeros((), device=device, dtype=torch.float64)
-            for x, targets in self._iter_eval_batches(model, dl, device, skip_model_fwd):
-                preds = pred_fn_vmapped(params_batch, buffers_batch, x, targets)
-                diff_sq = ((preds - targets) ** 2).sum(dim=-1)
-                del preds
-                num = diff_sq if num is None else num + diff_sq
-                t = targets.to(torch.float64)
-                n_total += t.numel()
-                sum_y = sum_y + t.sum()
-                sum_y2 = sum_y2 + (t * t).sum()
-            assert num is not None, "empty dataloader passed to regularity_err"
-            if model.error_centered:
-                denom_sum = sum_y2 - sum_y * sum_y / max(n_total, 1)
-            else:
-                denom_sum = sum_y2
-            return num / denom_sum.clamp_min(eps).to(num.dtype)
-
-    def bias_err(
-            self,
-            model: SONN,
-            pred_fn_vmapped_a: Callable,
-            pred_fn_vmapped_b: Callable,
-            params_batch_a: dict[str, torch.Tensor],
-            params_batch_b: dict[str, torch.Tensor],
-            buffers_batch_a: dict[str, torch.Tensor],
-            buffers_batch_b: dict[str, torch.Tensor],
-            dl_a: DataLoader,
-            dl_b: DataLoader,
-            device: torch.device | str,
-            bias_method: str = "l2",
-            skip_model_fwd: bool = False,
-    ) -> torch.Tensor:
-        """Bias error between two neurons fitted on disjoint splits.
-
-        Regression / binary: bias_error — normalized squared disagreement on scalars.
-        Multi-class, bias_method="l2": bias_error_l2 on logits (ensemble, N, K).
-        Multi-class, bias_method="js": bias_error_js on logits (ensemble, N, K).
-        pred_fn_vmapped returns (ensemble, N) for regression and (ensemble, N, K)
-        for multi-class, so no separate raw-pred function is needed.
-        Both splits are concatenated before calling the criterion function.
-        """
-        is_multiclass = model.param.model.type == "multi-class"
-
-        def _collect(dl):
-            all_a, all_b, all_t = [], [], []
-            for x, targets in self._iter_eval_batches(model, dl, device, skip_model_fwd):
-                all_a.append(pred_fn_vmapped_a(params_batch_a, buffers_batch_a, x, targets))
-                all_b.append(pred_fn_vmapped_b(params_batch_b, buffers_batch_b, x, targets))
-                all_t.append(targets)
-            return (
-                torch.cat(all_a, dim=1),
-                torch.cat(all_b, dim=1),
-                torch.cat(all_t, dim=0),
-            )
-
-        a1, b1, t1 = _collect(dl_a)
-        a2, b2, t2 = _collect(dl_b)
-        preds_a = torch.cat([a1, a2], dim=1)
-        preds_b = torch.cat([b1, b2], dim=1)
-
-        if is_multiclass and bias_method == "js":
-            return bias_error_js(preds_a, preds_b)
-        elif is_multiclass:  # bias_method == "l2"
-            return bias_error_l2(preds_a, preds_b, logits=True)
-        else:  # regression / binary
-            return bias_error(preds_a, preds_b, torch.cat([t1, t2], dim=0),
-                              centered=model.error_centered)
 
     # endregion
 
@@ -2475,8 +2049,8 @@ class Trainer:
         cols_t = torch.tensor(cols, dtype=torch.long, device=device)
 
         # Precompute frozen SONN features once; the loop only trains the linear head.
-        train_feat_dl = self._precompute_dl(model, train_dl, device, skip_last_layer=False)
-        dev_feat_dl   = self._precompute_dl(model, dev_dl,   device, skip_last_layer=False)
+        train_feat_dl = evaluation.precompute_dl(model, train_dl, device, skip_last_layer=False, batch_callback=self.batch_callback)
+        dev_feat_dl   = evaluation.precompute_dl(model, dev_dl,   device, skip_last_layer=False, batch_callback=self.batch_callback)
 
         # Branch on model.type once so the inner loop's loss step doesn't.
         # Multi-class uses log_softmax + NLL; regression uses the raw scalar
@@ -2619,8 +2193,8 @@ class Trainer:
         cols_t = torch.tensor(cols, dtype=torch.long, device=device)
 
         # Precompute frozen SONN features once; LBFGS then reads them every closure.
-        train_feat_dl = self._precompute_dl(model, train_dl, device, skip_last_layer=False)
-        dev_feat_dl   = self._precompute_dl(model, dev_dl,   device, skip_last_layer=False)
+        train_feat_dl = evaluation.precompute_dl(model, train_dl, device, skip_last_layer=False, batch_callback=self.batch_callback)
+        dev_feat_dl   = evaluation.precompute_dl(model, dev_dl,   device, skip_last_layer=False, batch_callback=self.batch_callback)
 
         # Concatenate the whole dataset into one full-batch tensor per split.
         def _cat_split(dl):
@@ -2772,7 +2346,7 @@ class Trainer:
 
         # Early stop and lr schedule read the dev split, or the validation
         # split under train.stop_source 'val' (a split that selected nothing).
-        stop_split = "val" if (self._stop_source(val_dl) == "val") else "dev"
+        stop_split = "val" if (evaluation.stop_source(self.config, val_dl) == "val") else "dev"
         stop_dl = val_dl if stop_split == "val" else dev_dl
         for p in model.parameters():
             p.requires_grad_(True)
@@ -2994,7 +2568,7 @@ class Trainer:
         head_width = int(model.out_proj.in_features)
         n_out = int(model.out_proj.out_features)
         seed = int(model.param.train.seed)
-        stop_source = self._stop_source(val_dl)
+        stop_source = evaluation.stop_source(self.config, val_dl)
         stop_split = "val" if stop_source == "val" else "dev"
         stop_dl = val_dl if stop_split == "val" else dev_dl
         source = str(model.param.train.layer_err_source)
@@ -3026,7 +2600,7 @@ class Trainer:
                         f"{fmt_err(layer.err)}")
             stop_err = layer.err
             if val_dl is not None:
-                val_err = readout[1] if source == "readout" else self._layer_val_err(model, layer, val_dl)
+                val_err = readout[1] if source == "readout" else evaluation.layer_val_err(model, layer, val_dl, batch_callback=self.batch_callback)
                 layer.val_err = val_err
                 model.layer_val_err.append(val_err)
                 logger.info(f"Joint layer #{layer_index}: dev {fmt_err(layer.err)} | val {fmt_err(val_err)}")
@@ -3052,7 +2626,7 @@ class Trainer:
         model.out_proj = _linear_from_seed(head_width, n_out, seed).to(device=model.device)
         self.train_out_proj(model, train_dl, dev_dl)
         logger.info(f"joint selection: {len(model.layers)} layer(s) kept; {stop_split} loss of the "
-                    f"{head_width}-wide head {self._mean_loss(model, stop_dl, model.infer):.4f}")
+                    f"{head_width}-wide head {evaluation.mean_loss(model, stop_dl, model.infer, batch_callback=self.batch_callback):.4f}")
         self.save_model_checkpoint(model)
         return model
 
@@ -3067,7 +2641,7 @@ class Trainer:
         `_train_joint_layer`. The earlier layers stay as greedy selected
         them. Leaves a fresh, unfitted head of the model's width in
         `model.out_proj`."""
-        stop_split = "val" if self._stop_source(val_dl) == "val" else "dev"
+        stop_split = "val" if evaluation.stop_source(self.config, val_dl) == "val" else "dev"
         stop_dl = val_dl if stop_split == "val" else dev_dl
         head_width = int(model.out_proj.in_features)
         n_out = int(model.out_proj.out_features)
@@ -3114,8 +2688,8 @@ class Trainer:
         model.out_proj = _linear_from_seed(len(layer), n_out, int(model.param.train.seed)).to(device=device)
         self.train_out_proj(model, train_dl, dev_dl)
         # The layer's input does not change during the pass: compute it once.
-        train_in = self._precompute_dl(model, train_dl, device)
-        stop_in = self._precompute_dl(model, stop_dl, device)
+        train_in = evaluation.precompute_dl(model, train_dl, device, batch_callback=self.batch_callback)
+        stop_in = evaluation.precompute_dl(model, stop_dl, device, batch_callback=self.batch_callback)
         pool = self._joint_pool(model, train_in, js)
         model.out_proj = None
 
@@ -3160,7 +2734,7 @@ class Trainer:
         with torch.no_grad():
             for module in layer.neuron_models:
                 _, _, pred_fn, params, buffers, _ = self.create_loss_functions(model, module)
-                errs.append(self.regularity_err(model, pred_fn, params, buffers, dl, device).detach())
+                errs.append(evaluation.regularity_err(model, pred_fn, params, buffers, dl, device, batch_callback=self.batch_callback).detach())
         return torch.cat(errs).to(device=layer.module_idxs.device)
 
     def _joint_readout(self, model: SONN, train_dl: DataLoader, dls: list[DataLoader], dev_dl: DataLoader,
@@ -3172,19 +2746,7 @@ class Trainer:
                                            int(model.param.train.seed)).to(device=model.device)
         self.train_out_proj(model, train_dl, dev_dl)
         model.eval()
-        return [self._mean_loss(model, dl, model.infer) for dl in dls]
-
-    def _mean_loss(self, model: SONN, dl: DataLoader, predict: Callable[[torch.Tensor], torch.Tensor],
-                   callback: bool = True) -> float:
-        """Mean over the loader's batches of the model's loss of `predict(x)`.
-        `callback=False` for a loader of precomputed features."""
-        device = model.device
-        total = 0.0
-        with torch.no_grad():
-            for batch in dl:
-                x, y = self.batch_callback(batch) if (callback and self.batch_callback) else batch
-                total += model.loss_fn(predict(x.to(device=device)), y.to(device=device)).mean().item()
-        return total / len(dl)
+        return [evaluation.mean_loss(model, dl, model.infer, batch_callback=self.batch_callback) for dl in dls]
 
     def _joint_pool(self, model: SONN, train_in: DataLoader, js: Any) -> _JointPool:
         """The pool over the model's last layer and its fitted wide head.
@@ -3311,8 +2873,8 @@ class Trainer:
                 continue
 
             pool.eval()
-            val_loss = self._mean_loss(model, stop_in, lambda v: pool.predict(v, pool.eval_gates()),
-                                       callback=False)
+            val_loss = evaluation.mean_loss(model, stop_in, lambda v: pool.predict(v, pool.eval_gates()),
+                                           batch_callback=None)
             with torch.no_grad():
                 penalty = float(pool.penalty())
             active = int((pool.importance() > threshold).sum())
@@ -3468,8 +3030,8 @@ class Trainer:
 
         # Features through layers 0..N-1. Current `layer` is model.layers[-1],
         # so skip_last_layer=True is "everything but this one".
-        train_feat_dl = self._precompute_dl(model, train_dl, device, skip_last_layer=True)
-        dev_feat_dl   = self._precompute_dl(model, dev_dl,   device, skip_last_layer=True)
+        train_feat_dl = evaluation.precompute_dl(model, train_dl, device, skip_last_layer=True, batch_callback=self.batch_callback)
+        dev_feat_dl   = evaluation.precompute_dl(model, dev_dl,   device, skip_last_layer=True, batch_callback=self.batch_callback)
 
         # LBFGS runs full-batch with a closure — see the dedicated helper.
         # It still calls the same setup above (precomputed features +

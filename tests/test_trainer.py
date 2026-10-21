@@ -40,7 +40,7 @@ from torchsonn.data.dataset import SONNDataset
 from torchsonn.loss import regularity_error
 from torchsonn.model import SONN
 from torchsonn.trainer import LayerAccumulator, StepCheckpoint, Trainer
-from torchsonn.training import distributed
+from torchsonn.training import distributed, evaluation, runs
 
 
 def _make_cfg(**overrides) -> OmegaConf:
@@ -148,7 +148,7 @@ def _shifted_targets(n: int = 12) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 class TestRegularityErrStreaming:
-    """`Trainer.regularity_err` re-implements `loss.regularity_error` for the
+    """`evaluation.regularity_err` re-implements `loss.regularity_error` for the
     streaming case (the eval set is only ever seen one batch at a time), so the
     two need pinning to each other."""
 
@@ -161,14 +161,13 @@ class TestRegularityErrStreaming:
 
         cfg = _norm_cfg(tmp_path, normalization)
         model = SONN(cfg, d_model=2)
-        trainer = Trainer(cfg)
         dl = DataLoader(SONNDataset(x, y), batch_size=batch_size)
 
         def pred_fn(params, buffers, xb, yb):
             return xb.T                                  # (ensemble=2, batch)
 
-        return trainer.regularity_err(
-            model, pred_fn, {}, {}, dl, "cpu", skip_model_fwd=True,
+        return evaluation.regularity_err(
+            model, pred_fn, {}, {}, dl, "cpu", skip_model_fwd=True, batch_callback=None,
         )
 
     @pytest.mark.parametrize("normalization", ["variance", "energy"])
@@ -387,9 +386,9 @@ class TestRunFolders:
             def now(cls, tz=None):
                 return cls(2026, 10, 4, 10, 15, 30)
 
-        monkeypatch.setattr("torchsonn.trainer.datetime.datetime", _Fixed)
-        first = Trainer._new_run_dir(tmp_path)
-        second = Trainer._new_run_dir(tmp_path)
+        monkeypatch.setattr("torchsonn.training.runs.datetime.datetime", _Fixed)
+        first = runs.new_run_dir(tmp_path)
+        second = runs.new_run_dir(tmp_path)
         assert first.name == "2026-10-04-10-15-30"
         assert second.name == "2026-10-04-10-15-30-2"
 

@@ -9,6 +9,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
+from torchsonn.training import evaluation
 
 
 def _dl(n: int, seed: int, d: int = 5, classes: int = 0) -> DataLoader:
@@ -202,7 +203,7 @@ def test_the_pool_reproduces_the_headed_layer_from_its_input(tmp_path):
     with torch.no_grad():
         headed = model.infer(x)
         x_in = model(x, skip_last_layer=True)
-    pool = trainer._joint_pool(model, trainer._precompute_dl(model, train_dl, model.device),
+    pool = trainer._joint_pool(model, evaluation.precompute_dl(model, train_dl, model.device, batch_callback=None),
                                cfg.train.joint_sparsity)
     pool.eval()
     with torch.no_grad():

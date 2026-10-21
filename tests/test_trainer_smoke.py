@@ -16,6 +16,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
+from torchsonn.training import evaluation
 from torchsonn.optimizers import BatchedAdam as _BatchedAdam
 
 
@@ -1181,24 +1182,24 @@ def test_early_stop_source_routes_the_candidate_stop(tmp_path, source, monkeypat
     model = SONN(cfg, d_model=4)
     trainer = Trainer(config=cfg)
     calls = {"during_fit": 0, "total": 0}
-    real = Trainer.ds_loss
+    real = evaluation.ds_loss
     state = {"fitting": False}
 
-    def spy(self, *a, **kw):
+    def spy(*a, **kw):
         calls["total"] += 1
         if state["fitting"]:
             calls["during_fit"] += 1
-        return real(self, *a, **kw)
+        return real(*a, **kw)
 
-    monkeypatch.setattr(Trainer, "ds_loss", spy)
-    real_reg = Trainer.regularity_err
+    monkeypatch.setattr(evaluation, "ds_loss", spy)
+    real_reg = evaluation.regularity_err
     reg_calls = {"n": 0}
 
-    def reg_spy(self, *a, **kw):
+    def reg_spy(*a, **kw):
         reg_calls["n"] += 1
-        return real_reg(self, *a, **kw)
+        return real_reg(*a, **kw)
 
-    monkeypatch.setattr(Trainer, "regularity_err", reg_spy)
+    monkeypatch.setattr(evaluation, "regularity_err", reg_spy)
     real_step = Trainer.train_model_ensemble
 
     def wrapped(self, *a, **kw):
