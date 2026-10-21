@@ -85,6 +85,25 @@ def reservoir_add(
     return reservoir, filled
 
 
+def split_loader(dl: DataLoader, split: int) -> DataLoader:
+    """Build a DataLoader over the same underlying tensors but restricted to one split.
+
+    The original `copy(dl)` was shallow, so dl_a.dataset and dl_b.dataset aliased
+    the same SONNDataset object — assigning .split mutated both. Here we make a
+    fresh SONNDataset (sharing x/target storage) per split so they're independent.
+    """
+    ds = dl.dataset
+    new_ds = SONNDataset(ds.x, ds.target, split=split)
+    shuffle = isinstance(dl.sampler, torch.utils.data.RandomSampler)
+    return DataLoader(
+        new_ds,
+        batch_size=dl.batch_size,
+        shuffle=shuffle,
+        num_workers=dl.num_workers,
+        drop_last=dl.drop_last,
+    )
+
+
 def precompute_dl(
     model: SONN,
     dl: DataLoader,

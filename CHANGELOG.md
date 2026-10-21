@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Changed — `Trainer`'s helpers live in the new `torchsonn.training` package
+
+`trainer.py` held 4668 lines. `Trainer` now keeps the training steps
+(`train`, `train_layer`, `train_model_ensemble`, `train_out_proj`,
+`train_finetune`, `train_joint`, `prune`, `infer`) and the methods a script
+calls (`set_seed`, `init_distributed` and the run folder and checkpoint
+methods); the code those steps use moved to modules of the internal package
+`torchsonn.training`: `selection`, `evaluation`, `ensemble`,
+`normalization`, `finetune`, `head_fit`, `joint_selection`, `pruning`,
+`keep_best`, `runs`, `distributed`, `config_checks` and `state`.
+
+Training results are unchanged, and so are `from torchsonn.trainer import
+Trainer, GrowthCriterion, LayerAccumulator, StepCheckpoint` and every method
+the tutorials and guides call. Seven public methods that only `train` used
+are no longer on `Trainer`; they are functions now, which take the loader
+callback as `batch_callback=`:
+
+| Was | Now |
+|---|---|
+| `Trainer.neuron_selection` | `torchsonn.training.selection.neuron_selection` |
+| `Trainer.write_back_params`, `Trainer.create_loss_functions` | `torchsonn.training.ensemble.*` |
+| `Trainer.ds_loss`, `Trainer.regularity_err`, `Trainer.bias_err` | `torchsonn.training.evaluation.*` |
+| `Trainer.fit_layer_inputs` | `torchsonn.training.normalization.fit_layer_inputs` |
+
+The survivor selection algorithms can be called on their own:
+`torchsonn.training.selection.select_candidates(method, err, z_val, nbest,
+target)` returns the indices a method keeps from a candidate pool.
+
+Log records of the moved code carry their new module name, such as
+`torchsonn.training.joint_selection`; a log filter or `caplog` level set on
+`torchsonn.trainer` should be set on `torchsonn` to see them all.
+
+### Changed — an unknown `train.neuron_selection_method` is rejected when the `Trainer` is built
+
+A name that is not `plain`, `greedy_orth`, `max_volume`, `omp` or
+`omp_mixed` raised `NotImplementedError` only after the first layer's
+candidates had trained. `Trainer(config)` now raises `ValueError` naming
+the five methods, before any data is read or a run folder is made.
+
 ### Added — joint selection: a diversity term, `restore_weights` and `selection_mode: joint_last`
 
 `train.joint_sparsity.diversity_lam` (default 0, off) adds a diversity

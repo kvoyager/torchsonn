@@ -1,33 +1,33 @@
 import gc
-import math
-import sys
-import torch
-from torchsonn.model import SONN, _linear_from_seed
-from tqdm import tqdm
 import logging
-from torch import nn
-from dataclasses import replace
-from copy import deepcopy
-from torch.utils.data import DataLoader
-from pathlib import Path
-from torchsonn.optimizers import optimizer_map
-from torchsonn.layer import SONNLayer
-from torchsonn.neurons import BasePolynomNeuron
-from torchsonn.data.dataset import SONNDataset
-import numpy as np
+import math
 import random
+import sys
+from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Callable
 
-from torchsonn.utils import timed_block, abbrev_floats, fmt_err
+import numpy as np
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+from torch import nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from torchsonn.layer import SONNLayer
+from torchsonn.model import SONN, _linear_from_seed
+from torchsonn.neurons import BasePolynomNeuron
+from torchsonn.optimizers import optimizer_map
 from torchsonn.training import (
     config_checks, distributed, ensemble, evaluation, finetune, head_fit, joint_selection, keep_best,
     normalization, pruning, runs, selection,
 )
 from torchsonn.training.state import GrowthCriterion, LayerAccumulator, StepCheckpoint
+from torchsonn.utils import abbrev_floats, fmt_err, timed_block
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable
-import torch.distributed as dist
-import torch.nn.functional as F
 
 
 class Trainer:
@@ -75,25 +75,6 @@ class Trainer:
         self._run_dir: Path | None = None
         config_checks.validate_config(config)
         config_checks.apply_deterministic(config)
-
-    @staticmethod
-    def _split_loader(dl: DataLoader, split: int) -> DataLoader:
-        """Build a DataLoader over the same underlying tensors but restricted to one split.
-
-        The original `copy(dl)` was shallow, so dl_a.dataset and dl_b.dataset aliased
-        the same SONNDataset object — assigning .split mutated both. Here we make a
-        fresh SONNDataset (sharing x/target storage) per split so they're independent.
-        """
-        ds = dl.dataset
-        new_ds = SONNDataset(ds.x, ds.target, split=split)
-        shuffle = isinstance(dl.sampler, torch.utils.data.RandomSampler)
-        return DataLoader(
-            new_ds,
-            batch_size=dl.batch_size,
-            shuffle=shuffle,
-            num_workers=dl.num_workers,
-            drop_last=dl.drop_last,
-        )
 
     @classmethod
     def set_seed(cls, seed: int = 42) -> None:
@@ -589,10 +570,10 @@ class Trainer:
                 neuron_module_a = deepcopy(neuron_model)
                 neuron_module_b = deepcopy(neuron_model)
 
-                train_dl_a = self._split_loader(train_feat_dl, 0)
-                train_dl_b = self._split_loader(train_feat_dl, 1)
-                dev_dl_a   = self._split_loader(dev_feat_dl,   0)
-                dev_dl_b   = self._split_loader(dev_feat_dl,   1)
+                train_dl_a = evaluation.split_loader(train_feat_dl, 0)
+                train_dl_b = evaluation.split_loader(train_feat_dl, 1)
+                dev_dl_a   = evaluation.split_loader(dev_feat_dl,   0)
+                dev_dl_b   = evaluation.split_loader(dev_feat_dl,   1)
 
                 loss_fn_vmapped_a, eval_loss_fn_vmapped_a, pred_fn_vmapped_a, params_batch_a, buffers_batch_a, shared_param_names_a = (
                     ensemble.create_loss_functions(model, neuron_model))

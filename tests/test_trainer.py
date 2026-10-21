@@ -405,8 +405,8 @@ class TestSplitLoader:
         ds = SONNDataset(x, np.arange(10).astype("float32"))
         dl = DataLoader(ds, batch_size=2)
 
-        a = Trainer._split_loader(dl, 0)
-        b = Trainer._split_loader(dl, 1)
+        a = evaluation.split_loader(dl, 0)
+        b = evaluation.split_loader(dl, 1)
         # different SONNDataset instances → not aliased
         assert a.dataset is not b.dataset
         # split flag faithfully recorded
