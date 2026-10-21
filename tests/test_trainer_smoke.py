@@ -680,7 +680,7 @@ def test_a_fit_runs_exactly_train_steps(tmp_path, counted_steps, caplog, steps, 
     cfg = _cfg(tmp_path, max_layer_count=1, steps=steps, eval_step_interval=eval_interval,
                early_stop_tolerance_steps=100000)
     model = SONN(cfg, d_model=4)
-    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+    with caplog.at_level("INFO", logger="torchsonn"):
         Trainer(config=cfg).train(model, _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
     assert counted_steps.steps == steps
     assert any(f"reached train.steps ({steps})" in r.message for r in caplog.records)
@@ -691,7 +691,7 @@ def test_an_early_stop_still_says_so(tmp_path, counted_steps, caplog):
     cfg = _cfg(tmp_path, max_layer_count=1, steps=100000, eval_step_interval=1,
                early_stop_tolerance_steps=1)
     model = SONN(cfg, d_model=4)
-    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+    with caplog.at_level("INFO", logger="torchsonn"):
         Trainer(config=cfg).train(model, _make_dl(48), _make_dl(16), _make_dl(8), verbose=False)
     assert counted_steps.steps < 100000
     assert any("early stopped at step" in r.message for r in caplog.records)
@@ -1248,7 +1248,7 @@ def test_val_split_is_reported_per_layer_and_stored(tmp_path, caplog):
     model = SONN(cfg, d_model=4)
     trainer = Trainer(config=cfg)
     dl, val = _make_dl(64), _make_dl(24)
-    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+    with caplog.at_level("INFO", logger="torchsonn"):
         trained = trainer.train(model, dl, dl, dl, verbose=False, val_dl=val)
     n = len(trained.layers)
     assert len(trained.layer_val_err) >= n and all(v == v for v in trained.layer_val_err)   # finite
@@ -1493,7 +1493,7 @@ def test_train_finetune_uses_the_graph_on_cuda_and_falls_back_when_told(tmp_path
             nm.to("cuda")
     trainer.config = cfg
     x = torch.randn(5, 4, device="cuda")
-    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+    with caplog.at_level("INFO", logger="torchsonn"):
         trainer.train_finetune(model, dl, dl, cfg=cfg.train.finetune_train)
     assert any("CUDA graph captured" in r.message for r in caplog.records)
     assert any("steps replayed" in r.message for r in caplog.records)
@@ -1502,7 +1502,7 @@ def test_train_finetune_uses_the_graph_on_cuda_and_falls_back_when_told(tmp_path
     caplog.clear()
     cfg_e = OmegaConf.merge(cfg, OmegaConf.create({"train": {"finetune_train": {"cuda_graph": False}}}))
     trainer.config = cfg_e
-    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+    with caplog.at_level("INFO", logger="torchsonn"):
         trainer.train_finetune(model, dl, dl, cfg=cfg_e.train.finetune_train)
     assert any("eager steps" in r.message for r in caplog.records)
     assert not any("CUDA graph captured" in r.message for r in caplog.records)
@@ -1821,7 +1821,7 @@ def test_end_to_end_graph_pass_restores_in_place(tmp_path, scripted_best, where,
     trainer.config = cfg
     ptrs = [p.data_ptr() for p in model.parameters()]
     scripted_best.clear()
-    with caplog.at_level("INFO", logger="torchsonn.trainer"):
+    with caplog.at_level("INFO", logger="torchsonn"):
         trainer.train_finetune(model, dl, dl, cfg=cfg.train.finetune_train)
     assert any("CUDA graph captured" in r.message for r in caplog.records)
     assert any("kept the weights of step" in r.message for r in caplog.records)

@@ -9,7 +9,7 @@ from torchsonn.config import SONNConfig
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
-from torchsonn.training import evaluation, finetune, normalization
+from torchsonn.training import evaluation, finetune, joint_selection, normalization
 
 
 def _dl(n: int, seed: int, d: int = 5, classes: int = 0) -> DataLoader:
@@ -73,7 +73,7 @@ def test_joint_repeats_with_a_seed(tmp_path):
 
 
 def test_gates_close_under_the_penalty(tmp_path, caplog):
-    caplog.set_level("INFO", logger="torchsonn.trainer")
+    caplog.set_level("INFO", logger="torchsonn")
     cfg = _cfg(tmp_path, model={"nbest_neurons": 10},
                joint={"lam": 1.0, "gate_lr": 0.2, "max_steps": 80, "lam_control": "fixed"})
     model, _ = _train(cfg)
@@ -85,7 +85,7 @@ def test_gates_close_under_the_penalty(tmp_path, caplog):
 
 @pytest.mark.parametrize("kind", ["gates", "group_lasso"])
 def test_the_diversity_term_enters_the_pass(tmp_path, caplog, kind):
-    caplog.set_level("INFO", logger="torchsonn.trainer")
+    caplog.set_level("INFO", logger="torchsonn")
     cfg = _cfg(tmp_path, joint={"kind": kind, "lam": 0.1 if kind == "gates" else 5.0,
                                 "diversity_lam": 1.0, "diversity_tau": 0.1})
     model, _ = _train(cfg)
@@ -103,13 +103,13 @@ def test_group_lasso_zeroes_whole_neurons(tmp_path):
 
 def test_prefilter_sizes_the_pool(tmp_path, monkeypatch):
     sizes = []
-    original = Trainer._sparsify_joint_pool
+    original = joint_selection.sparsify_joint_pool
 
-    def spy(self, model, pool, *a, **kw):
+    def spy(model, pool, *a, **kw):
         sizes.append(pool.size)
-        return original(self, model, pool, *a, **kw)
+        return original(model, pool, *a, **kw)
 
-    monkeypatch.setattr(Trainer, "_sparsify_joint_pool", spy)
+    monkeypatch.setattr(joint_selection, "sparsify_joint_pool", spy)
     _train(_cfg(tmp_path / "n", model={"nbest_neurons": 2}, joint={"prefilter": "none"}))
     _train(_cfg(tmp_path / "p", model={"nbest_neurons": 2}, joint={"prefilter": "plain", "prefilter_mult": 2.5}))
     # 10 candidate pairs; 'plain' keeps ceil(2.5 x 2) = 5 of them.
@@ -123,14 +123,14 @@ def test_a_head_as_wide_as_the_pool_keeps_every_neuron_without_a_penalty(tmp_pat
 
 def test_a_steered_pass_is_skipped_when_the_pool_fits_the_head(tmp_path, monkeypatch):
     called = []
-    monkeypatch.setattr(Trainer, "_sparsify_joint_pool", lambda *a, **kw: called.append(1))
+    monkeypatch.setattr(joint_selection, "sparsify_joint_pool", lambda *a, **kw: called.append(1))
     model, _ = _train(_cfg(tmp_path, model={"nbest_neurons": 12}))
     assert not called and len(model.layers[0]) == 10
 
 
 @pytest.mark.parametrize("kind, lam", [("gates", 0.05), ("group_lasso", 0.05)])
 def test_adaptive_control_lands_on_the_target(tmp_path, caplog, kind, lam):
-    caplog.set_level("INFO", logger="torchsonn.trainer")
+    caplog.set_level("INFO", logger="torchsonn")
     cfg = _cfg(tmp_path, model={"nbest_neurons": 4},
                joint={"kind": kind, "lam": lam, "gate_lr": 0.05, "lr": 1e-2, "max_steps": 1500,
                       "eval_interval": 10, "count_patience": 2, "lam_step": 1.3})
@@ -143,13 +143,12 @@ def test_adaptive_control_lands_on_the_target(tmp_path, caplog, kind, lam):
 def test_an_overshoot_rolls_back_to_the_closest_state_from_above(tmp_path, monkeypatch, caplog):
     """Counts 10, 10, 6, 2, 2 against a target of 3: the pass rolls back to the
     state of the third evaluation (6 active) and the cut keeps 3 of those 6."""
-    from torchsonn import trainer as trainer_mod
-    caplog.set_level("INFO", logger="torchsonn.trainer")
+    caplog.set_level("INFO", logger="torchsonn")
     script = iter([10, 10, 6, 2, 2])
     masks = {}
     loads = []
-    original_load = trainer_mod._JointPool.load
-    original_observe = trainer_mod._CountControl.observe
+    original_load = joint_selection.JointPool.load
+    original_observe = joint_selection.CountControl.observe
 
     def observe(self, step, active, loss, adjust, penalty=None):
         count = next(script)
@@ -165,9 +164,9 @@ def test_an_overshoot_rolls_back_to_the_closest_state_from_above(tmp_path, monke
         masks["imp"][:6] = 1.0
         return original_load(self, state)
 
-    monkeypatch.setattr(trainer_mod._CountControl, "observe", observe)
-    monkeypatch.setattr(trainer_mod._JointPool, "load", load)
-    monkeypatch.setattr(trainer_mod._JointPool, "importance",
+    monkeypatch.setattr(joint_selection.CountControl, "observe", observe)
+    monkeypatch.setattr(joint_selection.JointPool, "load", load)
+    monkeypatch.setattr(joint_selection.JointPool, "importance",
                         lambda self: masks.get("imp", torch.ones(10)))
     cfg = _cfg(tmp_path, joint={"max_steps": 100, "eval_interval": 10, "count_patience": 2,
                                 "lam_warmup_frac": 0.0})
@@ -203,7 +202,7 @@ def test_the_pool_reproduces_the_headed_layer_from_its_input(tmp_path):
     with torch.no_grad():
         headed = model.infer(x)
         x_in = model(x, skip_last_layer=True)
-    pool = trainer._joint_pool(model, evaluation.precompute_dl(model, train_dl, model.device, batch_callback=None),
+    pool = joint_selection.joint_pool(model, evaluation.precompute_dl(model, train_dl, model.device, batch_callback=None),
                                cfg.train.joint_sparsity)
     pool.eval()
     with torch.no_grad():
@@ -220,7 +219,7 @@ def _deep_cfg(tmp_path, **train):
 
 
 def test_joint_grows_layers_on_frozen_earlier_layers(tmp_path, monkeypatch, caplog):
-    caplog.set_level("INFO", logger="torchsonn.trainer")
+    caplog.set_level("INFO", logger="torchsonn")
     snapshots = {}
     original = Trainer._train_joint_layer
 
@@ -318,15 +317,15 @@ def test_joint_layer_errors_are_taken_before_the_fine_tune(tmp_path, monkeypatch
 
 def test_restore_weights_keeps_the_candidates_own_fits(tmp_path, monkeypatch):
     fits = {}
-    original = Trainer._sparsify_joint_pool
+    original = joint_selection.sparsify_joint_pool
 
-    def spy(self, model, pool, *a, **kw):
+    def spy(model, pool, *a, **kw):
         fits["before"] = [p.detach().clone() for p in pool.layer.parameters()]
-        out = original(self, model, pool, *a, **kw)
+        out = original(model, pool, *a, **kw)
         fits["after"] = [p.detach().clone() for p in pool.layer.parameters()]
         return out
 
-    monkeypatch.setattr(Trainer, "_sparsify_joint_pool", spy)
+    monkeypatch.setattr(joint_selection, "sparsify_joint_pool", spy)
     cfg = _cfg(tmp_path, model={"nbest_neurons": 4}, joint={"restore_weights": True, "lam": 1.0, "gate_lr": 0.2})
     model, _ = _train(cfg)
     layer = model.layers[0]
@@ -406,8 +405,7 @@ def test_joint_does_not_resume(tmp_path):
 class TestCountControl:
     @staticmethod
     def _control(mode="adaptive", target=10, margin=0.2, patience=2):
-        from torchsonn.trainer import _CountControl
-        return _CountControl(mode, target, margin, patience, lam_step=2.0, lam=1.0)
+        return joint_selection.CountControl(mode, target, margin, patience, lam_step=2.0, lam=1.0)
 
     def test_band_from_the_margin(self):
         assert (self._control().target, self._control().hi) == (10, 12)
