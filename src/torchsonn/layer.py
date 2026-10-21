@@ -103,7 +103,7 @@ class SONNLayer(SONNModule):
         """Build the per-layer LayerNorm with the supplied `dim` as its
         `normalized_shape`. Idempotent and a no-op when the flag is off.
 
-        Called from `Trainer.neuron_selection` after pruning (passing
+        Called from `training.selection.neuron_selection` after pruning (passing
         the width of the next layer's input, `SONN.next_input_width`) and
         from `from_checkpoint_metadata` when restoring a model.
         """
