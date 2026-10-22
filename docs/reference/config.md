@@ -143,9 +143,9 @@ and the per-layer fine-tune. See
 |---|---|---|---|
 | `train.layer_finetune` | bool | false | After selection, train each layer's survivors jointly through a temporary linear head, on every layer. Under `model.selection_mode: joint` it runs after the joint cut. Use it with `model.use_output_projection`: the pass turns the survivors into inputs for a head, and a model without one predicts poorly. Fails on binary models. |
 | `train.layer_finetune_weight_decay` | float or null | null | The weight decay of the per-layer fine-tune alone; every other fine-tune setting comes from `train.out_proj_train`. null uses `train.out_proj_train.weight_decay`. Set it to regularize the layers and the final head differently. |
-| `train.out_proj_train.optimizer` | str | `adam` | `adam`, `sgd` (momentum 0.9) or `lbfgs` (full batch, no plateau schedule). |
+| `train.out_proj_train.optimizer` | str | `adam` | `adam`, `adamw`, `sgd` (momentum 0.9) or `lbfgs` (full batch, no plateau schedule). |
 | `train.out_proj_train.lr` | float | 0.001 | Learning rate. |
-| `train.out_proj_train.weight_decay` | float | 0.0 | L2 penalty; added to the loss under `lbfgs`. |
+| `train.out_proj_train.weight_decay` | float | 0.0 | Weight decay. `adam` and `sgd` add it to the gradient, `adamw` applies it to the weights directly, `lbfgs` adds an L2 penalty to the loss, so a value tuned for one optimizer does not carry over to another. |
 | `train.out_proj_train.max_steps` | int | 5000 | The most steps; for `lbfgs`, outer steps. |
 | `train.out_proj_train.eval_interval` | int | 100 | Evaluate on the dev split every this many steps. |
 | `train.out_proj_train.early_stop_patience` | int | 10 | Stop after this many evaluations without an improvement. |

@@ -1220,12 +1220,22 @@ class Trainer:
             opt = torch.optim.Adam(
                 model.out_proj.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
             )
+        elif cfg.optimizer == "adamw":
+            # Decoupled weight decay, as in train_finetune: under Adam the L2
+            # term rides through the second-moment estimate and is rescaled
+            # per parameter, under AdamW it is applied to the weights directly.
+            opt = torch.optim.AdamW(
+                model.out_proj.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+            )
         elif cfg.optimizer == "sgd":
             opt = torch.optim.SGD(
                 model.out_proj.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=0.9
             )
         else:
-            raise ValueError(f"Unsupported out_proj optimizer: {cfg.optimizer!r}")
+            raise ValueError(
+                f"Unsupported out_proj optimizer: {cfg.optimizer!r} "
+                "(supported: 'adam', 'adamw', 'sgd', 'lbfgs')."
+            )
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt,

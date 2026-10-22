@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added — `adamw` for the head fit and the per-layer fine-tune
+
+`train.out_proj_train.optimizer` takes `adamw`, which applies the weight
+decay to the weights directly instead of adding it to the gradient, as in
+the end-to-end pass.
+
 ### Changed — the Otto script takes overrides and runs the end-to-end pass
 
 `otto_classification.py` takes the arguments `@hydra.main` takes:

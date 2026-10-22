@@ -49,7 +49,7 @@ per split, fits the head on the train split and early-stops on dev. It
 ends on its last step (see
 [Last step or best evaluation](#last-step-or-best-evaluation)) and saves
 the model to `model_last.ckpt`. `train.out_proj_train` sets the
-optimizer (`adam` by default, `sgd` or `lbfgs`), the learning rate, the step
+optimizer (`adam` by default, `adamw`, `sgd` or `lbfgs`), the learning rate, the step
 limit, the evaluation interval and the early stop.
 
 Fitting the head is least squares for regression and logistic regression

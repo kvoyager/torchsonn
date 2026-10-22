@@ -1795,7 +1795,7 @@ def _assert_ends_on_second_evaluation(best, params):
         assert torch.equal(p.detach().cpu(), s)
 
 
-@pytest.mark.parametrize("optimizer", ["adam", "lbfgs"])
+@pytest.mark.parametrize("optimizer", ["adam", "adamw", "lbfgs"])
 def test_head_fit_ends_on_its_best_evaluation(tmp_path, scripted_best, optimizer):
     cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=_pass_settings(optimizer))
     scripted_best.clear()
@@ -1806,7 +1806,7 @@ def test_head_fit_ends_on_its_best_evaluation(tmp_path, scripted_best, optimizer
     assert torch.equal(saved["out_proj.weight"], model.out_proj.weight.detach().cpu())
 
 
-@pytest.mark.parametrize("optimizer", ["adam", "lbfgs"])
+@pytest.mark.parametrize("optimizer", ["adam", "adamw", "lbfgs"])
 def test_layer_finetune_ends_on_its_best_evaluation(tmp_path, scripted_best, optimizer):
     """The survivors end on the best evaluation's weights, and the readout
     error the pass returns is that evaluation's loss."""
@@ -2069,6 +2069,38 @@ def test_layer_finetune_weight_decay_applies_to_the_fine_tune_only(tmp_path, lay
     trainer.train_out_proj(model, dl, dl)
     assert decays == [0.02]
     assert model.param.train.out_proj_train.weight_decay == 0.02
+
+
+def test_adamw_runs_the_layer_finetune_and_the_head_fit(tmp_path, monkeypatch):
+    """`out_proj_train.optimizer: adamw` builds AdamW, with the block's weight
+    decay, for the per-layer fine-tune and the head fit."""
+    import torch.optim
+
+    decays = []
+    real = torch.optim.AdamW
+
+    def spy(*a, **kw):
+        decays.append(kw.get("weight_decay"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(torch.optim, "AdamW", spy)
+    cfg = _headed_mc_cfg(tmp_path, layer_finetune=True, layer_finetune_weight_decay=0.05,
+                         out_proj_train={"optimizer": "adamw", "max_steps": 3, "weight_decay": 0.02,
+                                         "eval_interval": 1, "early_stop_patience": 5})
+    model = SONN(cfg, d_model=4)
+    _, dl = _make_mc_dl()
+    trainer = Trainer(config=cfg)
+    trainer.train(model, dl, dl, dl, verbose=False)
+    assert decays and all(d == 0.05 for d in decays), decays
+    decays.clear()
+    trainer.train_out_proj(model, dl, dl)
+    assert decays == [0.02]
+
+
+def test_unknown_head_fit_optimizer_names_the_supported_ones(tmp_path):
+    cfg, model, trainer, dl = _headed_model(tmp_path, out_proj_train=_pass_settings("rmsprop"))
+    with pytest.raises(ValueError, match="'adam', 'adamw', 'sgd', 'lbfgs'"):
+        trainer.train_out_proj(model, dl, dl)
 
 
 def test_negative_layer_finetune_weight_decay_is_rejected(tmp_path):

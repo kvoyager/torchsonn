@@ -40,10 +40,19 @@ class OutProjTrainConfig:
     max_steps: int = 5000
     lr: float = 1.0e-3
     weight_decay: float = 0.0
-    # 'adam' | 'sgd' | 'lbfgs'. lbfgs runs full-batch with a closure and ignores
-    # the ReduceLROnPlateau schedule (lr_patience / lr_factor / lr_min) — it does
-    # its own line search. weight_decay is honored for lbfgs as a manual L2
-    # penalty added inside the closure.
+    # 'adam' | 'adamw' | 'sgd' | 'lbfgs'. lbfgs runs full-batch with a closure
+    # and ignores the ReduceLROnPlateau schedule (lr_patience / lr_factor /
+    # lr_min); it does its own line search. The other three run the minibatch
+    # loop and drive the schedule.
+    #
+    # weight_decay does not mean the same thing across them, so a value does
+    # not carry over when switching: lbfgs adds 0.5 * wd * ||W||^2 to the loss
+    # inside the closure, adam and sgd add wd * W to the gradient (coupled L2),
+    # and adamw applies lr * wd * W straight to the weights (decoupled). The
+    # decoupled form behaves better when a pass trains parameter groups of
+    # different scale, as the per-layer fine-tune does with the neurons'
+    # coefficients and a temporary head, because the penalty then bypasses
+    # the per-parameter second-moment rescaling.
     optimizer: str = "adam"
     eval_interval: int = 100
     lr_patience: int = 5

@@ -258,7 +258,7 @@ def train_layer_finetune(
     loss doesn't flow through them in this pass.
     """
     # Reuse the out_proj_train hyperparam block — same shape, same
-    # adam/sgd/lbfgs + ReduceLROnPlateau knobs. Keeps the YAML surface
+    # adam/adamw/sgd/lbfgs + ReduceLROnPlateau knobs. Keeps the YAML surface
     # small; only the weight decay can be set apart, through
     # train.layer_finetune_weight_decay, on a copy of the block.
     cfg         = model.param.train.out_proj_train
@@ -321,6 +321,13 @@ def train_layer_finetune(
 
     if cfg.optimizer == "adam":
         opt = torch.optim.Adam(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
+    elif cfg.optimizer == "adamw":
+        # Decoupled weight decay, as in the end-to-end pass. This pass trains
+        # two very differently scaled parameter groups at once (the survivors'
+        # coefficients and the temporary head's weights), which is exactly the
+        # case where coupling the penalty into the adaptive gradient decays
+        # them unevenly.
+        opt = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     elif cfg.optimizer == "sgd":
         opt = torch.optim.SGD(
             trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=0.9,
@@ -328,7 +335,7 @@ def train_layer_finetune(
     else:
         raise ValueError(
             f"Unsupported optimizer for layer_finetune: {cfg.optimizer!r} "
-            "(supported: 'adam', 'sgd', 'lbfgs')."
+            "(supported: 'adam', 'adamw', 'sgd', 'lbfgs')."
         )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
