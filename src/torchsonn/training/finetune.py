@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from torchsonn.layer import SONNLayer
 from torchsonn.model import SONN
-from torchsonn.training import evaluation, keep_best
+from torchsonn.training import evaluation, head_fit, keep_best
 
 logger = logging.getLogger(__name__)
 
@@ -496,6 +496,10 @@ def _train_layer_finetune_lbfgs(
     `trainable_params` contains `head.weight`, `head.bias`, and each
     surviving neuron's `weight`. weight_decay (if > 0) is added inside
     the closure as a manual L2 penalty, since LBFGS doesn't accept it.
+    `cfg.lbfgs_chunk_size` evaluates the closure in chunks of rows (see
+    `head_fit.chunked_loss`): the layer expands every row into its design
+    rows, so the activations of a one shot pass, not the data, set the
+    peak memory.
     `best_weights` records the evaluations (and, under keep_best_weights,
     copies the survivors' best one); the return value is its
     `final_loss`, as in the Adam / SGD path.
@@ -542,18 +546,19 @@ def _train_layer_finetune_lbfgs(
         return F.log_softmax(proj, dim=-1)
 
     wd = float(cfg.weight_decay)
+    chunk = head_fit.lbfgs_chunk_size(model, cfg)
+
+    def _loss(features: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return model.loss_fn(fwd(features), targets).mean()
 
     def closure():
         opt.zero_grad()
-        log_probs = fwd(train_X)
-        loss = model.loss_fn(log_probs, train_y).mean()
-        loss.backward()
-        loss = loss.detach()
+        loss = head_fit.chunked_loss(_loss, train_X, train_y, chunk, backward=True)
         if wd > 0.0:
             # Manual L2 — PyTorch's LBFGS does not accept weight_decay.
             # Applied to every trainable parameter (head weight/bias plus
             # surviving neurons' polynomial weights), backward'd separately
-            # from the data term.
+            # from the data term, so it is counted once, not once per chunk.
             l2 = torch.stack([(p ** 2).sum() for p in trainable_params]).sum()
             penalty = 0.5 * wd * l2
             penalty.backward()
@@ -575,7 +580,7 @@ def _train_layer_finetune_lbfgs(
             nm.eval()
         head.eval()
         with torch.no_grad():
-            return model.loss_fn(fwd(dev_X), dev_y).mean().item()
+            return head_fit.chunked_loss(_loss, dev_X, dev_y, chunk, backward=False).item()
 
     step = 0
     for step in range(1, cfg.max_steps + 1):

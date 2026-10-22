@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from torchsonn.loss import NormMSE
 from torchsonn.model import SONN
 from torchsonn.training import evaluation, keep_best
 
@@ -24,7 +25,8 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
     what makes LBFGS work the way sklearn does. Outer step count is
     cfg.max_steps; each opt.step(closure) runs cfg.lbfgs_max_iter inner
     line-search iterations. weight_decay (if > 0) is added inside the
-    closure as a manual L2 penalty.
+    closure as a manual L2 penalty. `cfg.lbfgs_chunk_size` evaluates the
+    closure in chunks (see `chunked_loss`).
     """
     device = model.device
     assert model.out_proj is not None  # checked by caller
@@ -81,14 +83,15 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
             return model.loss_fn(proj.squeeze(-1), y).mean()
         return model.loss_fn(F.log_softmax(proj, dim=-1), y).mean()
 
+    chunk = lbfgs_chunk_size(model, cfg)
+
     def closure():
         opt.zero_grad()
-        loss = _head_loss(train_X_sel, train_y)
-        loss.backward()
-        loss = loss.detach()
+        loss = chunked_loss(_head_loss, train_X_sel, train_y, chunk, backward=True)
         if wd > 0.0:
             # Manual L2 — PyTorch's LBFGS does not accept weight_decay.
-            # Backward'd separately from the data term.
+            # Backward'd separately from the data term, so it is counted
+            # once, not once per chunk.
             l2 = torch.stack([(p ** 2).sum() for p in model.out_proj.parameters()]).sum()
             penalty = 0.5 * wd * l2
             penalty.backward()
@@ -107,7 +110,7 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
 
         model.out_proj.eval()
         with torch.no_grad():
-            val_loss = _head_loss(dev_X_sel, dev_y).item()
+            val_loss = chunked_loss(_head_loss, dev_X_sel, dev_y, chunk, backward=False).item()
         best_weights.update(step, val_loss)
 
         if val_loss < best_val_loss - cfg.early_stop_min_delta:
@@ -138,8 +141,76 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
     if step > (best_weights.last_step or 0):
         model.out_proj.eval()
         with torch.no_grad():
-            best_weights.update(step, _head_loss(dev_X_sel, dev_y).item())
+            best_weights.update(step, chunked_loss(_head_loss, dev_X_sel, dev_y, chunk,
+                                                   backward=False).item())
     best_weights.restore()
+
+
+def lbfgs_chunk_size(model: SONN, cfg) -> int | None:
+    """Resolve `cfg.lbfgs_chunk_size`, or None when chunking must not run.
+
+    Chunked accumulation reproduces the full-batch loss only when that loss
+    is a plain mean over rows. NLL and `NormMSE` with a fitted `scale` are.
+    A `NormMSE` left with `scale=None` (a pass called outside
+    `Trainer.train`, which fits it) recomputes its denominator from the rows
+    it is handed, so chunking would optimize a different objective; the
+    closure then runs in one shot, with a warning.
+    """
+    raw = getattr(cfg, "lbfgs_chunk_size", None)
+    if raw is None:
+        return None
+    size = int(raw)
+    if size < 1:
+        raise ValueError(f"lbfgs_chunk_size must be >= 1, got {raw}")
+    if isinstance(model.loss_fn, NormMSE) and model.loss_fn.scale is None:
+        logger.warning(
+            "ignoring lbfgs_chunk_size=%s: NormMSE has no fitted target scale, so "
+            "its denominator is per-call and chunking would change the objective",
+            size,
+        )
+        return None
+    return size
+
+
+def chunked_loss(
+    loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    x: torch.Tensor,
+    y: torch.Tensor,
+    chunk_size: int | None,
+    backward: bool,
+) -> torch.Tensor:
+    """Full-batch mean loss of `loss_fn(x, y)`, evaluated in chunks of rows.
+
+    `loss_fn` must return the mean loss over the rows it is given. Each
+    chunk's mean is weighted by its share of the rows, so the chunk losses
+    sum to the mean over all rows and, with `backward=True` (one
+    `.backward()` per chunk), the accumulated gradient is the full-batch
+    gradient. Only one chunk's activations are alive at a time.
+
+    `chunk_size=None`, or no more rows than one chunk, evaluates in one shot.
+
+    Returns the detached total when `backward=True`, since the graph is
+    already consumed, and a live tensor otherwise.
+    """
+    n = x.shape[0]
+    if chunk_size is None or n <= chunk_size:
+        loss = loss_fn(x, y)
+        if backward:
+            loss.backward()
+            return loss.detach()
+        return loss
+
+    total = torch.zeros((), device=x.device, dtype=torch.float32)
+    for start in range(0, n, chunk_size):
+        stop = min(start + chunk_size, n)
+        # Weighted by the chunk's share, so the chunk means (and their
+        # gradients) sum to the mean over all rows.
+        part = loss_fn(x[start:stop], y[start:stop]) * ((stop - start) / n)
+        if backward:
+            part.backward()
+            part = part.detach()
+        total = total + part
+    return total
 
 
 def select_out_proj_inputs(

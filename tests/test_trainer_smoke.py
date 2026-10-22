@@ -2108,3 +2108,93 @@ def test_negative_layer_finetune_weight_decay_is_rejected(tmp_path):
                           OmegaConf.create({"train": {"layer_finetune_weight_decay": -1.0}}))
     with pytest.raises(ValueError, match="layer_finetune_weight_decay"):
         Trainer(config=cfg)
+
+
+# --- train.out_proj_train.lbfgs_chunk_size --------------------------------------
+
+from torchsonn.loss import NormMSE as _NormMSE
+from torchsonn.training import head_fit
+
+
+def _loss_and_grads(loss_fn, w, x, y, chunk):
+    w.grad = None
+    loss = head_fit.chunked_loss(loss_fn, x, y, chunk, backward=True)
+    return loss, w.grad.clone()
+
+
+@pytest.mark.parametrize("loss", ["nll", "norm_mse"])
+@pytest.mark.parametrize("chunk", [None, 7, 50, 64])
+def test_chunked_loss_matches_one_shot(loss, chunk):
+    """Chunks of rows give the full-batch loss and gradient, an uneven last
+    chunk included."""
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(50, 4, generator=g, dtype=torch.float64)
+    if loss == "nll":
+        y = torch.randint(0, 3, (50,), generator=g)
+        w = torch.randn(4, 3, generator=g, dtype=torch.float64, requires_grad=True)
+        nll = torch.nn.NLLLoss(weight=torch.tensor([1.0, 2.0, 0.5], dtype=torch.float64),
+                               reduction="none")
+        fn = lambda xb, yb: nll(torch.log_softmax(xb @ w, dim=-1), yb).mean()
+    else:
+        y = torch.randn(50, generator=g, dtype=torch.float64)
+        w = torch.randn(4, generator=g, dtype=torch.float64, requires_grad=True)
+        mse = _NormMSE(scale=1.3)
+        fn = lambda xb, yb: mse(xb @ w, yb).mean()
+    ref_loss, ref_grad = _loss_and_grads(fn, w, x, y, None)
+    got_loss, got_grad = _loss_and_grads(fn, w, x, y, chunk)
+    assert torch.allclose(got_loss.double(), ref_loss, rtol=1e-6, atol=0)
+    # NormMSE's eps does not scale with the chunk: about 1e-9 apart here.
+    assert torch.allclose(got_grad, ref_grad, rtol=1e-7, atol=1e-12)
+    with torch.no_grad():
+        assert torch.allclose(head_fit.chunked_loss(fn, x, y, chunk, backward=False).double(),
+                              ref_loss, rtol=1e-6, atol=0)
+
+
+def test_lbfgs_chunk_size_is_checked(tmp_path, caplog):
+    cfg = OmegaConf.merge(_cfg(tmp_path), OmegaConf.create(
+        {"train": {"out_proj_train": {"lbfgs_chunk_size": 16}}}))
+    model = SONN(cfg, d_model=4)
+    block = model.param.train.out_proj_train
+    model.loss_fn.scale = 2.0
+    assert head_fit.lbfgs_chunk_size(model, block) == 16
+    # Without a fitted scale NormMSE's denominator depends on the rows it sees.
+    model.loss_fn.scale = None
+    with caplog.at_level("WARNING", logger="torchsonn.training.head_fit"):
+        assert head_fit.lbfgs_chunk_size(model, block) is None
+    assert "ignoring lbfgs_chunk_size=16" in caplog.text
+    block.lbfgs_chunk_size = 0
+    with pytest.raises(ValueError, match="lbfgs_chunk_size must be >= 1"):
+        head_fit.lbfgs_chunk_size(model, block)
+    block.lbfgs_chunk_size = None
+    assert head_fit.lbfgs_chunk_size(model, block) is None
+
+
+def test_chunked_lbfgs_passes_match_one_shot(tmp_path):
+    """The LBFGS head fit and per-layer fine-tune end on the same weights
+    with and without chunks."""
+    import copy
+
+    lbfgs = {"optimizer": "lbfgs", "max_steps": 4, "lr": 0.5, "eval_interval": 1,
+             "early_stop_patience": 100, "lbfgs_max_iter": 3}
+    cfg = _headed_mc_cfg(tmp_path, out_proj_train=lbfgs)
+    model = SONN(cfg, d_model=4)
+    _, dl = _make_mc_dl()
+    trainer = Trainer(config=cfg)
+    trainer.train(model, dl, dl, dl, verbose=False)
+
+    runs = []
+    for chunk in (None, 5):
+        m = copy.deepcopy(model)
+        m.param.train.out_proj_train.lbfgs_chunk_size = chunk
+        layer = m.layers[-1]
+        torch.manual_seed(0)              # the temporary head's initialization
+        err = finetune.train_layer_finetune(m, layer, dl, dl, batch_callback=None,
+                                            run_dir=lambda: tmp_path)
+        trainer.train_out_proj(m, dl, dl)
+        survivors = [p.detach().clone() for nm in layer.neuron_models
+                     for name, p in nm.named_parameters() if name not in ("proj_weight", "proj_bias")]
+        runs.append((err, survivors, [p.detach().clone() for p in m.out_proj.parameters()]))
+    (err0, surv0, head0), (err1, surv1, head1) = runs
+    assert math.isclose(err0, err1, rel_tol=1e-4)
+    for a, b in zip(surv0 + head0, surv1 + head1):
+        assert torch.allclose(a, b, rtol=1e-3, atol=1e-5)

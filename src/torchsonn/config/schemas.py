@@ -86,6 +86,21 @@ class OutProjTrainConfig:
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 20
     lbfgs_line_search: str = "strong_wolfe"  # "" / None to disable
+    # LBFGS only, in the head fit and the per-layer fine-tune. null evaluates
+    # the full-batch closure in one shot. An int splits the train and dev rows
+    # into chunks of this many: each chunk's gradient is accumulated and the
+    # chunk losses are summed weighted by chunk size, which reproduces the
+    # full-batch loss and gradient while only one chunk's activations are
+    # alive. The objective is unchanged; only peak memory moves.
+    #
+    # Exact for the cross-entropy losses, which are plain means over rows.
+    # NormMSE is a mean too, but the fixed eps in its denominator does not
+    # scale with the chunk, so chunks differ from one shot by about
+    # eps / (chunk * scale), far below float32 resolution. A NormMSE without a
+    # fitted scale (a pass called outside Trainer.train, which fits it)
+    # recomputes its denominator from the rows it is handed, which chunking
+    # would change; chunking is skipped there, with a warning.
+    lbfgs_chunk_size: Optional[int] = None
 
     # End-to-end pass only (Trainer.train_finetune). The step (forward,
     # backward, adam / adamw update) is launch-bound on these models: several

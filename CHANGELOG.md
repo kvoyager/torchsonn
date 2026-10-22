@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added — chunked LBFGS loss in the head fit and the per-layer fine-tune
+
+`train.out_proj_train.lbfgs_chunk_size` evaluates the LBFGS full-batch loss
+in chunks of that many rows and sums their gradients, so only one chunk's
+activations are in memory. The loss and gradient are those of one shot, up
+to float rounding. The default, null, evaluates in one shot as before. A
+regression loss without a fitted target scale is not chunked, since its
+denominator depends on the rows it sees; a warning says so.
+
 ### Added — `adamw` for the head fit and the per-layer fine-tune
 
 `train.out_proj_train.optimizer` takes `adamw`, which applies the weight

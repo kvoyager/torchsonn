@@ -159,6 +159,7 @@ and the per-layer fine-tune. See
 | `train.out_proj_train.lbfgs_history_size` | int | 20 | `lbfgs` only: correction pairs kept. |
 | `train.out_proj_train.lbfgs_max_iter` | int | 20 | `lbfgs` only: inner iterations per step. |
 | `train.out_proj_train.lbfgs_line_search` | str | `strong_wolfe` | `lbfgs` only: the line search; empty for none. |
+| `train.out_proj_train.lbfgs_chunk_size` | int or null | null | `lbfgs` only: evaluate the full-batch loss in chunks of this many rows, summing their gradients, to bound the memory of the per-layer fine-tune on a large split. The loss and gradient are the same as in one shot; null evaluates in one shot. Ignored, with a warning, for a regression loss without a fitted target scale. |
 | `train.out_proj_train.cuda_graph` | bool | true | No effect here; used by the end-to-end pass. |
 | `train.out_proj_train.data_on_device` | str | `auto` | No effect here; used by the end-to-end pass. |
 
@@ -186,6 +187,7 @@ the optimizers differ and two keys only matter here.
 | `train.finetune_train.lbfgs_history_size` | int | 20 | No effect: the end-to-end pass does not use LBFGS. |
 | `train.finetune_train.lbfgs_max_iter` | int | 20 | No effect, as above. |
 | `train.finetune_train.lbfgs_line_search` | str | `strong_wolfe` | No effect, as above. |
+| `train.finetune_train.lbfgs_chunk_size` | int or null | null | No effect, as above. |
 | `train.finetune_train.cuda_graph` | bool | true | On a CUDA device with `adam` or `adamw`, capture the training step once as a CUDA graph and replay it; much faster for these small models. |
 | `train.finetune_train.data_on_device` | str | `auto` | With the CUDA graph: keep the training split on the device (`true`), stream it from the loader (`false`), or keep it when it fits in a quarter of the free memory (`auto`). |
 
