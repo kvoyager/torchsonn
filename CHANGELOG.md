@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added — Otto baselines
+
+`tutorials/otto/baselines.py` trains a one hidden layer MLP and XGBoost on
+the Otto tutorial's split, features and score, without class weights, over
+seeds 42 to 46. The MLP defaults are the tuned settings (149 `gelu` units,
+weight decay 0.5, dropout 0.2): mean test log loss 0.5146, accuracy 0.8022
+at 15,356 parameters. XGBoost: 0.4685 and 0.8225 at about 1.2M parameters; capped with
+`--max-params` to the MLP's size (depth 3, learning rate 0.7), 0.5485 and
+0.7916. `otto_classification.py`
+splits and scales the data in `split_and_scale`, which the baselines share;
+its results do not change.
+
 ### Added — post-hoc calibration of multi-class probabilities
 
 `train.calibration: temperature | vector` and `Trainer.train_calibration`

@@ -138,4 +138,51 @@ Each cell is log loss / accuracy. On seed 42 the test log loss drops from
 69%, and `Class_2` and `Class_3` taken for each other are 46% of the
 errors.
 
+## Baselines
+
+`tutorials/otto/baselines.py` trains two other models on the same data:
+the split drawn by the seed, the log1p and standardized features, no class
+weights and the same test score.
+
+```bash
+python tutorials/otto/baselines.py mlp
+python tutorials/otto/baselines.py xgboost
+```
+
+`mlp` is a network with one hidden layer, trained with AdamW and an early
+stop on the dev log loss. Its defaults are the tuned settings: 149 `gelu`
+units, weight decay 0.5 and dropout 0.2. `--hidden`, `--activation`,
+`--weight-decay` and `--dropout` change them. `xgboost` grows trees of
+depth 8 with learning rate 0.05 until the dev log loss stops improving; it
+needs `pip install xgboost`. `--max-params` caps its size: it keeps the
+best dev round among those whose trees hold at most that many parameters,
+and `--max-depth` and `--learning-rate` change the trees. Both run seeds 42 to 46 unless `--seeds` says
+otherwise, and log each seed and the mean. The seed draws the split and the
+model, so seed 42 of a baseline is scored on the same test rows as the
+SONN run with `train.seed=42`.
+
+Means over seeds 42 to 46, test log loss / accuracy:
+
+| Model | Parameters | Test |
+|---|---|---|
+| `otto_tuned.yaml` | 15,387 | 0.5270 / 0.7985 |
+| `otto.yaml` | 4,473 to 8,100 | 0.5945 / 0.7769 |
+| MLP, 149 `gelu` units, weight decay 0.5, dropout 0.2 | 15,356 | 0.5146 / 0.8022 |
+| MLP, 149 `gelu` units, no weight decay, no dropout | 15,356 | 0.5318 / 0.7974 |
+| MLP, 256 `silu` units, weight decay 1e-4, no dropout | 26,377 | 0.5273 / 0.7974 |
+| MLP, 2048 `sigmoid` units, weight decay 1e-4, no dropout | 210,953 | 0.5020 / 0.8115 |
+| XGBoost | 1.14M to 1.23M | 0.4685 / 0.8225 |
+| XGBoost, at most 15,356 parameters, depth 3, learning rate 0.7 | 14,916 to 15,249 | 0.5485 / 0.7916 |
+
+An MLP counts every weight and bias. XGBoost counts a feature and a
+threshold per split and a value per leaf, over the trees up to its best
+round. `otto.yaml` keeps one layer on seeds 42 to 44 and two on seeds 45
+and 46, hence its range. The capped XGBoost has the tuned MLP's size; its
+depth and learning rate are the ones with the lowest mean dev log loss on
+seeds 42 to 44 among depths 1 to 5 and learning rates 0.1 to 1.0:
+
+```bash
+python tutorials/otto/baselines.py xgboost --max-params 15356 --max-depth 3 --learning-rate 0.7
+```
+
 <small>Checked against TorchSONN 0.1.7.</small>

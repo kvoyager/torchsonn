@@ -209,6 +209,36 @@ def load_dataset():
     return X, y, feature_names
 
 
+def split_and_scale(X, y, feature_names, seed):
+    """Split 70/15/15, stratified by class, and scale the features.
+
+    The seed draws the split. Counts are heavy tailed, so each feature goes
+    through log1p and is then standardized with the training rows' mean and
+    standard deviation. Returns x_train, y_train, x_dev, y_dev, x_test, y_test.
+    """
+    X_train, X_rem, y_train, y_rem = train_test_split(
+        X, y, test_size=0.30, random_state=seed, stratify=y
+    )
+    X_dev, X_test, y_dev, y_test = train_test_split(
+        X_rem, y_rem, test_size=0.50, random_state=seed, stratify=y_rem
+    )
+    logger.info("train: %d   dev: %d   test: %d", len(X_train), len(X_dev), len(X_test))
+
+    x_train, y_train = train_preprocessing(X_train, y_train, feature_names)
+    x_dev,   y_dev   = train_preprocessing(X_dev,   y_dev,   feature_names)
+    x_test,  y_test  = train_preprocessing(X_test,  y_test,  feature_names)
+
+    x_train = np.log1p(x_train)
+    x_dev = np.log1p(x_dev)
+    x_test = np.log1p(x_test)
+
+    scaler = StandardScaler()
+    x_train = scaler.fit_transform(x_train)
+    x_dev   = scaler.transform(x_dev)
+    x_test  = scaler.transform(x_test)
+    return x_train, y_train, x_dev, y_dev, x_test, y_test
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -225,28 +255,8 @@ def main(argv: list[str] | None = None):
     logger.info("Config %r%s", config_name, f" with overrides {overrides}" if overrides else "")
     logger.info(OmegaConf.to_yaml(config))
 
-    # -- Split ---------------------------------------------------------------
-    X_train, X_rem, y_train, y_rem = train_test_split(
-        X, y, test_size=0.30, random_state=config.train.seed, stratify=y
-    )
-    X_dev, X_test, y_dev, y_test = train_test_split(
-        X_rem, y_rem, test_size=0.50, random_state=config.train.seed, stratify=y_rem
-    )
-    logger.info("train: %d   dev: %d   test: %d", len(X_train), len(X_dev), len(X_test))
-
-    # -- Preprocessing -------------------------------------------------------
-    x_train, y_train = train_preprocessing(X_train, y_train, feature_names)
-    x_dev,   y_dev   = train_preprocessing(X_dev,   y_dev,   feature_names)
-    x_test,  y_test  = train_preprocessing(X_test,  y_test,  feature_names)
-
-    x_train = np.log1p(x_train)
-    x_dev = np.log1p(x_dev)
-    x_test = np.log1p(x_test)
-
-    scaler = StandardScaler()
-    x_train = scaler.fit_transform(x_train)
-    x_dev   = scaler.transform(x_dev)
-    x_test  = scaler.transform(x_test)
+    # -- Split and preprocessing ----------------------------------------------
+    x_train, y_train, x_dev, y_dev, x_test, y_test = split_and_scale(X, y, feature_names, config.train.seed)
 
     bs = config.train.batch_size
     train_dl = DataLoader(SONNDataset(x_train, y_train), batch_size=bs, shuffle=True)
