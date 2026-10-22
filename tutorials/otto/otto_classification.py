@@ -10,8 +10,10 @@ otto.yaml the script continues the newest run folder there instead.
 
 Run from any directory:
     python tutorials/otto/otto_classification.py
+    python tutorials/otto/otto_classification.py --config-name otto_tuned
 """
 
+import argparse
 import sys
 import urllib.request
 from pathlib import Path
@@ -112,11 +114,16 @@ def load_dataset():
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--config-name", default="otto",
+                        help="YAML config in this folder, without the extension")
+    args = parser.parse_args()
+
     X, y, feature_names = load_dataset()
 
     # -- Config --------------------------------------------------------------
     with initialize_config_dir(version_base="1.3", config_dir=str(TUTORIAL_DIR)):
-        config = compose(config_name="otto")
+        config = compose(config_name=args.config_name)
     config.train.checkpoint_dir = str(CKPT_DIR)
     logger.info(OmegaConf.to_yaml(config))
 

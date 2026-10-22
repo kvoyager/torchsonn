@@ -13,6 +13,13 @@ python tutorials/otto/otto_classification.py
 
 The script reads `tutorials/otto/otto.yaml` with Hydra's compose API, so it
 takes no command-line overrides: change the YAML file to change a setting.
+`--config-name` picks another YAML file in the same folder; the one shipped
+with it is `otto_tuned.yaml` (see [A tuned configuration](#a-tuned-configuration)):
+
+```bash
+python tutorials/otto/otto_classification.py --config-name otto_tuned
+```
+
 It does not plot, so it runs on a base install. A notebook version,
 `tutorials/otto/otto.ipynb`, draws the confusion matrix and the layer
 errors inline with matplotlib.
@@ -80,5 +87,35 @@ The script also prints a per-class report and the test confusion matrix.
 The small classes are the hard ones: the smallest is found 43% of the time,
 at a precision of 55%. The largest share of the errors, about 43%, is
 `Class_2` and `Class_3` taken for each other.
+
+## A tuned configuration
+
+`tutorials/otto/otto_tuned.yaml` starts from `otto.yaml` and changes five
+settings, each chosen on seeds 42 to 44 by the mean dev log loss:
+
+| Setting | `otto.yaml` | `otto_tuned.yaml` | Why |
+|---|---|---|---|
+| `train.max_layer_count` | 3 | 1 | at the same parameter count, deeper layers fit worse than one wide layer |
+| `model.nbest_neurons`, `model.num_out_neurons` | 93, 93 | 512, 512 | more survivors, all read by the head |
+| `train.out_proj_train.weight_decay` | 2.5e-5 | 2e-3 | a stronger L2 penalty in the head fit and the per-layer fine-tune |
+| `model.use_neuron_proj` | true | false | one class map shared by all neurons in place of one per candidate, 37% fewer parameters (see [Classification](../concepts/classification.md#a-projection-per-candidate)) |
+
+The model has 15,387 parameters. One run on an RTX 5080 GPU took about
+2.5 minutes. Over five seeds, set with `train.seed`:
+
+| Seed | Dev | Test |
+|---|---|---|
+| 42 | 0.5145 / 0.8045 | 0.5216 / 0.8019 |
+| 43 | 0.5047 / 0.8075 | 0.5192 / 0.8012 |
+| 44 | 0.5278 / 0.7975 | 0.5299 / 0.7977 |
+| 45 | 0.5267 / 0.7991 | 0.5390 / 0.7916 |
+| 46 | 0.5313 / 0.7967 | 0.5255 / 0.8003 |
+| Mean | 0.5210 / 0.8011 | 0.5270 / 0.7985 |
+
+Each cell is log loss / accuracy. On seed 42 the test log loss drops from
+0.5852 for `otto.yaml` to 0.5216, and the accuracy rises from 0.7825 to
+0.8019. The smallest class is found 54% of the time, at a precision of
+69%, and `Class_2` and `Class_3` taken for each other are 46% of the
+errors.
 
 <small>Checked against TorchSONN 0.1.7.</small>

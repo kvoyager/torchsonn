@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added — a tuned Otto configuration, `otto_tuned.yaml`
+
+`tutorials/otto/otto_tuned.yaml` composes `otto.yaml` and changes five
+settings: one layer, 512 survivors all read by the head, L2 2e-3 in the head
+fit and the per-layer fine-tune, and one class map shared by all neurons
+(`model.use_neuron_proj: false`). It has 15,387 parameters and a mean test
+log loss of 0.5270 at accuracy 0.7985 over seeds 42 to 46, against 0.5962
+and 0.7779 for `otto.yaml` over seeds 42 to 44. `otto_classification.py`
+takes `--config-name` to run it; it still takes no key overrides.
+
 ### Changed — `polyquad` neurons and the LBFGS fits round differently
 
 `PolyQuadratic` builds its design row in `get_args`, `[1, x_i, x_i·x_j]`,

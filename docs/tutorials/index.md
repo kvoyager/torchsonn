@@ -50,7 +50,8 @@ first run and cache it: California housing through scikit-learn, the
 others into a `data` folder next to the script.
 
 Every tutorial except Otto reads its configuration with Hydra, so any key
-can be overridden on the command line (see
+can be overridden on the command line (Otto's script takes only
+`--config-name`; see
 [Configuration](../guides/configuration.md#command-line-overrides)):
 
 ```bash

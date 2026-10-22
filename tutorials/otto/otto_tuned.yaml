@@ -1,0 +1,27 @@
+# Otto Group Product Classification, tuned: otto.yaml with one wide layer.
+# Run: python tutorials/otto/otto_classification.py --config-name otto_tuned
+#
+# Five overrides against otto.yaml, found one setting at a time on seeds
+# 42 to 44 by mean dev log loss:
+#   * one layer: deeper layers fit worse at the same parameter budget;
+#   * 512 survivors, all read by the head;
+#   * L2 2e-3 in the head fit and the per-layer fine-tune;
+#   * one class map shared by all neurons, 37% fewer parameters.
+# Results, one layer of 512 survivors, 15,387 parameters; test log loss /
+# accuracy per seed (train.seed): 42 0.5216 / 0.8019, 43 0.5192 / 0.8012,
+# 44 0.5299 / 0.7977, 45 0.5390 / 0.7916, 46 0.5255 / 0.8003;
+# mean 0.5270 / 0.7985 (dev 0.5210 / 0.8011). otto.yaml on seeds 42 to 44:
+# 0.5962 / 0.7779.
+defaults:
+  - otto
+  - _self_
+
+model:
+  nbest_neurons: 512
+  num_out_neurons: 512
+  use_neuron_proj: false
+
+train:
+  max_layer_count: 1
+  out_proj_train:
+    weight_decay: 2.0e-3
