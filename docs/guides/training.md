@@ -71,7 +71,9 @@ adds a [validation split](../concepts/splits-and-stopping.md#the-validation-spli
 `binary`, and a row of log-probabilities per sample for `multi-class`.
 `use_compile=True` compiles the forward pass with `torch.compile` first,
 which pays off when `infer` runs over many batches. To predict a tensor of
-features without a loader, call `model.infer(x)`.
+features without a loader, call `model.infer(x)`; `model.infer_logits(x)`
+returns the same prediction before the activation, the raw logits for
+`multi-class`.
 [Heads and fine-tuning](../concepts/heads-and-finetune.md) explains the
 head and the end-to-end pass.
 

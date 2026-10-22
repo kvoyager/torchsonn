@@ -8,7 +8,6 @@ from typing import Callable
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -37,7 +36,7 @@ class FinetuneStep:
     steps are real steps on the first batch and are counted.
     """
 
-    def __init__(self, model: SONN, opt: torch.optim.Optimizer, loss_fn: nn.Module,
+    def __init__(self, model: SONN, opt: torch.optim.Optimizer, loss_fn: Callable,
                  pred_fn: Callable, use_graph: bool) -> None:
         self.model, self.opt, self.loss_fn, self.pred_fn = model, opt, loss_fn, pred_fn
         self.use_graph = bool(use_graph)
@@ -206,15 +205,22 @@ def finetune_batches(train_dl: DataLoader, device: torch.device, mode: str, batc
 def finetune_prediction(model: SONN, x: torch.Tensor) -> torch.Tensor:
     """Model output shaped to match the target, for the end-to-end pass.
 
-    `SONN.infer` collapses every path to one prediction per sample: the
-    head's output where there is one, otherwise the best-error neuron's
-    column of the last layer (the value a headless regressor / binary
-    model is scored on). The scalar losses therefore compare (N,) against
-    (N,) directly, and the column indexing inside `infer` keeps the
-    gradient path to that neuron and, through it, to every layer feeding
-    it.
+    `SONN.infer_logits` collapses every path to one prediction per sample:
+    the head's raw output where there is one, otherwise the best-error
+    neuron's column of the last layer (the value a headless regressor /
+    binary model is scored on). The scalar losses therefore compare (N,)
+    against (N,) directly, and the column indexing inside `infer_logits`
+    keeps the gradient path to that neuron and, through it, to every layer
+    feeding it. A regressor head's (N, 1) output is squeezed to (N,).
+
+    The raw output rather than `infer`'s activated form, because the caller
+    pairs it with `SONN.head_loss`, which applies the activation the
+    configured loss expects.
     """
-    return model.infer(x)
+    out = model.infer_logits(x)
+    if model.param.model.type == "regressor" and out.dim() > 1 and out.shape[-1] == 1:
+        return out.squeeze(-1)
+    return out
 
 
 def train_layer_finetune(
@@ -359,13 +365,9 @@ def train_layer_finetune(
             z = layer.layer_norm(z)
         if head_dropout > 0.0 and head.training:
             z = F.dropout(z, p=head_dropout, training=True)
-        proj = head(z)
-        # Regression: return raw scalar (N,); the configured loss_fn
-        # (NormMSE) compares against the (N,) target directly. Multi-
-        # class: log_softmax + NLL via the model's NLLLoss head.
-        if is_regressor:
-            return proj.squeeze(-1)
-        return F.log_softmax(proj, dim=-1)
+        # The raw head output; `model.head_loss` applies the matching
+        # activation (none for regression, log_softmax for multi-class).
+        return head(z)
 
     def _dev_loss() -> float:
         """Mean dev loss of the layer and the temporary head."""
@@ -376,7 +378,7 @@ def train_layer_finetune(
         with torch.no_grad():
             for vf, vt in dev_feat_dl:
                 vf = vf.to(device=device); vt = vt.to(device=device)
-                val_loss += model.loss_fn(fwd(vf), vt).mean().item()
+                val_loss += model.head_loss(fwd(vf), vt).item()
         return val_loss / len(dev_feat_dl)
 
     verbose = model.param.train.verbose
@@ -405,8 +407,7 @@ def train_layer_finetune(
             features = features.to(device=device)
             targets  = targets.to(device=device)
 
-            log_probs = fwd(features)
-            loss = model.loss_fn(log_probs, targets).mean()
+            loss = model.head_loss(fwd(features), targets)
 
             opt.zero_grad()
             loss.backward()
@@ -528,11 +529,9 @@ def _train_layer_finetune_lbfgs(
     train_X, train_y = _cat_split(train_feat_dl)
     dev_X,   dev_y   = _cat_split(dev_feat_dl)
 
-    # Mirror the Adam/SGD path's regressor branch. `head` was already
-    # built with the correct out_dim (1 for regressor, num_classes for
-    # multi-class) by `train_layer_finetune` before dispatching here.
-    is_regressor = model.param.model.type == "regressor"
-
+    # `head` was already built with the correct out_dim (1 for regressor,
+    # num_classes for multi-class) by `train_layer_finetune` before
+    # dispatching here.
     def fwd(features: torch.Tensor) -> torch.Tensor:
         """Same fine-tune forward as the Adam/SGD path — kept inline so
         the closure stays self-contained."""
@@ -540,16 +539,13 @@ def _train_layer_finetune_lbfgs(
         z = torch.clamp(z, -clamp, clamp)
         if layer.layer_norm is not None and not model.concat_inputs:
             z = layer.layer_norm(z)
-        proj = head(z)
-        if is_regressor:
-            return proj.squeeze(-1)
-        return F.log_softmax(proj, dim=-1)
+        return head(z)
 
     wd = float(cfg.weight_decay)
     chunk = head_fit.lbfgs_chunk_size(model, cfg)
 
     def _loss(features: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        return model.loss_fn(fwd(features), targets).mean()
+        return model.head_loss(fwd(features), targets)
 
     def closure():
         opt.zero_grad()

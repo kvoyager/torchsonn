@@ -1471,7 +1471,7 @@ def test_finetune_step_eager_path_trains_and_counts(tmp_path):
     cfg, model, trainer, dl = _trained_head_model(tmp_path)
     model.to("cpu")
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    stepper = FinetuneStep(model, opt, model.loss_fn, finetune_prediction, use_graph=False)
+    stepper = FinetuneStep(model, opt, model.head_loss, finetune_prediction, use_graph=False)
     x = torch.cat([b[0] for b in dl]); y = torch.cat([b[1] for b in dl])
     first = None
     for _ in range(30):
@@ -1528,8 +1528,8 @@ def test_finetune_graph_matches_eager_and_handles_the_tail(tmp_path):
     lr_g = torch.tensor(1e-3, device="cuda")
     opt_g = torch.optim.AdamW(model.parameters(), lr=lr_g, capturable=True)
     opt_e = torch.optim.AdamW(twin.parameters(), lr=1e-3)
-    g = FinetuneStep(model, opt_g, model.loss_fn, finetune_prediction, use_graph=True)
-    e = FinetuneStep(twin, opt_e, twin.loss_fn, finetune_prediction, use_graph=False)
+    g = FinetuneStep(model, opt_g, model.head_loss, finetune_prediction, use_graph=True)
+    e = FinetuneStep(twin, opt_e, twin.head_loss, finetune_prediction, use_graph=False)
     # the graph path runs 1 rehearsal + 3 warm-up steps on the first batch: do the same eagerly
     for _ in range(4):
         e.step(*batches[0])
@@ -1593,7 +1593,7 @@ def test_finetune_graph_falls_back_when_the_capture_fails(tmp_path, caplog):
         return out
 
     opt = torch.optim.AdamW(model.parameters(), lr=torch.tensor(1e-3, device="cuda"), capturable=True)
-    stepper = FinetuneStep(model, opt, model.loss_fn, syncing_pred, use_graph=True)
+    stepper = FinetuneStep(model, opt, model.head_loss, syncing_pred, use_graph=True)
     x = torch.randn(16, 4, device="cuda"); y = torch.randn(16, device="cuda")
     for _ in range(5):
         stepper.step(x, y)
@@ -1617,7 +1617,7 @@ def test_headless_model_captures(tmp_path):
         for nm in layer.neuron_models:
             nm.to("cuda")
     opt = torch.optim.AdamW(model.parameters(), lr=torch.tensor(1e-3, device="cuda"), capturable=True)
-    stepper = FinetuneStep(model, opt, model.loss_fn, finetune_prediction, use_graph=True)
+    stepper = FinetuneStep(model, opt, model.head_loss, finetune_prediction, use_graph=True)
     x = torch.randn(16, 4, device="cuda"); y = torch.randn(16, device="cuda")
     for _ in range(5):
         stepper.step(x, y)

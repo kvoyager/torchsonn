@@ -997,6 +997,66 @@ class SONN(SONNModule):
             return F.dropout(x, p=p, training=True)
         return x
 
+    def head_loss(self, out: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Mean loss of a head's raw (pre-activation) output against `targets`.
+
+        `out` is (N,) or (N, 1) for a regressor or a binary model and
+        (N, num_classes) logits for a multi-class model. Kept in one place so
+        the head fit, the per-layer fine-tune and the end-to-end pass all
+        apply the same activation and target convention: the configured loss
+        on the raw output (NormMSE, BCE with logits), or log_softmax and NLL
+        for multi-class.
+        """
+        if not isinstance(self.loss_fn, nn.NLLLoss):
+            if out.dim() > 1 and out.shape[-1] == 1:
+                out = out.squeeze(-1)
+            return self.loss_fn(out, targets).mean()
+        return self.loss_fn(F.log_softmax(out, dim=-1), targets).mean()
+
+    def infer_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the network and its head, returning the head's raw output.
+
+        (N, num_classes) logits for a multi-class model, (N, 1) for a model
+        with an `out_proj` and one output, and (N,) for a headless regressor
+        or binary model: the best-error neuron's column of the last layer.
+        `infer` applies the activation on top; the training passes feed this
+        raw output to `head_loss`.
+        """
+        out = self(x.to(device=self.device))
+        if self.out_proj is not None:
+            k = self.out_proj.in_features
+            cols = self._head_columns(self.layers[-1], k)
+            selected = out.index_select(1, cols)
+            # pad with zeros if fewer neurons available than out_proj expects
+            if cols.numel() < k:
+                pad = torch.zeros(selected.shape[0], k - cols.numel(), device=selected.device, dtype=selected.dtype)
+                selected = torch.cat([selected, pad], dim=-1)
+            return self.out_proj(self._dropout_head_input(selected))
+
+        if not isinstance(self.loss_fn, nn.NLLLoss):
+            # Headless regressor / binary: `out` is still the full nbest
+            # ensemble, shape (N, num_neurons). The model's prediction is
+            # the best-error neuron's output — the column the layer error
+            # was scored on and the one `prune()` keeps — so return it as
+            # (N,), matching the raw-target shape.
+            return out[:, self._best_column_cached(self.layers[-1])]
+
+        if self.param.model.use_neuron_proj:
+            # Collect per-neuron proj_weight / proj_bias from the final layer
+            # and combine: out (batch, nbest) @ W (nbest, C) + b (C,). Every
+            # column counts, so `prune` keeps them all (`_readout_width`).
+            W = torch.cat([nm.proj_weight for nm in self.layers[-1].neuron_models], dim=0)
+            b = torch.cat([nm.proj_bias   for nm in self.layers[-1].neuron_models], dim=0).mean(dim=0)
+            return out @ W + b
+
+        # shared_proj / soft_binner: use single best-neuron scalar output.
+        # After train_layer neurons are sorted by module idx (not error), so
+        # column 0 is not always the best. After a full prune it collapses to 0.
+        scalar = out[:, self._best_neuron_column(self.layers[-1])]
+        if self.soft_binner:
+            return self.soft_binner(scalar)
+        return self.shared_proj(scalar.unsqueeze(dim=-1))
+
     def infer(self, x: torch.Tensor) -> torch.Tensor:
         """
         Predict with the trained model.
@@ -1005,7 +1065,8 @@ class SONN(SONNModule):
         prediction off the last layer: through the output head
         (`out_proj`) if the model has one, otherwise from the best-error
         neuron (regression and binary), the per-neuron projections or the
-        shared projection / soft binner (multi-class).
+        shared projection / soft binner (multi-class). `infer_logits` gives
+        the same output before the activation.
 
         Parameters
         ----------
@@ -1018,48 +1079,15 @@ class SONN(SONNModule):
             (B,) predictions for regression and binary models (logits for
             binary), or (B, C) log-probabilities for multi-class models.
         """
-        out = self(x.to(device=self.device))
+        out = self.infer_logits(x)
+        if self.param.model.type == "multi-class":
+            return F.log_softmax(out, dim=-1)
         if self.out_proj is not None:
-            k = self.out_proj.in_features
-            cols = self._head_columns(self.layers[-1], k)
-            selected = out.index_select(1, cols)
-            # pad with zeros if fewer neurons available than out_proj expects
-            if cols.numel() < k:
-                pad = torch.zeros(selected.shape[0], k - cols.numel(), device=selected.device, dtype=selected.dtype)
-                selected = torch.cat([selected, pad], dim=-1)
-            proj_out = self.out_proj(self._dropout_head_input(selected))
-            if self.param.model.type == "multi-class":
-                return F.log_softmax(proj_out, dim=-1)
-            # Regression / binary: out_proj is Linear(num_out, 1) — squeeze
-            # the trailing singleton so the result is (N,) matching the
-            # raw-target shape that downstream report() / metrics expect.
-            return proj_out.squeeze(-1)
-
-        if not isinstance(self.loss_fn, nn.NLLLoss):
-            # Headless regressor / binary: `out` is still the full nbest
-            # ensemble, shape (N, num_neurons). The model's prediction is
-            # the best-error neuron's output — the column the layer error
-            # was scored on and the one `prune()` keeps — so return it as
-            # (N,), matching the raw-target shape like the out_proj path.
-            return out[:, self._best_column_cached(self.layers[-1])]
-
-        if self.param.model.use_neuron_proj:
-            # Collect per-neuron proj_weight / proj_bias from the final layer
-            # and combine: out (batch, nbest) @ W (nbest, C) + b (C,). Every
-            # column counts, so `prune` keeps them all (`_readout_width`).
-            W = torch.cat([nm.proj_weight for nm in self.layers[-1].neuron_models], dim=0)
-            b = torch.cat([nm.proj_bias   for nm in self.layers[-1].neuron_models], dim=0).mean(dim=0)
-            return F.log_softmax(out @ W + b, dim=-1)
-
-        # shared_proj / soft_binner: use single best-neuron scalar output.
-        # After train_layer neurons are sorted by module idx (not error), so
-        # column 0 is not always the best. After a full prune it collapses to 0.
-        scalar = out[:, self._best_neuron_column(self.layers[-1])]
-        if self.soft_binner:
-            logits = self.soft_binner(scalar)
-        else:
-            logits = self.shared_proj(scalar.unsqueeze(dim=-1))
-        return F.log_softmax(logits, dim=-1)
+            # Regression: out_proj is Linear(num_out, 1); squeeze the trailing
+            # singleton so the result is (N,) matching the raw-target shape
+            # that downstream report() / metrics expect.
+            return out.squeeze(-1)
+        return out
 
 
 

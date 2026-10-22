@@ -1246,31 +1246,19 @@ class Trainer:
             threshold=cfg.early_stop_min_delta,
         )
 
-        # Column indices are fixed — err_values don't change after train_layer.
-        k = model.out_proj.in_features
-        cols = model._best_neuron_columns(model.layers[-1], k)
-        cols_t = torch.tensor(cols, dtype=torch.long, device=device)
+        select_inputs = head_fit.out_proj_input_selector(model, device)
 
         # Precompute frozen SONN features once; the loop only trains the linear head.
         train_feat_dl = evaluation.precompute_dl(model, train_dl, device, skip_last_layer=False, batch_callback=self.batch_callback)
         dev_feat_dl   = evaluation.precompute_dl(model, dev_dl,   device, skip_last_layer=False, batch_callback=self.batch_callback)
 
-        # Branch on model.type once so the inner loop's loss step doesn't.
-        # Multi-class uses log_softmax + NLL; regression uses the raw scalar
-        # output + whatever loss_fn was configured (NormMSE for the regressor
-        # SONN ctor path).
-        is_regressor = model.param.model.type == "regressor"
         head_dropout = float(getattr(cfg, "dropout", 0.0))
 
         def _head_loss(features_batch: torch.Tensor, targets_batch: torch.Tensor) -> torch.Tensor:
-            sel = head_fit.select_out_proj_inputs(features_batch, cols_t, k)
+            sel = select_inputs(features_batch)
             if head_dropout > 0.0 and model.out_proj.training:
                 sel = F.dropout(sel, p=head_dropout, training=True)
-            proj = model.out_proj(sel)
-            if is_regressor:
-                return model.loss_fn(proj.squeeze(-1), targets_batch).mean()
-            log_probs = F.log_softmax(proj, dim=-1)
-            return model.loss_fn(log_probs, targets_batch).mean()
+            return model.head_loss(model.out_proj(sel), targets_batch)
 
         def _dev_loss() -> float:
             """Mean dev loss of the head, on the precomputed features."""
@@ -1460,7 +1448,7 @@ class Trainer:
         if mode not in ("auto", "true", "false"):
             raise ValueError(f"finetune_train.data_on_device must be 'auto', 'true' or 'false', got {mode!r}")
         batches, source_desc = finetune.finetune_batches(train_dl, device, mode if use_graph else "false", self.batch_callback)
-        stepper = finetune.FinetuneStep(model, opt, model.loss_fn, finetune.finetune_prediction, use_graph)
+        stepper = finetune.FinetuneStep(model, opt, model.head_loss, finetune.finetune_prediction, use_graph)
         logger.info("end-to-end pass: %s; batches %s; batch size %d",
                     "CUDA graph (captured on the first batch)" if use_graph else "eager steps",
                     source_desc, int(train_dl.batch_size))
@@ -1472,10 +1460,10 @@ class Trainer:
             with torch.no_grad():
                 for vbatch in stop_dl:
                     vx, vt = self.batch_callback(vbatch) if self.batch_callback else vbatch
-                    val_loss += model.loss_fn(
+                    val_loss += model.head_loss(
                         finetune.finetune_prediction(model, vx.to(device=device)),
                         vt.to(device=device),
-                    ).mean().item()
+                    ).item()
             return val_loss / len(stop_dl)
 
         best_weights = keep_best.record(list(model.parameters()), cfg,

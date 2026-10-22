@@ -5,6 +5,9 @@ it defaults to 2 and BasePolynomNeuron.forward reshapes the gathered inputs into
 pairs (the general `.view(..., -1, self.dim)` reshape resolves to width 2 here).
 The distinction between classes is purely the polynomial-feature set produced by
 get_args — the constant term, linear, covariance, square, cube monomials.
+
+Each `get_args` works on the last axis, the pair, so it takes inputs with
+any number of leading axes, (batch, num_neurons, dim) included.
 """
 import torch
 
@@ -20,7 +23,7 @@ class LinearPolynomNeuron(BasePolynomNeuron):
         x_args = torch.cat([
             torch.ones((*x.shape[:-1], 1), device=x.device, dtype=x.dtype),
             x],
-            dim=2)
+            dim=-1)
         return x_args
 
     def get_short_name(self) -> str:
@@ -41,8 +44,8 @@ class LinearCovPolynomNeuron(BasePolynomNeuron):
         x_args = torch.cat([
             torch.ones((*x.shape[:-1], 1), device=x.device, dtype=x.dtype),
             x,
-            torch.prod(x, dim=2, keepdim=True)],
-            dim=2)
+            torch.prod(x, dim=-1, keepdim=True)],
+            dim=-1)
         return x_args
 
     def get_short_name(self) -> str:
@@ -64,8 +67,8 @@ class QuadraticPolynomNeuron(BasePolynomNeuron):
             torch.ones((*x.shape[:-1], 1), device=x.device, dtype=x.dtype),
             x,
             x * x,
-            torch.prod(x, dim=2, keepdim=True)],
-            dim=2)
+            torch.prod(x, dim=-1, keepdim=True)],
+            dim=-1)
         return x_args
 
     def get_short_name(self) -> str:
@@ -92,8 +95,8 @@ class CubicPolynomNeuron(BasePolynomNeuron):
             x,
             x2,
             x2 * x,
-            torch.prod(x, dim=2, keepdim=True)],
-            dim=2)
+            torch.prod(x, dim=-1, keepdim=True)],
+            dim=-1)
         return x_args
 
     def get_short_name(self) -> str:

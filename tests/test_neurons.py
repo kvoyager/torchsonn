@@ -1312,3 +1312,15 @@ class TestMLPNeuron:
         assert b.squash_n_sigma == 1.0 and b.hidden == 4
         assert RefFunctionType.get("mlp") is RefFunctionType.rfMLP
         assert RefFunctionType.get_name(RefFunctionType.rfMLP) == "MLP"
+
+
+@pytest.mark.parametrize("cls", [LinearPolynomNeuron, LinearCovPolynomNeuron,
+                                 QuadraticPolynomNeuron, CubicPolynomNeuron])
+def test_pair_get_args_works_on_the_last_axis(cls):
+    """A pair neuron's design row is built on the last axis, so an extra
+    leading axis gives the same rows as each of its slices."""
+    n = cls(3, 3, None, 0, 0)
+    x = torch.randn(2, 5, 3, 2)
+    args = n.get_args(x)
+    for i in range(x.shape[1]):
+        assert torch.equal(args[:, i], n.get_args(x[:, i]))

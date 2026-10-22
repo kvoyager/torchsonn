@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Callable
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -40,9 +39,7 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
         line_search_fn=line_search,
     )
 
-    k = model.out_proj.in_features
-    cols = model._best_neuron_columns(model.layers[-1], k)
-    cols_t = torch.tensor(cols, dtype=torch.long, device=device)
+    select_inputs = out_proj_input_selector(model, device)
 
     # Precompute frozen SONN features once; LBFGS then reads them every closure.
     train_feat_dl = evaluation.precompute_dl(model, train_dl, device, skip_last_layer=False, batch_callback=batch_callback)
@@ -58,8 +55,8 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
 
     train_X, train_y = _cat_split(train_feat_dl)
     dev_X,   dev_y   = _cat_split(dev_feat_dl)
-    train_X_sel = select_out_proj_inputs(train_X, cols_t, k)
-    dev_X_sel   = select_out_proj_inputs(dev_X,   cols_t, k)
+    train_X_sel = select_inputs(train_X)
+    dev_X_sel   = select_inputs(dev_X)
     del train_X, dev_X
 
     best_weights = keep_best.record(list(model.out_proj.parameters()), cfg,
@@ -73,15 +70,9 @@ def train_out_proj_lbfgs(model: SONN, train_dl: DataLoader, dev_dl: DataLoader, 
     best_val_loss = float("inf")
     evals_no_improve = 0
     wd = float(cfg.weight_decay)
-    # Multi-class uses log_softmax + NLL; regression uses the raw scalar
-    # output + whatever loss_fn was configured (NormMSE).
-    is_regressor = model.param.model.type == "regressor"
 
     def _head_loss(x_sel: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        proj = model.out_proj(x_sel)
-        if is_regressor:
-            return model.loss_fn(proj.squeeze(-1), y).mean()
-        return model.loss_fn(F.log_softmax(proj, dim=-1), y).mean()
+        return model.head_loss(model.out_proj(x_sel), y)
 
     chunk = lbfgs_chunk_size(model, cfg)
 
@@ -211,6 +202,22 @@ def chunked_loss(
             part = part.detach()
         total = total + part
     return total
+
+
+def out_proj_input_selector(
+    model: SONN, device: torch.device | str,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """Column selector that turns last-layer features into out_proj's input:
+    the top-k neuron columns by error, zero-padded to k
+    (`select_out_proj_inputs`).
+
+    The column choice is fixed once here, since the errors do not change
+    after train_layer, so the minibatch and the LBFGS head fits share it.
+    """
+    k = model.out_proj.in_features
+    cols_t = torch.tensor(model._best_neuron_columns(model.layers[-1], k),
+                          dtype=torch.long, device=device)
+    return lambda features: select_out_proj_inputs(features, cols_t, k)
 
 
 def select_out_proj_inputs(

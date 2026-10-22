@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added — `SONN.infer_logits` and `SONN.head_loss`
+
+`SONN.infer_logits(x)` returns the model's prediction before the
+activation: the logits for `multi-class`, the same values as `infer`
+otherwise. `SONN.head_loss(out, targets)` is the mean training loss of such
+a raw output. The head fit, the per-layer fine-tune and the end-to-end pass
+all compute their loss with it, so they share one convention; results do
+not change. The pair neurons' design rows are built on the last axis, and
+the network drawing names the head's class.
+
 ### Added — chunked LBFGS loss in the head fit and the per-layer fine-tune
 
 `train.out_proj_train.lbfgs_chunk_size` evaluates the LBFGS full-batch loss

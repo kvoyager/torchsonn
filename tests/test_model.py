@@ -804,6 +804,37 @@ def test_infer_multiclass_neuron_proj():
     assert out.shape == (3, 3)
 
 
+@pytest.mark.parametrize("model_over", [
+    {"type": "regressor", "num_classes": 1, "soft_binner": False},
+    {"type": "regressor", "num_classes": 1, "soft_binner": False,
+     "use_output_projection": True, "num_out_neurons": 2},
+    {"type": "binary", "num_classes": 2, "soft_binner": False},
+    {"type": "multi-class", "num_classes": 3, "soft_binner": True},
+    {"type": "multi-class", "num_classes": 3, "soft_binner": False},
+    {"type": "multi-class", "num_classes": 3, "soft_binner": False, "use_neuron_proj": True},
+    {"type": "multi-class", "num_classes": 3, "soft_binner": False,
+     "use_output_projection": True, "num_out_neurons": 2},
+], ids=["regressor", "regressor_head", "binary", "soft_binner", "shared_proj",
+        "neuron_proj", "multiclass_head"])
+def test_infer_is_the_activation_of_infer_logits(model_over):
+    """`infer` applies the activation to `infer_logits`, and `head_loss` on
+    the raw output is the model's loss on what `infer` returns."""
+    cfg = _make_cfg(model={"nbest_neurons": 3, "ref_functions": ["linear_cov"], **model_over})
+    m = SONN(cfg, d_model=4)
+    _single_layer_with_best_neuron(m, best=1)
+    x = torch.randn(6, 4)
+    logits = m.infer_logits(x)
+    out = m.infer(x)
+    if model_over["type"] == "multi-class":
+        assert logits.shape == (6, 3)
+        assert torch.equal(out, torch.log_softmax(logits, dim=-1))
+        y = torch.tensor([0, 1, 2, 2, 1, 0])
+    else:
+        assert torch.equal(out, logits.squeeze(-1))
+        y = torch.rand(6) if model_over["type"] == "binary" else torch.randn(6)
+    assert torch.equal(m.head_loss(logits, y), m.loss_fn(out, y).mean())
+
+
 def test_forward_with_shortcut_and_layer_norm():
     cfg = _make_cfg(
         model={

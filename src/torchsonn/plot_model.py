@@ -238,7 +238,9 @@ class PlotModel:
             return
 
         cols = self.model._best_neuron_columns(last_layer, out_proj.in_features)
-        label = f"out_proj\nLinear({out_proj.in_features}, {out_proj.out_features})"
+        # The head's own class name, so a head that is not a plain Linear is
+        # labeled as what it is.
+        label = f"out_proj\n{type(out_proj).__name__}({out_proj.in_features}, {out_proj.out_features})"
         if len(cols) < out_proj.in_features:
             # SONN.infer zero-pads when the layer is narrower than the head.
             label += f"\n({out_proj.in_features - len(cols)} inputs zero-padded)"
