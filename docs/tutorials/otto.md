@@ -46,6 +46,11 @@ the head fit: every parameter trains at once, with
 are those of the model it ends with. `finetune_prune_first=true` prunes the
 model before the pass, so it trains only the neurons the head reads.
 
+With `train.calibration=temperature` or `train.calibration=vector` the
+script fits a [calibration](../concepts/classification.md#calibration) of
+the probabilities on dev after the last training pass, and the results are
+those of the calibrated model. It is off as shipped.
+
 ## Data
 
 On its first run the script downloads the dataset from OpenML (12.4 MB)

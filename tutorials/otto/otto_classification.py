@@ -292,6 +292,14 @@ def main(argv: list[str] | None = None):
         logger.info("End-to-end pass over all parameters")
         trainer.train_finetune(model, train_dl, dev_dl)
 
+    # -- Optional calibration --------------------------------------------------
+    # With train.calibration set, fits a temperature or a per-class affine of
+    # the log-probabilities on dev; it applies inside infer and is saved to
+    # model_last.ckpt, so the results below are the calibrated ones.
+    if config.train.get("calibration"):
+        logger.info("Fitting %s calibration on dev", config.train.calibration)
+        trainer.train_calibration(model, dev_dl)
+
     logger.info("--- Results ---")
     CLASS_NAMES = [f"Class_{i + 1}" for i in range(config.model.num_classes)]
 

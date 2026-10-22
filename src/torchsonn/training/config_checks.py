@@ -23,6 +23,7 @@ def validate_config(config: Any) -> None:
     _validate_checkpoint_dir(config)
     _validate_joint_selection(config)
     _validate_layer_keep(config)
+    _validate_calibration(config)
 
 
 def checkpoint_root(config: Any) -> Path:
@@ -142,6 +143,23 @@ def _validate_layer_keep(config: Any) -> None:
     keep = str(getattr(train_cfg, "layer_keep", "best"))
     if keep not in ("best", "all"):
         raise ValueError(f"train.layer_keep={keep!r}; expected 'best' or 'all'.")
+
+
+def _validate_calibration(config: Any) -> None:
+    """Reject a `train.calibration` other than null, 'temperature' or 'vector',
+    or one set on a model that is not multi-class."""
+    train_cfg = getattr(config, "train", None) if config is not None else None
+    mode = getattr(train_cfg, "calibration", None) if train_cfg is not None else None
+    if mode is None:
+        return
+    if str(mode) not in ("temperature", "vector"):
+        raise ValueError(f"train.calibration={str(mode)!r}; expected 'temperature', 'vector' or null.")
+    model_type = getattr(getattr(config, "model", None), "type", None)
+    if model_type is not None and str(model_type) != "multi-class":
+        raise ValueError(
+            f"train.calibration={str(mode)!r} calibrates class probabilities; it needs a "
+            f"multi-class model, not model.type={str(model_type)!r}."
+        )
 
 
 def _validate_optimizer_name(config: Any) -> None:

@@ -147,11 +147,47 @@ and worsens the unweighted log loss and the accuracy. When the score is the
 unweighted log loss or the accuracy, train without weights; the
 [Otto tutorial](../tutorials/otto.md) does.
 
+## Calibration
+
+The training passes minimize the training loss, which differs from the
+unweighted log loss a multi-class model is usually scored on: by class
+weights, and by the regularization and early stops of the passes. The
+predicted probabilities can therefore come out over- or underconfident.
+`Trainer.train_calibration` corrects them after training, without changing
+a weight. It reads the dev split's log-probabilities and fits, by the dev
+log loss, one of two maps set by `train.calibration`:
+
+* `temperature` divides the log-probabilities by one fitted number T
+  before the softmax. Above 1 it softens the probabilities, below 1 it
+  sharpens them; the predicted classes do not change.
+* `vector` fits a scale and a shift per class. It fits closer and can move
+  a few predictions to another class.
+
+```yaml
+train:
+  calibration: temperature
+```
+
+```python
+trainer.train_out_proj(model, train_dl, dev_dl)
+trainer.train_calibration(model, dev_dl)
+log_probs, targets = trainer.infer(model, test_dl)   # calibrated
+```
+
+The fit is stored in the model, applies inside `model.infer` and is saved
+with the model to the run folder's `model_last.ckpt`. Call it after the last
+training pass: a pass after it trains on the uncalibrated output, so the
+fit no longer matches. A new call refits from scratch. A fit that would
+raise the dev log loss is not kept, and a warning says so. Since dev
+both early-stops the passes and fits the calibration, measure the result on
+a test split.
+
 ## The knobs
 
 `model.type`, `model.num_classes`, `model.soft_binner`,
 `model.soft_binner_scale`, `model.use_neuron_proj`,
-`train.shared_proj_lr_multiplier`, `model.use_output_projection`. See
+`train.shared_proj_lr_multiplier`, `model.use_output_projection`,
+`train.calibration`. See
 [Configuration keys](../reference/config.md#multi-class-heads).
 
 <small>Checked against TorchSONN 0.1.7.</small>

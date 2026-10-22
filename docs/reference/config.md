@@ -191,6 +191,16 @@ the optimizers differ and two keys only matter here.
 | `train.finetune_train.cuda_graph` | bool | true | On a CUDA device with `adam` or `adamw`, capture the training step once as a CUDA graph and replay it; much faster for these small models. |
 | `train.finetune_train.data_on_device` | str | `auto` | With the CUDA graph: keep the training split on the device (`true`), stream it from the loader (`false`), or keep it when it fits in a quarter of the free memory (`auto`). |
 
+## Calibration
+
+`Trainer.train_calibration` fits a calibration of a multi-class model's
+probabilities on the dev split. See
+[Calibration](../concepts/classification.md#calibration).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `train.calibration` | str or null | null | `temperature` (one scale of the log-probabilities; the predicted classes do not change), `vector` (a scale and a shift per class) or null (off). Multi-class only; any other value, or a value on another model type, raises `ValueError` when the `Trainer` is built. |
+
 ## Joint selection
 
 With `model.selection_mode: joint`, `Trainer.train` grows the network

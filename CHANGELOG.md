@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added — post-hoc calibration of multi-class probabilities
+
+`train.calibration: temperature | vector` and `Trainer.train_calibration`
+fit a temperature, or a scale and a shift per class, of a multi-class
+model's log-probabilities on the dev split. The fit is stored in three
+buffers of the model, `calib_enabled`, `calib_scale` and `calib_bias`,
+applies inside `SONN.infer` and is saved with the checkpoint. Off (null) by
+default, so predictions do not change; a checkpoint saved without the
+buffers loads as uncalibrated. The Otto script fits it when the key is set.
+
 ### Added — `SONN.infer_logits` and `SONN.head_loss`
 
 `SONN.infer_logits(x)` returns the model's prediction before the

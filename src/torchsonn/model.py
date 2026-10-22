@@ -320,6 +320,19 @@ class SONN(SONNModule):
         if not hasattr(self, "out_proj"):
             self.out_proj = None
 
+        # Post-hoc calibration of the multi-class probabilities: once
+        # Trainer.train_calibration has fitted it on the dev split
+        # (calib_enabled set to 1), infer returns
+        # log_softmax(calib_scale * logp + calib_bias). Buffers with identity
+        # defaults, so an uncalibrated model predicts exactly as before, the
+        # fit is saved with the checkpoint, and a checkpoint without them
+        # loads as uncalibrated (load_state_dict runs with strict=False).
+        if self.param.model.type == "multi-class":
+            k = self.param.model.num_classes
+            self.register_buffer("calib_enabled", torch.zeros((), dtype=torch.long))
+            self.register_buffer("calib_scale", torch.ones(k))
+            self.register_buffer("calib_bias", torch.zeros(k))
+
         self.params_metadata_names.extend([
             "layer_err",
             "layer_names",
@@ -1066,7 +1079,9 @@ class SONN(SONNModule):
         (`out_proj`) if the model has one, otherwise from the best-error
         neuron (regression and binary), the per-neuron projections or the
         shared projection / soft binner (multi-class). `infer_logits` gives
-        the same output before the activation.
+        the same output before the activation. A multi-class model
+        calibrated by `Trainer.train_calibration` applies its calibration to
+        the log-probabilities.
 
         Parameters
         ----------
@@ -1081,7 +1096,12 @@ class SONN(SONNModule):
         """
         out = self.infer_logits(x)
         if self.param.model.type == "multi-class":
-            return F.log_softmax(out, dim=-1)
+            logp = F.log_softmax(out, dim=-1)
+            if int(self.calib_enabled) == 1:
+                # The dev-fitted affine over the log-probabilities;
+                # 'temperature' is its uniform scale, zero shift case.
+                logp = F.log_softmax(logp * self.calib_scale + self.calib_bias, dim=-1)
+            return logp
         if self.out_proj is not None:
             # Regression: out_proj is Linear(num_out, 1); squeeze the trailing
             # singleton so the result is (N,) matching the raw-target shape

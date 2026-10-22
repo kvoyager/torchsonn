@@ -1793,6 +1793,101 @@ class Trainer:
         model.eval()
         return [evaluation.mean_loss(model, dl, model.infer, batch_callback=self.batch_callback) for dl in dls]
 
+    def train_calibration(self, model: SONN, dev_dl: DataLoader) -> None:
+        """Fit `train.calibration` on the dev split and store it on the model.
+
+        The training passes optimize the training loss (class weighted when
+        class weights are set) while a multi-class model is scored on the
+        plain log loss, so its probabilities can come out over- or
+        underconfident. This pass fixes that without changing a weight: it
+        collects the dev split's log-probabilities and fits 'temperature'
+        (one scalar, argmax unchanged) or 'vector' (a scale and a shift per
+        class) with LBFGS against the dev log loss. The result lands in the
+        model's calib_* buffers, applies inside `SONN.infer` and is saved
+        to the run folder's `model_last.ckpt`.
+
+        The buffers are reset to identity before the dev pass, so a refit
+        replaces an earlier calibration instead of composing with it. A fit
+        that ends worse than identity on dev is not kept. With
+        `train.calibration` null the call does nothing.
+        """
+        mode = model.param.train.calibration
+        if mode is None:
+            return
+        if mode not in ("temperature", "vector"):
+            raise ValueError(
+                f"train.calibration must be 'temperature', 'vector' or null, got {mode!r}"
+            )
+        if model.param.model.type != "multi-class":
+            raise ValueError("train.calibration only applies to multi-class models")
+
+        device = model.device
+        with torch.no_grad():
+            model.calib_enabled.zero_()
+            model.calib_scale.fill_(1.0)
+            model.calib_bias.zero_()
+
+        logps, targets = [], []
+        model.eval()
+        with torch.no_grad():
+            for batch in dev_dl:
+                vx, vt = self.batch_callback(batch) if self.batch_callback else batch
+                logps.append(model.infer(vx.to(device=device)).float().cpu())
+                targets.append(vt.cpu())
+        logp = torch.cat(logps)
+        y = torch.cat(targets)
+
+        # cross_entropy(z, y) is NLL(log_softmax(z)); on the already
+        # normalized `logp` it is the log loss infer's output is scored on.
+        before = F.cross_entropy(logp, y).item()
+
+        if mode == "temperature":
+            log_t = torch.zeros(1, requires_grad=True)
+            opt = torch.optim.LBFGS([log_t], lr=0.1, max_iter=100)
+
+            def closure():
+                opt.zero_grad()
+                loss = F.cross_entropy(logp / log_t.exp(), y)
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            t = log_t.exp().item()
+            scale = torch.full_like(logp[0], 1.0 / t)
+            bias = torch.zeros_like(logp[0])
+            detail = f" (T = {t:.3f})"
+        else:
+            a = torch.ones(logp.shape[1], requires_grad=True)
+            b = torch.zeros(logp.shape[1], requires_grad=True)
+            opt = torch.optim.LBFGS([a, b], lr=0.1, max_iter=200)
+
+            def closure():
+                opt.zero_grad()
+                loss = F.cross_entropy(logp * a + b, y)
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            scale, bias = a.detach(), b.detach()
+            detail = ""
+
+        after = F.cross_entropy(logp * scale + bias, y).item()
+        if after > before:
+            logger.warning(
+                "calibration (%s) ended worse than identity on dev "
+                "(%.4f -> %.4f); keeping the model uncalibrated", mode, before, after,
+            )
+        else:
+            with torch.no_grad():
+                model.calib_scale.copy_(scale)
+                model.calib_bias.copy_(bias)
+                model.calib_enabled.fill_(1)
+            logger.info(f"calibration ({mode}): dev log loss {before:.4f} -> {after:.4f}{detail}")
+
+        # Saved as train_out_proj saves the head: otherwise a later
+        # load_model_checkpoint would bring back the model as it was before.
+        self.save_model_checkpoint(model)
+
     def infer(
         self,
         model: SONN,

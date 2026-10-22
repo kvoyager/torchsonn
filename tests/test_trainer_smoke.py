@@ -2198,3 +2198,105 @@ def test_chunked_lbfgs_passes_match_one_shot(tmp_path):
     assert math.isclose(err0, err1, rel_tol=1e-4)
     for a, b in zip(surv0 + head0, surv1 + head1):
         assert torch.allclose(a, b, rtol=1e-3, atol=1e-5)
+
+
+# --- train.calibration ----------------------------------------------------------
+
+def _mc_dev_nll(model, dl) -> float:
+    """NLL of the (possibly calibrated) log-probabilities infer returns."""
+    model.eval()
+    logps, ys = [], []
+    with torch.no_grad():
+        for x, t in dl:
+            logps.append(model.infer(x))
+            ys.append(t)
+    return torch.nn.functional.nll_loss(torch.cat(logps), torch.cat(ys)).item()
+
+
+def _calibration_setup(tmp_path, mode):
+    cfg = _headed_mc_cfg(tmp_path, max_layer_count=1, calibration=mode,
+                         out_proj_train={"max_steps": 3, "optimizer": "adam", "eval_interval": 1,
+                                         "early_stop_patience": 5})
+    model = SONN(cfg, d_model=4)
+    x, dl = _make_mc_dl()
+    trainer = Trainer(config=cfg)
+    trained = trainer.train(model, dl, dl, dl, verbose=False)
+    trainer.train_out_proj(trained, dl, dl)
+    return cfg, trainer, trained, x, dl
+
+
+def test_train_calibration_vector_improves_dev_nll_and_persists(tmp_path):
+    """The fitted affine does not worsen the dev NLL, turns calib_enabled on,
+    survives a checkpoint round trip and a prune, and a refit replaces it."""
+    cfg, trainer, trained, x, dl = _calibration_setup(tmp_path, "vector")
+    xs = torch.from_numpy(x[:5])
+
+    before = _mc_dev_nll(trained, dl)
+    trainer.train_calibration(trained, dl)
+    assert int(trained.calib_enabled) == 1
+    after = _mc_dev_nll(trained, dl)
+    assert after <= before + 1e-7, (before, after)
+    ref = trained.infer(xs)
+
+    restored = SONN(cfg, d_model=4)
+    Trainer(config=cfg).load_model_checkpoint(restored)
+    assert int(restored.calib_enabled) == 1
+    assert torch.allclose(ref, restored.infer(xs), atol=1e-5)
+
+    # The fit starts from identity, so a second one lands on the same values.
+    scale = trained.calib_scale.clone()
+    trainer.train_calibration(trained, dl)
+    assert torch.allclose(trained.calib_scale, scale, atol=1e-6)
+
+    trainer.prune(trained)
+    assert torch.allclose(trained.infer(xs), ref, atol=1e-5)
+
+
+def test_train_calibration_temperature_keeps_argmax(tmp_path):
+    """Temperature is the uniform scale, zero shift case: the predicted
+    classes do not change."""
+    cfg, trainer, trained, x, dl = _calibration_setup(tmp_path, "temperature")
+
+    pred_before = trained.infer(torch.from_numpy(x[:16])).argmax(-1)
+    trainer.train_calibration(trained, dl)
+    assert int(trained.calib_enabled) == 1
+    pred_after = trained.infer(torch.from_numpy(x[:16])).argmax(-1)
+    assert torch.equal(pred_before, pred_after)
+    s = trained.calib_scale
+    assert torch.allclose(s, s[0].expand_as(s))
+    assert torch.equal(trained.calib_bias, torch.zeros_like(trained.calib_bias))
+
+
+def test_train_calibration_off_by_default(tmp_path):
+    """With train.calibration unset the pass does nothing and the buffers
+    keep their identity defaults."""
+    cfg, trainer, trained, x, dl = _calibration_setup(tmp_path, None)
+    ref = trained.infer(torch.from_numpy(x[:5]))
+    trainer.train_calibration(trained, dl)
+    assert int(trained.calib_enabled) == 0
+    assert torch.equal(trained.calib_scale, torch.ones_like(trained.calib_scale))
+    assert torch.equal(trained.calib_bias, torch.zeros_like(trained.calib_bias))
+    assert torch.equal(trained.infer(torch.from_numpy(x[:5])), ref)
+
+
+def test_checkpoint_without_calibration_loads_uncalibrated(tmp_path):
+    cfg, trainer, trained, x, dl = _calibration_setup(tmp_path, "vector")
+    trainer.train_calibration(trained, dl)
+    path = trainer.run_dir / "model_last.ckpt"
+    saved = torch.load(path, weights_only=False)
+    for key in ("calib_enabled", "calib_scale", "calib_bias"):
+        del saved["model"][key]
+    torch.save(saved, path)
+    restored = SONN(cfg, d_model=4)
+    Trainer(config=cfg).load_model_checkpoint(restored)
+    assert int(restored.calib_enabled) == 0
+
+
+@pytest.mark.parametrize("cfg_fn, mode, match", [
+    ("mc", "platt", "expected 'temperature', 'vector' or null"),
+    ("reg", "vector", "needs a multi-class model"),
+])
+def test_calibration_setting_is_checked(tmp_path, cfg_fn, mode, match):
+    build = _mc_cfg if cfg_fn == "mc" else _cfg
+    with pytest.raises(ValueError, match=match):
+        Trainer(config=build(tmp_path, calibration=mode))

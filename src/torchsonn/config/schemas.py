@@ -650,6 +650,20 @@ class TrainConfig:
     # differently. Same meaning per optimizer as in `OutProjTrainConfig`.
     layer_finetune_weight_decay: Optional[float] = None
 
+    # Post-hoc probability calibration of a multi-class model, fitted on the
+    # dev split by `Trainer.train_calibration` after the training passes.
+    # The passes optimize the training loss, class weighted when class
+    # weights are set, while the model is scored on the plain log loss, so
+    # its probabilities can come out over- or underconfident. Values:
+    #   null          - off (default); infer is exactly as without the field
+    #   'temperature' - softmax(logp / T), one scalar; the argmax, and so the
+    #                   accuracy, does not change
+    #   'vector'      - softmax(a * logp + b), a scale and a shift per class;
+    #                   the stronger fit, which can move the argmax slightly
+    # The fit lands in the model's calib_* buffers, applies inside
+    # SONN.infer and is saved with the checkpoint.
+    calibration: Optional[str] = None
+
     device: str = "cpu"
     batch_size: int = 1
     steps: int = 1000
