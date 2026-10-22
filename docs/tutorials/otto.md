@@ -11,13 +11,15 @@ candidate, the per-layer fine-tune and an output head, on a GPU.
 python tutorials/otto/otto_classification.py
 ```
 
-The script reads `tutorials/otto/otto.yaml` with Hydra's compose API, so it
-takes no command-line overrides: change the YAML file to change a setting.
-`--config-name` picks another YAML file in the same folder; the one shipped
-with it is `otto_tuned.yaml` (see [A tuned configuration](#a-tuned-configuration)):
+The script reads `tutorials/otto/otto.yaml` with Hydra's compose API and
+takes the same command-line arguments as the other tutorials: `key=value`
+overrides any setting, and `--config-name` picks another YAML file in the
+same folder. The one shipped with it is `otto_tuned.yaml` (see
+[A tuned configuration](#a-tuned-configuration)):
 
 ```bash
 python tutorials/otto/otto_classification.py --config-name otto_tuned
+python tutorials/otto/otto_classification.py train.seed=43
 ```
 
 It does not plot, so it runs on a base install. A notebook version,
@@ -26,10 +28,23 @@ errors inline with matplotlib.
 
 Each run writes its checkpoints and its `train.log` to a folder of its
 own, `tutorials/otto/checkpoints/YYYY-MM-DD-HH-MM-SS/`, and the script
-prints it at the end. With `resume: true` in `otto.yaml`, the script
+logs it at the end. The log holds the trainer's records, the final line of
+every progress bar and the results. With `resume: true`, the script
 continues the newest run folder there that holds a step checkpoint (see
 [Training](../guides/training.md#resuming)), so move away run folders of
 another configuration first. `resume` is off as shipped.
+
+After the results, the script prunes the model to the neurons the head
+reads (see [Pruning](../concepts/heads-and-finetune.md#pruning)) and
+logs the pruned size with the largest change of a test probability, which
+stays at zero up to rounding.
+
+With `finetune_end_to_end=true` the script runs the
+[end-to-end pass](../concepts/heads-and-finetune.md#the-end-to-end-pass) after
+the head fit: every parameter trains at once, with
+`train.finetune_train`, starting from the best checkpoint, and the results
+are those of the model it ends with. `finetune_prune_first=true` prunes the
+model before the pass, so it trains only the neurons the head reads.
 
 ## Data
 

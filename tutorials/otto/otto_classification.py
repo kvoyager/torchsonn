@@ -5,15 +5,22 @@ stratified 70/15/15 split, trains a SONN multi-class classifier followed by
 an out_proj fine-tuning pass, and reports multi-class log loss on all splits.
 
 Each run writes its checkpoints and its train.log to a time-stamped folder,
-tutorials/otto/checkpoints/YYYY-MM-DD-HH-MM-SS/. With `resume: true` in
-otto.yaml the script continues the newest run folder there instead.
+tutorials/otto/checkpoints/YYYY-MM-DD-HH-MM-SS/. With `resume: true` in the
+config the script continues the newest run folder there instead. The log
+holds the trainer's records, each progress bar's final line and the results.
 
 Run from any directory:
     python tutorials/otto/otto_classification.py
     python tutorials/otto/otto_classification.py --config-name otto_tuned
+    python tutorials/otto/otto_classification.py train.seed=43 train.max_layer_count=1
+
+`--config-name` (or `-cn`) picks another YAML file in this folder, and
+`key=value` arguments override any schema field, as with `@hydra.main`. The
+script reads its config with Hydra's compose API, so it parses those
+arguments itself.
 """
 
-import argparse
+import logging
 import sys
 import urllib.request
 from pathlib import Path
@@ -24,6 +31,7 @@ from sklearn.metrics import classification_report, confusion_matrix, log_loss
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
+from tqdm import tqdm as _TqdmBase
 
 # ---------------------------------------------------------------------------
 # Path bootstrap — makes `torchsonn` importable regardless of cwd
@@ -37,11 +45,15 @@ if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
 import torchsonn.config  # noqa: F401 — registers SONNConfig with Hydra ConfigStore
+import torchsonn.trainer as _trainer_module
+import torchsonn.training.evaluation as _evaluation_module
+import torchsonn.training.finetune as _finetune_module
+import torchsonn.training.head_fit as _head_fit_module
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from torchsonn.data.dataset import SONNDataset
 from torchsonn.data.preprocessing import train_preprocessing
-from torchsonn.logger import setup_logger
+from torchsonn.logger import RunLogHandler, setup_logger
 from torchsonn.model import SONN
 from torchsonn.trainer import Trainer
 
@@ -55,8 +67,92 @@ CKPT_DIR = TUTORIAL_DIR / "checkpoints"
 DATA_DIR.mkdir(exist_ok=True)
 CKPT_DIR.mkdir(exist_ok=True)
 
-# Console only: each run's log is the train.log in its run folder.
-logger = setup_logger()
+# Console handler; each run's log is the train.log in its run folder.
+setup_logger()
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Progress bars into the run log
+# ---------------------------------------------------------------------------
+# The trainer draws its progress bars on the console only, so their final
+# state (100%, timings, the loss postfix) would never reach train.log. The
+# bars below also write their final line to the run log when they close,
+# verbatim, between the trainer's records.
+def _log_bar_line(line: str) -> None:
+    """Append one finished progress bar line to the open run log.
+
+    Written under the handler's lock, so it cannot interleave with a log
+    record. Does nothing while no run log is open.
+    """
+    fh = next((h for h in logging.getLogger().handlers if isinstance(h, RunLogHandler)), None)
+    if fh is None or not line:
+        return
+    fh.acquire()
+    try:
+        fh.stream.write(line + "\n")
+        fh.flush()
+    finally:
+        fh.release()
+
+
+class _LoggingTqdm(_TqdmBase):
+    """tqdm that also writes its final line to the run log on close().
+
+    `format_meter(**format_dict)` is the line tqdm draws on the console, so
+    the log shows the bar as it was last seen. Disabled bars log nothing.
+    """
+
+    def close(self) -> None:
+        if not self.disable:
+            try:
+                _log_bar_line(self.format_meter(**self.format_dict))
+            except Exception:
+                # Never let the log mirror break a training run.
+                pass
+        super().close()
+
+
+# The trainer's modules each did `from tqdm import tqdm`; rebinding that name
+# makes their bars _LoggingTqdm.
+for _module in (_trainer_module, _evaluation_module, _finetune_module, _head_fit_module):
+    _module.tqdm = _LoggingTqdm
+
+
+# ---------------------------------------------------------------------------
+# Command line
+# ---------------------------------------------------------------------------
+USAGE = "otto_classification.py [--config-name NAME] [key=value ...]"
+
+
+def parse_args(argv: list[str]) -> tuple[str, list[str]]:
+    """Split the arguments into a config name and a list of Hydra overrides.
+
+    Accepts the spellings `@hydra.main` does: `--config-name X`,
+    `--config-name=X`, `-cn X` and `-cn=X`. An argument with `=` in it, or
+    one starting with `+` or `~`, is an override and goes to `compose` as it
+    is. A trailing `.yaml` on the name is dropped.
+    """
+    name, overrides, i = "otto", [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("--config-name", "-cn"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{arg} needs a value. Usage: {USAGE}")
+            name, i = argv[i + 1], i + 2
+            continue
+        if arg.startswith(("--config-name=", "-cn=")):
+            name = arg.split("=", 1)[1]
+        elif "=" in arg or arg.startswith(("+", "~")):
+            overrides.append(arg)
+        else:
+            raise SystemExit(f"unknown argument {arg!r}. Usage: {USAGE}")
+        i += 1
+    for ext in (".yaml", ".yml"):
+        if name.endswith(ext):
+            name = name[: -len(ext)]
+    return name, overrides
+
 
 # ---------------------------------------------------------------------------
 # Download & parse dataset
@@ -66,6 +162,8 @@ CACHE_FILE = DATA_DIR / "otto_dataset.arff"
 
 
 def _progress(block_num, block_size, total_size):
+    # Console only: the line is redrawn with \r, which a log file would keep
+    # as one record per chunk.
     if total_size > 0:
         pct = min(100, block_num * block_size * 100 // total_size)
         print(f"\rDownloading... {pct}%", end="", flush=True)
@@ -73,11 +171,12 @@ def _progress(block_num, block_size, total_size):
 
 def load_dataset():
     if not CACHE_FILE.exists():
-        print(f"Downloading from {DATASET_URL}")
+        logger.info("Downloading from %s", DATASET_URL)
         urllib.request.urlretrieve(DATASET_URL, CACHE_FILE, reporthook=_progress)
-        print(f"\nSaved to {CACHE_FILE} ({CACHE_FILE.stat().st_size / 1e6:.1f} MB)")
+        print()  # end the \r progress line before the next record
+        logger.info("Saved to %s (%.1f MB)", CACHE_FILE, CACHE_FILE.stat().st_size / 1e6)
     else:
-        print(f"Using cached file: {CACHE_FILE} ({CACHE_FILE.stat().st_size / 1e6:.1f} MB)")
+        logger.info("Using cached file: %s (%.1f MB)", CACHE_FILE, CACHE_FILE.stat().st_size / 1e6)
 
     with open(CACHE_FILE) as f:
         lines = f.readlines()
@@ -106,25 +205,24 @@ def load_dataset():
     y = np.array(labels, dtype=np.int64)
     feature_names = attr_names[1:-1]
 
-    print(f"X: {X.shape}   classes: {sorted(set(labels))}")
+    logger.info("X: %s   classes: %s", X.shape, sorted(set(labels)))
     return X, y, feature_names
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config-name", default="otto",
-                        help="YAML config in this folder, without the extension")
-    args = parser.parse_args()
-
+def main(argv: list[str] | None = None):
+    config_name, overrides = parse_args(sys.argv[1:] if argv is None else argv)
     X, y, feature_names = load_dataset()
 
     # -- Config --------------------------------------------------------------
     with initialize_config_dir(version_base="1.3", config_dir=str(TUTORIAL_DIR)):
-        config = compose(config_name=args.config_name)
+        config = compose(config_name=config_name, overrides=overrides)
+    if config.get("finetune_drop_head", False):
+        raise SystemExit("finetune_drop_head is not supported by this script: the end-to-end pass keeps the head.")
     config.train.checkpoint_dir = str(CKPT_DIR)
+    logger.info("Config %r%s", config_name, f" with overrides {overrides}" if overrides else "")
     logger.info(OmegaConf.to_yaml(config))
 
     # -- Split ---------------------------------------------------------------
@@ -134,7 +232,7 @@ def main():
     X_dev, X_test, y_dev, y_test = train_test_split(
         X_rem, y_rem, test_size=0.50, random_state=config.train.seed, stratify=y_rem
     )
-    print(f"train: {len(X_train)}   dev: {len(X_dev)}   test: {len(X_test)}")
+    logger.info("train: %d   dev: %d   test: %d", len(X_train), len(X_dev), len(X_test))
 
     # -- Preprocessing -------------------------------------------------------
     x_train, y_train = train_preprocessing(X_train, y_train, feature_names)
@@ -167,7 +265,7 @@ def main():
     Trainer.set_seed(config.train.seed)
     model = SONN(config, d_model=x_train.shape[1], feature_names=feature_names, preprocessing=preprocessing)
     model = model.to(config.train.device)
-    print(model)
+    logger.info("Model:\n%s", model)
 
     # -- Train SONN layers ---------------------------------------------------
     trainer = Trainer(config, feature_names=feature_names)
@@ -175,13 +273,26 @@ def main():
 
     # -- Train out_proj ------------------------------------------------------
     if model.out_proj is not None:
-        print("\nTraining out_proj...")
+        logger.info("Training out_proj...")
         trainer.train_out_proj(model, train_dl, dev_dl)
 
-    # -- Load best checkpoint & evaluate -------------------------------------
+    # -- Load best checkpoint ------------------------------------------------
     trainer.load_model_checkpoint(model, config.train.device)
 
-    print("\n--- Results ---")
+    # -- Optional end-to-end pass ----------------------------------------------
+    # Every pass so far fits one part of the network with the rest frozen;
+    # this one trains every parameter at once, the head included, with
+    # train.finetune_train. It starts from the best checkpointed weights and
+    # saves the model it ends with as the run's model_last.ckpt.
+    if config.get("finetune_end_to_end", False):
+        if config.get("finetune_prune_first", False):
+            trainer.prune(model)
+            logger.info("Pruned to the read path before the end-to-end pass: %d layers, %d neurons",
+                        len(model.layers), sum(len(layer) for layer in model.layers))
+        logger.info("End-to-end pass over all parameters")
+        trainer.train_finetune(model, train_dl, dev_dl)
+
+    logger.info("--- Results ---")
     CLASS_NAMES = [f"Class_{i + 1}" for i in range(config.model.num_classes)]
 
     def evaluate(dl, label):
@@ -190,26 +301,37 @@ def main():
         true_np = tgt.cpu().numpy()
         ll  = log_loss(true_np, proba)
         acc = (proba.argmax(axis=1) == true_np).mean()
-        print(f"  {label:<8}  log_loss = {ll:.4f}   accuracy = {acc:.4f}")
+        logger.info("  %-8s  log_loss = %.4f   accuracy = %.4f", label, ll, acc)
         return proba, true_np
 
-    train_proba, train_true = evaluate(train_dl, "Train")
-    dev_proba,   dev_true   = evaluate(dev_dl,   "Dev")
-    test_proba,  test_true  = evaluate(test_dl,  "Test")
+    evaluate(train_dl, "Train")
+    evaluate(dev_dl,   "Dev")
+    test_proba, test_true = evaluate(test_dl, "Test")
+    logger.info("Parameters: %s", f"{sum(p.numel() for p in model.parameters()):,}")
 
-    print("\n--- Test classification report ---")
     test_pred = test_proba.argmax(axis=1)
-    print(classification_report(test_true, test_pred, target_names=CLASS_NAMES))
+    logger.info("--- Test classification report ---\n%s",
+                classification_report(test_true, test_pred, target_names=CLASS_NAMES))
 
-    print("--- Confusion matrix (test) ---")
     cm = confusion_matrix(test_true, test_pred)
     col_w = max(len(n) for n in CLASS_NAMES) + 1
-    header = " " * col_w + "".join(f"{n:>{col_w}}" for n in CLASS_NAMES)
-    print(header)
+    rows = [" " * col_w + "".join(f"{n:>{col_w}}" for n in CLASS_NAMES)]
     for i, row in enumerate(cm):
-        print(f"{CLASS_NAMES[i]:<{col_w}}" + "".join(f"{v:>{col_w}}" for v in row))
+        rows.append(f"{CLASS_NAMES[i]:<{col_w}}" + "".join(f"{v:>{col_w}}" for v in row))
+    logger.info("--- Confusion matrix (test) ---\n%s", "\n".join(rows))
 
-    print(f"\nRun folder: {trainer.run_dir}")
+    # -- Prune ---------------------------------------------------------------
+    # Keep only the neurons that reach the head. Pruning drops neurons nothing
+    # reads, so the predictions must not move.
+    trainer.prune(model)
+    pruned_out, _ = trainer.infer(model, test_dl, verbose=False)
+    moved = np.abs(torch.exp(pruned_out).cpu().numpy() - test_proba).max()
+    logger.info("Pruned to the read path: %s neurons per layer, %s parameters; "
+                "max test probability change %.2e",
+                [len(layer) for layer in model.layers],
+                f"{sum(p.numel() for p in model.parameters()):,}", moved)
+
+    logger.info("Run folder: %s", trainer.run_dir)
 
 
 if __name__ == "__main__":

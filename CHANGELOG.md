@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed — the Otto script takes overrides and runs the end-to-end pass
+
+`otto_classification.py` takes the arguments `@hydra.main` takes:
+`--config-name` (or `-cn`) and `key=value` overrides of any setting. With
+`finetune_end_to_end=true` it runs the end-to-end pass after the head fit,
+pruned first with `finetune_prune_first=true`; `finetune_drop_head` is
+refused. The results, the classification report and the confusion matrix
+are logged, so `train.log` holds them, along with the final line of every
+progress bar. After the results the script prunes the model to the neurons
+the head reads and logs the largest change of a test probability.
+
 ### Fixed — resuming a run partway through a layer
 
 A run resumed partway through a layer now selects the same survivors with
@@ -33,7 +44,7 @@ fit and the per-layer fine-tune, and one class map shared by all neurons
 (`model.use_neuron_proj: false`). It has 15,387 parameters and a mean test
 log loss of 0.5270 at accuracy 0.7985 over seeds 42 to 46, against 0.5962
 and 0.7779 for `otto.yaml` over seeds 42 to 44. `otto_classification.py`
-takes `--config-name` to run it; it still takes no key overrides.
+takes `--config-name` to run it.
 
 ### Changed — `polyquad` neurons and the LBFGS fits round differently
 
