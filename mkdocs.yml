@@ -155,3 +155,4 @@ nav:
       - Concrete: tutorials/concrete.md
       - CCPP: tutorials/ccpp.md
       - Otto: tutorials/otto.md
+      - "Otto: against an MLP and XGBoost": tutorials/otto-comparison.md

@@ -5,7 +5,10 @@ count features, on the Otto Group Product Classification dataset. The
 score is the multi-class log loss, the metric of the Kaggle competition
 the dataset comes from. The tutorial is the largest of the five: a
 5-input quadratic family, 93 survivors per layer, a projection per
-candidate, the per-layer fine-tune and an output head, on a GPU.
+candidate, the per-layer fine-tune and an output head, on a GPU. How the tuned
+configuration was found, its calibration and its comparison with MLPs and
+XGBoost are on the page
+[Otto: against an MLP and XGBoost](otto-comparison.md).
 
 ```bash
 python tutorials/otto/otto_classification.py
@@ -140,7 +143,9 @@ errors.
 
 ## Baselines
 
-`tutorials/otto/baselines.py` trains two other models on the same data:
+`tutorials/otto/baselines.py` trains two other models on the same data
+(compared seed by seed in
+[Otto: against an MLP and XGBoost](otto-comparison.md#against-an-mlp-and-xgboost-same-data)):
 the split drawn by the seed, the log1p and standardized features, no class
 weights and the same test score.
 
