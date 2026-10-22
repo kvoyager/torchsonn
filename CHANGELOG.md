@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed — class weights survive a reload
+
+The loss's class weights are saved with the model, but a checkpoint loaded
+into a model built without them dropped them, and later passes trained on an
+unweighted loss. `SONN.restore_from_checkpoint_metadata` now puts them back.
+
 ### Added — a tuned Otto configuration, `otto_tuned.yaml`
 
 `tutorials/otto/otto_tuned.yaml` composes `otto.yaml` and changes five

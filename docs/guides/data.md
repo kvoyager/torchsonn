@@ -117,6 +117,10 @@ trainer = Trainer(config, class_weights=torch.tensor([1.0, 4.0, 2.0]))
 For `multi-class`, the tensor has one weight per class. For `binary`, it
 has one element, the weight of the positive class.
 
+The weights are saved with the model. Loading a checkpoint into a model or
+trainer built without class weights restores them, so later passes on the
+reloaded model train on the same weighted loss.
+
 ## Loaders for the end-to-end pass
 
 On a CUDA device the end-to-end pass copies each batch into a fixed buffer

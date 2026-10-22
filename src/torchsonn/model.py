@@ -342,12 +342,32 @@ class SONN(SONNModule):
         self.layer_names = [layer.__class__.__name__ for layer in self.layers]
         return super().state_dict(*args, **kwargs)
 
+    def _restore_class_weights(self, checkpoint_data: dict[str, Any]) -> None:
+        """Put the checkpoint's class weights back on the loss before `load_state_dict` runs.
+
+        The weights are a buffer of `loss_fn`, `weight` for NLL and
+        `pos_weight` for the binary BCE, so a checkpoint carries them. A model
+        built without class weights holds that buffer as None, and
+        `load_state_dict` skips None buffers: the saved entry becomes an
+        unexpected key that `strict=False` drops, and the reloaded model would
+        train every later pass on an unweighted loss.
+
+        Only fills a buffer that is None; a buffer already set is overwritten
+        by `load_state_dict` as usual.
+        """
+        for key, attr in (("loss_fn.weight", "weight"), ("loss_fn.pos_weight", "pos_weight")):
+            saved = checkpoint_data.get(key)
+            if saved is not None and getattr(self.loss_fn, attr, None) is None:
+                self.set_class_weights(saved)
+                return
+
     def restore_from_checkpoint_metadata(self, checkpoint_data: dict[str, Any]) -> None:
         """
         Rebuild the layer stack from checkpoint metadata.
 
         Replaces `self.layers` with new layers holding neuron modules of the
-        saved classes and shapes. Only the architecture is restored: the
+        saved classes and shapes. Only the architecture is restored, plus the
+        loss's class weights when the model was built without them: the
         weights are loaded afterwards with `load_state_dict` (see
         `Trainer.load_model_checkpoint`).
 
@@ -371,6 +391,7 @@ class SONN(SONNModule):
                 neuron_model = BasePolynomNeuron.from_checkpoint_metadata(neuron_model_metadata)
                 layer.neuron_models.append(neuron_model)
             self.layers.append(layer)
+        self._restore_class_weights(checkpoint_data)
 
     @classmethod
     def default_config(cls) -> Any:

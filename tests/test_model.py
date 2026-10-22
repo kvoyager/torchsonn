@@ -288,6 +288,40 @@ def test_set_class_weights_nll_swap():
     assert isinstance(m.loss_fn, nn.NLLLoss)
 
 
+@pytest.mark.parametrize("model_type,num_classes,cw,key", [
+    ("multi-class", 3, [1.0, 2.0, 3.0], "weight"),
+    ("binary", 2, [2.0], "pos_weight"),
+])
+def test_reload_keeps_the_checkpoints_class_weights(model_type, num_classes, cw, key):
+    # A model built without class weights takes them from the checkpoint,
+    # where load_state_dict alone would drop them.
+    cfg = _make_cfg(model={"type": model_type, "num_classes": num_classes, "nbest_neurons": 3,
+                            "soft_binner": False, "ref_functions": ["linear_cov"]})
+    weights = torch.tensor(cw)
+    trained = SONN(cfg, d_model=4, class_weights=weights)
+    trained.layers.append(trained.create_layer(0))
+    sd = trained.state_dict()
+    assert f"loss_fn.{key}" in sd
+
+    fresh = SONN(cfg, d_model=4)
+    assert getattr(fresh.loss_fn, key) is None
+    fresh.restore_from_checkpoint_metadata(sd)
+    fresh.load_state_dict(sd, strict=False)
+    assert torch.equal(getattr(fresh.loss_fn, key), weights.to(torch.get_default_dtype()))
+
+
+def test_reload_leaves_set_class_weights_to_load_state_dict():
+    cfg = _make_cfg(model={"type": "multi-class", "num_classes": 3, "nbest_neurons": 3,
+                            "soft_binner": False, "ref_functions": ["linear_cov"]})
+    trained = SONN(cfg, d_model=4, class_weights=torch.tensor([1.0, 2.0, 3.0]))
+    trained.layers.append(trained.create_layer(0))
+    sd = trained.state_dict()
+    other = SONN(cfg, d_model=4, class_weights=torch.tensor([5.0, 5.0, 5.0]))
+    other.restore_from_checkpoint_metadata(sd)
+    other.load_state_dict(sd, strict=False)
+    assert torch.equal(other.loss_fn.weight, torch.tensor([1.0, 2.0, 3.0]))
+
+
 def test_state_dict_records_layer_names():
     cfg = _make_cfg(model={"type": "regressor", "num_classes": 1, "nbest_neurons": 3,
                             "soft_binner": False, "ref_functions": ["linear_cov"]})
