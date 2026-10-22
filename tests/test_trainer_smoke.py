@@ -774,6 +774,73 @@ def test_train_resume_by_run_name_from_a_new_trainer(tmp_path):
     assert Trainer.run_folders(tmp_path) == [first.run_dir]
 
 
+def _two_family_cfg(tmp_path, **train_overrides):
+    cfg = _cfg(tmp_path, max_layer_count=1, **train_overrides)
+    cfg.model.ref_functions = ["linear_cov", {"polyquad": {"dim": 2}}]
+    cfg.model.nbest_neurons = 4
+    return cfg
+
+
+class _Stop(Exception):
+    pass
+
+
+def _layer_state(model):
+    layer = model.layers[0]
+    return (layer.module_idxs.tolist(), float(layer.err),
+            {k: v.clone() for k, v in model.state_dict().items() if torch.is_tensor(v)})
+
+
+@pytest.mark.parametrize("method", ["plain", "omp_mixed"])
+@pytest.mark.parametrize("stop_in", ["between_fits", "during_first_fit", "during_second_fit"])
+def test_resume_partway_through_a_layer_matches_an_uninterrupted_run(tmp_path, monkeypatch, method, stop_in):
+    # A layer of two neuron models, stopped after the first one's fit (its
+    # end-of-fit checkpoint is the latest) or partway through either fit (a
+    # step checkpoint). The resumed layer selects the same survivors with the
+    # same weights as a run that never stopped.
+    save_interval = 1000 if stop_in == "between_fits" else 5
+    stop_idx = 0 if stop_in == "during_first_fit" else 1
+    train_dl, dev_dl, test_dl = _make_dl(48), _make_dl(16), _make_dl(8)
+
+    # Both fresh runs draw the same candidates and starting weights.
+    ref_cfg = _two_family_cfg(tmp_path / "ref", neuron_selection_method=method, save_interval=save_interval)
+    Trainer.set_seed(0)
+    ref = Trainer(config=ref_cfg).train(SONN(ref_cfg, d_model=4), train_dl, dev_dl, test_dl, verbose=False)
+
+    cfg = _two_family_cfg(tmp_path / "run", neuron_selection_method=method, save_interval=save_interval)
+    trainer = Trainer(config=cfg)
+    real_fit, real_save = Trainer.train_model_ensemble, Trainer.save_checkpoint
+
+    def stop_before_second_fit(self, model, neuron_model, neuron_model_idx, *args, **kwargs):
+        if neuron_model_idx == 1:
+            raise _Stop
+        return real_fit(self, model, neuron_model, neuron_model_idx, *args, **kwargs)
+
+    def stop_after_first_step_checkpoint(self, ckpt, suffix=""):
+        real_save(self, ckpt, suffix)
+        if ckpt.neuron_model_idx == stop_idx and not ckpt.neuron_model_completed:
+            raise _Stop
+
+    if stop_in == "between_fits":
+        monkeypatch.setattr(Trainer, "train_model_ensemble", stop_before_second_fit)
+    else:
+        monkeypatch.setattr(Trainer, "save_checkpoint", stop_after_first_step_checkpoint)
+    Trainer.set_seed(0)
+    with pytest.raises(_Stop):
+        trainer.train(SONN(cfg, d_model=4), train_dl, dev_dl, test_dl, verbose=False)
+    monkeypatch.undo()
+
+    resumed = Trainer(config=cfg).train(SONN(cfg, d_model=4), train_dl, dev_dl, test_dl,
+                                        verbose=False, resume=trainer.run_dir.name)
+    ref_idxs, ref_err, ref_state = _layer_state(ref)
+    idxs, err, state = _layer_state(resumed)
+    assert idxs == ref_idxs
+    assert err == pytest.approx(ref_err)
+    assert state.keys() == ref_state.keys()
+    for key in ref_state:
+        torch.testing.assert_close(state[key], ref_state[key], msg=key)
+
+
 def test_train_without_checkpoints_to_resume_starts_new_run(tmp_path):
     cfg = _cfg(tmp_path, max_layer_count=1)
     trainer = Trainer(config=cfg)

@@ -18,8 +18,8 @@ The following Trainer branches are deliberately uncovered:
    call — which tests the patch, not the production code.
 
 2. Mid-step checkpoint-resume paths inside `train_model_ensemble` (resume
-   when `neuron_model_completed=False`). The trainer never writes a
-   mid-step checkpoint in tests because `save_interval > steps`.
+   when `neuron_model_completed=False`) are not unit tested here; the
+   end-to-end resume tests in `test_trainer_smoke.py` cover them.
 
 3. Opt-in features that default to off: `log_layer_diagnostics`,
    `divergence_threshold`-triggered NaN masking, the LBFGS strong-Wolfe

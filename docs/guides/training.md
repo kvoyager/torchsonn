@@ -151,7 +151,10 @@ of them left it.
 `train(..., resume=True)` continues an interrupted run in its own folder:
 the newest run folder in `train.checkpoint_dir` that holds a step
 checkpoint. It restores the layers trained so far, picks up the family and
-step where training stopped, and appends to the run's `train.log`.
+step where training stopped, and appends to the run's `train.log`. The
+families of a layer that finished their fits before the stop are not fitted
+again: the resume recomputes their errors and dev outputs from the restored
+weights, so the layer's selection sees every candidate.
 `resume="2026-10-04-10-15-30"` continues that run. When there is nothing
 to resume, the trainer logs so and starts a new run. Use a separate
 `train.checkpoint_dir` for every configuration, so that a resumed run never

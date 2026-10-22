@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed — resuming a run partway through a layer
+
+A run resumed partway through a layer now selects the same survivors with
+the same weights as a run that never stopped. Before, a resume lost or
+corrupted the work of the families already fitted:
+
+* Resumed after a family's fit had finished, the layer skipped that family's
+  error, so its candidates could not survive; when it was the layer's last
+  family, the whole layer was fitted again. The resume now keeps the fit and
+  computes the family's error.
+* The dev outputs of the families fitted before the stop were not rebuilt,
+  so `omp`, `omp_mixed` and the other methods that read them failed or
+  mismatched outputs and errors.
+* The next family's fit skipped its first batch, and after a stop partway
+  through a fit, the families after it tried to restore that fit's
+  optimizer state.
+
 ### Fixed — class weights survive a reload
 
 The loss's class weights are saved with the model, but a checkpoint loaded

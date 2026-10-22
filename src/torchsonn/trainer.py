@@ -4,7 +4,7 @@ import math
 import random
 import sys
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -510,21 +510,36 @@ class Trainer:
             train_feat_dl = train_dl
             dev_feat_dl   = dev_dl
 
+        # A neuron model whose fit finished before the stop but whose error
+        # was not recorded yet: the end-of-fit checkpoint is written before
+        # the error. The resume skips its fit and computes the rest.
+        fitted_neuron_model_idx = None
         if checkpoint_data is not None:
             accumulator.err = checkpoint_data["err"]
             accumulator.module_idxs = checkpoint_data["module_idxs"]
             loaded_neuron_model_idx = checkpoint_data["neuron_model_idx"]
-            completed = checkpoint_data["neuron_model_completed"]
-            if completed:
-                if loaded_neuron_model_idx == len(layer.neuron_models) - 1:
-                    # all neuron models have been trained
-                    start_neuron_model_idx = 0
-                else:
-                    # only part of neuron models have been trained and each neuron model has been trained completely
-                    start_neuron_model_idx = loaded_neuron_model_idx + 1
-            else:
-                # neuron model training has not been completed
-                start_neuron_model_idx = loaded_neuron_model_idx
+            # Every neuron model before the loaded one finished with its
+            # error recorded; the loaded one either stopped partway through
+            # its fit, which resumes from the checkpoint, or finished it.
+            start_neuron_model_idx = loaded_neuron_model_idx
+            if checkpoint_data["neuron_model_completed"]:
+                fitted_neuron_model_idx = loaded_neuron_model_idx
+
+            # The checkpoint restores `err` and `module_idxs` but not the dev
+            # responses `z_val`, which are too large to save. Recompute them
+            # for the neuron models the resume skips, so selection sees one
+            # response per restored error. Their weights came back with the
+            # model state, so the responses are the same as before the stop.
+            for done_idx in range(start_neuron_model_idx):
+                z_val, y_val = selection.compute_z_val(
+                    layer.neuron_models[done_idx],
+                    evaluation.iter_eval_batches(model, dev_feat_dl, device, precompute, batch_callback=self.batch_callback))
+                accumulator.z_val.append(z_val)
+                if accumulator.y_val is None:
+                    accumulator.y_val = y_val
+            if start_neuron_model_idx:
+                logger.info("resume: recomputed the dev responses of %d trained neuron model(s)",
+                            start_neuron_model_idx)
         else:
             start_neuron_model_idx = 0
 
@@ -540,21 +555,32 @@ class Trainer:
             # below only score the candidates.
             loss_fn_vmapped, eval_loss_fn_vmapped, pred_fn_vmapped, params_batch, buffers_batch, shared_param_names = (
                 ensemble.create_loss_functions(model, neuron_model))
-            accumulator, trained_params, last_ckpt = self.train_model_ensemble(
-                model,
-                neuron_model,
-                neuron_model_idx,
-                layer.layer_index,
-                train_feat_dl,
-                dev_feat_dl,
-                checkpoint_data,
-                accumulator,
-                loss_fn_vmapped,
-                eval_loss_fn_vmapped,
-                params_batch,
-                buffers_batch,
-                shared_param_names,
-                features_precomputed=precompute)
+            if neuron_model_idx == fitted_neuron_model_idx:
+                # Fitted before the stop: params_batch holds the trained
+                # weights. The loaded checkpoint stands in for the one the fit
+                # would have returned, so the layer's end is still saved.
+                trained_params = params_batch
+                last_ckpt = StepCheckpoint(model=model, **{
+                    f.name: checkpoint_data.get(f.name) for f in fields(StepCheckpoint) if f.name != "model"})
+            else:
+                accumulator, trained_params, last_ckpt = self.train_model_ensemble(
+                    model,
+                    neuron_model,
+                    neuron_model_idx,
+                    layer.layer_index,
+                    train_feat_dl,
+                    dev_feat_dl,
+                    checkpoint_data,
+                    accumulator,
+                    loss_fn_vmapped,
+                    eval_loss_fn_vmapped,
+                    params_batch,
+                    buffers_batch,
+                    shared_param_names,
+                    features_precomputed=precompute)
+            # The checkpoint resumed this fit; every later fit, the bias
+            # criterion's half fits included, starts fresh.
+            checkpoint_data = None
             trained_params_per_model[neuron_model_idx] = trained_params
             if model.need_regularity_err:
                 regularity_err = evaluation.regularity_err(model, pred_fn_vmapped, trained_params, buffers_batch, dev_feat_dl, device, skip_model_fwd=precompute, batch_callback=self.batch_callback)
@@ -875,6 +901,9 @@ class Trainer:
                  checkpoint_data["neuron_model_completed"])
         )
         if start_from_scratch:
+            # A finished fit's checkpoint has no step to resume from; kept, it
+            # would make the loop below skip this fit's first batch.
+            checkpoint_data = None
             epoch = 0
             best_val_losses = torch.full((_local_size,), float('inf'), device=device)
             last_steps_improve = torch.zeros(_local_size, dtype=torch.int, device=device)
@@ -1133,8 +1162,6 @@ class Trainer:
             self.save_checkpoint(last_ckpt)
             if model.param.train.save_last_layer:
                 self.save_checkpoint(last_ckpt, suffix="last")
-        if checkpoint_data:
-            checkpoint_data["neuron_model_completed"] = True
 
         # Drop optimizer / gradient state before returning so the next neuron
         # model in the same layer starts from a clean slate. We cannot drop
