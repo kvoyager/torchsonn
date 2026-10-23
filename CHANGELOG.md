@@ -26,8 +26,11 @@ of `baselines.py`. The Otto README and docs page describe it.
 `tutorials/otto/README.md` covers the dataset, the tutorial's setup, the
 tuned configuration and the retune that found it, calibration, and the
 SONN against the MLPs and XGBoost of `baselines.py`, all over seeds 42 to
-46 on the tutorial's split. The site shows it as the page "Otto: against
-an MLP and XGBoost", linked from the Otto page and the tutorials index.
+46 on the tutorial's split. The site shows it as the page "Otto Group
+product classification: results and comparisons", linked from the Otto
+page and the tutorials index. On the site, a tutorial README's relative
+link to a Markdown file under `docs/` now opens that page of the site, not
+the file on GitHub.
 
 ### Added — Otto baselines
 

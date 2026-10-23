@@ -14,8 +14,9 @@ into ``docs/``:
 
   with that README, after three changes. Its first-level title is dropped,
   because the page has its own. Its relative links point at the published
-  diagrams for images and at the file on GitHub for everything else, so
-  they work on the site as they do on GitHub. Its ``<details>`` blocks
+  diagrams for images, at the site's page for a Markdown file under
+  ``docs/``, and at the file on GitHub for everything else, so they work on
+  the site as they do on GitHub. Its ``<details>`` blocks
   become collapsible admonitions, which the site renders with Markdown
   inside.
 
@@ -64,6 +65,7 @@ def _is_relative(target: str) -> bool:
 def _rewrite(text: str, readme_dir: str, page, config, *, html: bool) -> str:
     """Point the relative links of one README line at the site or GitHub."""
     blob = config.repo_url.rstrip("/") + "/blob/main/"
+    docs_prefix = Path(config.docs_dir).resolve().relative_to(_repo_root(config)).as_posix() + "/"
     page_dir = posixpath.dirname(page.file.src_uri)
     url_dir = page.url if page.url.endswith("/") else posixpath.dirname(page.url)
 
@@ -78,6 +80,11 @@ def _rewrite(text: str, readme_dir: str, page, config, *, html: bool) -> str:
             # Markdown links are resolved by MkDocs from the page's source
             # file; raw HTML is resolved by the browser from the page's URL.
             new = posixpath.relpath(asset, url_dir or ".") if html else posixpath.relpath(asset, page_dir or ".")
+        elif not html and repo_path.startswith(docs_prefix) and repo_path.lower().endswith(".md"):
+            # A docs page: a link relative to this page's source file, which
+            # MkDocs resolves to the page's URL and checks like any other.
+            doc = repo_path[len(docs_prefix):]
+            new = posixpath.relpath(doc, page_dir or ".") + (f"#{fragment}" if fragment else "")
         else:
             new = blob + repo_path + (f"#{fragment}" if fragment else "")
         return match.group("head") + new + match.group("tail")

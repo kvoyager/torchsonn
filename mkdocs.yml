@@ -154,5 +154,5 @@ nav:
       - California housing: tutorials/california-housing.md
       - Concrete: tutorials/concrete.md
       - CCPP: tutorials/ccpp.md
-      - Otto: tutorials/otto.md
-      - "Otto: against an MLP and XGBoost": tutorials/otto-comparison.md
+      - Otto Group product classification: tutorials/otto.md
+      - "Otto Group product classification: results and comparisons": tutorials/otto-comparison.md

@@ -1,4 +1,4 @@
-# Otto: torchsonn against a tuned MLP and XGBoost
+# Otto Group product classification: results and comparisons
 
 This tutorial fits a self-organizing neural network, TorchSONN, to the
 Otto Group product classification task: 9 product categories from 93
@@ -9,7 +9,7 @@ SONN that is its main result, what depth and the end-to-end pass are
 worth, the layer by layer retune the deep models build on, calibration,
 and where the SONN stands against the other models. The short version of
 the tutorial, "run it and read the output", is the docs page
-[Otto](../../docs/tutorials/otto.md) [[3]](#ref-3).
+[Otto Group product classification](../../docs/tutorials/otto.md) [[3]](#ref-3).
 
 The answer in one line: a two layer SONN trained end to end,
 `otto_deep.yaml` (14,469 to 14,742 parameters), scores a mean test log
@@ -401,7 +401,7 @@ What the SONN offers that the MLP does not:
 2. <a id="ref-2"></a>OpenML dataset 45548,
    *Otto-Group-Product-Classification-Challenge*, the competition's
    training file: <https://www.openml.org/d/45548>
-3. <a id="ref-3"></a>The docs page [Otto](../../docs/tutorials/otto.md)
+3. <a id="ref-3"></a>The docs page [Otto Group product classification](../../docs/tutorials/otto.md)
    and the results in the headers of [`otto_deep.yaml`](otto_deep.yaml),
    [`otto_deep3.yaml`](otto_deep3.yaml), [`otto_tuned.yaml`](otto_tuned.yaml)
    and [`otto.yaml`](otto.yaml).
