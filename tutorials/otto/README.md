@@ -5,8 +5,8 @@ Otto Group product classification task: 9 product categories from 93
 count features, scored by the multi-class log loss. It then compares the
 result with single hidden layer MLPs and XGBoost on the same split and
 features. This page covers the dataset, the tutorial's setup, the tuned
-configuration and how it was found, calibration, and where the SONN
-stands against the other models. The short version of the tutorial,
+configuration and how it was found, calibration, where the SONN stands
+against the other models, and a deeper SONN trained end to end. The short version of the tutorial,
 "run it and read the output", is the docs page
 [Otto](../../docs/tutorials/otto.md) [[3]](#ref-3).
 
@@ -17,7 +17,10 @@ more parameters, beats an MLP of the same size without regularization on
 four seeds of five, and beats XGBoost capped to the same size on every
 seed. An MLP of the same size tuned with weight decay and dropout beats it
 by 0.012 log loss, and XGBoost without a size limit, at about 1.2M
-parameters, beats it by 0.059.
+parameters, beats it by 0.059. A two layer SONN with an end-to-end pass,
+`otto_deep.yaml`, closes that gap to the MLP: **0.5130** against 0.5146,
+with 600 to 900 fewer parameters, which is a tie within the spread of the
+seeds.
 
 ## The dataset
 
@@ -82,15 +85,17 @@ From any directory:
 python tutorials/otto/otto_classification.py
 python tutorials/otto/otto_classification.py --config-name otto_tuned
 python tutorials/otto/otto_classification.py --config-name otto_tuned train.seed=43
+python tutorials/otto/otto_classification.py --config-name otto_deep
 ```
 
 The script reads `otto.yaml` with Hydra's compose API. `--config-name`
 picks another YAML file in the folder, and `key=value` overrides any
 setting. Each run writes its checkpoints and its `train.log` to a folder of
 its own, `tutorials/otto/checkpoints/YYYY-MM-DD-HH-MM-SS/`, and logs the
-results, a per-class report and the test confusion matrix. Both configs
+results, a per-class report and the test confusion matrix. The configs
 run on a GPU as shipped: on an RTX 5080, a run of `otto_tuned.yaml` takes
-about 2.5 minutes and one of `otto.yaml` 3 to 5 minutes. The notebook
+about 2.5 minutes, one of `otto.yaml` 3 to 5 minutes and one of
+`otto_deep.yaml` 5 to 6 minutes. The notebook
 `tutorials/otto/otto.ipynb` runs `otto.yaml` and draws the confusion
 matrix and the layer errors.
 
@@ -176,6 +181,7 @@ accuracy stays the same. Fitted on the five seeds' checkpoints:
 |---|---|---|---|
 | `otto.yaml` | 1.14 to 1.22 | 0.5945 | 0.5864 |
 | `otto_tuned.yaml` | 0.99 to 1.03 | 0.5270 | 0.5269 |
+| `otto_deep.yaml` (see [A deeper SONN](#a-deeper-sonn-the-end-to-end-pass-makes-depth-pay)) | 1.02 to 1.06 | 0.5130 | 0.5124 |
 
 The shipped model is overconfident, and a temperature recovers 0.008 of
 log loss. The tuned model needs none: the L2 penalty already keeps its
@@ -260,26 +266,85 @@ The untuned MLP of 256 units ties the SONN (0.5273 against 0.5270) with
 0.5020 at 14 times the SONN's size, and XGBoost leads everything on this
 page by a wide margin, at about 75 times.
 
+## A deeper SONN: the end-to-end pass makes depth pay
+
+Every pass so far trains one part of the network with the rest frozen:
+each candidate alone, then a layer's survivors with a temporary head,
+then the final head. The end-to-end pass trains every parameter at once,
+the head included, by gradient descent on the training loss. With it, a
+second layer pays for itself. `otto_deep.yaml` changes `otto.yaml` as
+follows:
+
+| Setting | `otto.yaml` | `otto_deep.yaml` |
+|---|---|---|
+| `train.max_layer_count`, `train.layer_keep` | 3, `best` | 2, `all` |
+| `model.nbest_neurons`, `model.num_out_neurons` | 93, 93 | 360, 256 |
+| `model.use_neuron_proj` | true | false |
+| `train.out_proj_train.weight_decay` | 2.5e-5 | 2e-3 |
+| `train.neuron_selection_method`, `train.neuron_selection_min_gain` | `omp_mixed`, 1e-3 | `omp`, 0 |
+| `finetune_end_to_end`, `finetune_prune_first` | false, false | true, true |
+| `train.finetune_train` | | AdamW, lr 1e-2, weight decay 0.5, dropout 0.4 |
+
+The search builds two layers of 360 survivors and keeps both, and the
+head reads the 256 best of the second. Survivors are chosen by OMP for
+how much of the targets they explain, with no minimum gain, so both
+layers fill up. The script then prunes the model to the neurons the head
+reads, which leaves 322 to 335 neurons in the first layer, and runs the
+pass. The pass uses AdamW with decoupled weight decay, puts dropout on the
+head's input, evaluates dev every 100 steps and stops after 10
+evaluations without a gain, keeping the best weights.
+
+Over five seeds, test log loss / accuracy, against the tuned MLP:
+
+| seed | parameters | dev | test | MLP tuned, test | difference |
+|---|---|---|---|---|---|
+| 42 | 14,553 | 0.5013 / 0.8094 | 0.5106 / 0.8033 | 0.5108 / 0.8036 | -0.0002 |
+| 43 | 14,742 | 0.4945 / 0.8098 | 0.5030 / 0.8053 | 0.5075 / 0.8084 | -0.0045 |
+| 44 | 14,574 | 0.5127 / 0.8054 | 0.5193 / 0.8032 | 0.5220 / 0.8000 | -0.0027 |
+| 45 | 14,469 | 0.5223 / 0.8002 | 0.5197 / 0.7977 | 0.5205 / 0.7963 | -0.0008 |
+| 46 | 14,469 | 0.5151 / 0.7995 | 0.5122 / 0.8036 | 0.5121 / 0.8027 | +0.0001 |
+| **mean** | | 0.5092 / 0.8049 | **0.5130 / 0.8026** | 0.5146 / 0.8022 | **-0.0016** |
+
+The deep SONN is lower than the MLP on four seeds of five and on the
+mean, with 614 to 887 fewer parameters. The differences are small next to
+their spread across seeds (standard deviation 0.0019, a paired t of about
+-1.9 with 4 degrees of freedom), so this is a tie, not a win. Against the
+one layer `otto_tuned.yaml` it is lower on every seed, by 0.011 to 0.019,
+0.014 on average.
+
+The pass is what makes the second layer pay. Without it, the same model
+scores 0.5391 / 0.7942 on seed 42, worse than the one layer model's
+0.5216:
+
+```bash
+python tutorials/otto/otto_classification.py --config-name otto_deep finetune_end_to_end=false
+```
+
 ## Summary
 
-torchsonn does not beat a tuned MLP or full size XGBoost on Otto. On
-identical splits and features, over five seeds:
+torchsonn does not beat full size XGBoost on Otto, and at the size of a
+tuned MLP it ties it. On identical splits and features, over five seeds:
 
 - XGBoost reaches a mean test log loss of **0.469**, at about 1.2M
   parameters;
+- the deep SONN, two layers with the end-to-end pass, reaches **0.513**
+  with 14,469 to 14,742 parameters;
 - the tuned MLP of 15,356 parameters reaches **0.515**;
-- the tuned SONN of 15,387 parameters reaches **0.527**;
-- XGBoost capped at the same size reaches **0.549**.
+- the one layer SONN of 15,387 parameters reaches **0.527**;
+- XGBoost capped at the MLP's size reaches **0.549**.
 
-Among the models of its size, the SONN comes second, behind the MLP tuned
-with weight decay and dropout. The retune takes the tutorial from 0.595 to
-0.527 with five settings, and the tuned model comes out calibrated without
-a temperature.
+Trained layer by layer, the one layer SONN comes second among the models
+of its size, behind the MLP tuned with weight decay and dropout. The
+retune takes the tutorial from 0.595 to 0.527 with five settings, and the
+tuned model comes out calibrated without a temperature. With the
+end-to-end pass a second layer pays, and the deep SONN draws level with
+the tuned MLP, a little ahead on four seeds of five.
 
 What the SONN offers that the MLP does not:
 
-- every neuron is an explicit quadratic polynomial of 5 named inputs, so
-  each of the 512 features the head reads can be written down;
+- every neuron is an explicit quadratic polynomial of 5 inputs, the
+  network's own inputs or, in a second layer, first layer neurons, so each
+  feature the head reads can be written down;
 - the head is a linear map of those features, one weight per neuron and
   class;
 - pruning cuts the network to the neurons the head reads, without moving
@@ -294,5 +359,5 @@ What the SONN offers that the MLP does not:
    *Otto-Group-Product-Classification-Challenge*, the competition's
    training file: <https://www.openml.org/d/45548>
 3. <a id="ref-3"></a>The docs page [Otto](../../docs/tutorials/otto.md)
-   and the results in the headers of [`otto.yaml`](otto.yaml) and
-   [`otto_tuned.yaml`](otto_tuned.yaml).
+   and the results in the headers of [`otto.yaml`](otto.yaml),
+   [`otto_tuned.yaml`](otto_tuned.yaml) and [`otto_deep.yaml`](otto_deep.yaml).

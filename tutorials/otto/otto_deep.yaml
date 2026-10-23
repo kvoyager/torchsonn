@@ -1,0 +1,44 @@
+# Otto Group Product Classification, deep: two layers and an end-to-end pass.
+# Run: python tutorials/otto/otto_classification.py --config-name otto_deep
+#
+# Built on otto.yaml. The search builds two layers of 360 survivors and keeps
+# both; the head reads the 256 best of the second. The neurons share one class
+# map, the head fit and the per-layer fine-tune use L2 2e-3, and survivors are
+# chosen by OMP alone, with no minimum gain, so every layer fills up. The
+# model is then pruned to the neurons the head reads, and the end-to-end pass
+# trains every parameter at once with AdamW (lr 1e-2, decoupled weight decay
+# 0.5), dropout 0.4 on the head's input and an early stop on dev that keeps
+# the best weights.
+# Results, 2 layers, 14,469 to 14,742 parameters after pruning; test log loss /
+# accuracy per seed (train.seed): 42 0.5106 / 0.8033, 43 0.5030 / 0.8053,
+# 44 0.5193 / 0.8032, 45 0.5197 / 0.7977, 46 0.5122 / 0.8036; mean 0.5130 /
+# 0.8026 (dev 0.5092 / 0.8049). Without the end-to-end pass, seed 42 scores
+# 0.5391 / 0.7942.
+defaults:
+  - otto
+  - _self_
+
+finetune_end_to_end: true
+finetune_prune_first: true
+
+model:
+  nbest_neurons: 360
+  num_out_neurons: 256
+  use_neuron_proj: false
+
+train:
+  max_layer_count: 2
+  layer_keep: all
+  neuron_selection_method: omp
+  neuron_selection_min_gain: 0.0
+  out_proj_train:
+    weight_decay: 2.0e-3
+  finetune_train:
+    optimizer: adamw
+    lr: 1.0e-2
+    weight_decay: 0.5
+    dropout: 0.4
+    max_steps: 20000
+    eval_interval: 100
+    early_stop_patience: 10
+    keep_best_weights: true

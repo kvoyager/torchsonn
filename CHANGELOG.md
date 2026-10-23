@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added — `otto_deep.yaml`, a deeper Otto configuration
+
+`tutorials/otto/otto_deep.yaml`: two layers of 360 survivors, both kept,
+the head reading 256 of the second, then the end-to-end pass after
+pruning, with AdamW (lr 1e-2, weight decay 0.5) and head dropout 0.4.
+Over seeds 42 to 46: 14,469 to 14,742 parameters, mean test log loss
+0.5130 and accuracy 0.8026, against 0.5146 and 0.8022 for the tuned MLP
+of `baselines.py`. The Otto README and docs page describe it.
+
 ### Added — Otto README
 
 `tutorials/otto/README.md` covers the dataset, the tutorial's setup, the
