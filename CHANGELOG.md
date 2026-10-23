@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added — `otto_deep3.yaml`, and the Otto README led by the deep SONN
+
+`tutorials/otto/otto_deep3.yaml`: `otto_deep.yaml` with three layers of
+220 survivors, every layer fed all earlier ones, and the end-to-end pass at
+lr 3e-3. Over seeds 42 to 46: 14,712 to 15,174 parameters, mean test log
+loss 0.5199 and accuracy 0.8015. The Otto README now leads with
+`otto_deep.yaml` and compares one, two and three layers with and without
+the end-to-end pass: without it depth loses to one wide layer, with it
+both deep models beat it on every seed.
+
 ### Added — `otto_deep.yaml`, a deeper Otto configuration
 
 `tutorials/otto/otto_deep.yaml`: two layers of 360 survivors, both kept,

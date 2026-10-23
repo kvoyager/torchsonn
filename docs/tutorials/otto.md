@@ -17,9 +17,9 @@ python tutorials/otto/otto_classification.py
 The script reads `tutorials/otto/otto.yaml` with Hydra's compose API and
 takes the same command-line arguments as the other tutorials: `key=value`
 overrides any setting, and `--config-name` picks another YAML file in the
-same folder. Two ship with it: `otto_tuned.yaml` (see
-[A tuned configuration](#a-tuned-configuration)) and `otto_deep.yaml` (see
-[A deeper configuration](#a-deeper-configuration)):
+same folder. Three ship with it: `otto_tuned.yaml` (see
+[A tuned configuration](#a-tuned-configuration)), and `otto_deep.yaml` and
+`otto_deep3.yaml` (see [A deeper configuration](#a-deeper-configuration)):
 
 ```bash
 python tutorials/otto/otto_classification.py --config-name otto_tuned
@@ -155,8 +155,16 @@ inputs. A run took 5 to 6 minutes on an RTX 5080. Over seeds 42 to 46 it
 keeps 14,469 to 14,742 parameters and scores a mean test log loss of
 0.5130 at an accuracy of 0.8026 (dev 0.5092 / 0.8049). Without the pass,
 `finetune_end_to_end=false`, seed 42 scores 0.5391 / 0.7942, against
-0.5106 / 0.8033 with it. The settings are explained on the page
-[Otto: against an MLP and XGBoost](otto-comparison.md#a-deeper-sonn-the-end-to-end-pass-makes-depth-pay).
+0.5106 / 0.8033 with it.
+
+`tutorials/otto/otto_deep3.yaml` is the same with three layers of 220
+survivors, each layer after the first fed the outputs of all earlier
+layers, the head reading all 220 of the last and the pass at learning rate
+3e-3. Over the same seeds it keeps 14,712 to 15,174 parameters and scores
+0.5199 / 0.8015 (dev 0.5163 / 0.8048); without the pass, seed 42 scores
+0.5387 / 0.7934. Both deep models beat `otto_tuned.yaml` on every seed.
+The settings and the comparison of depths are on the page
+[Otto: against an MLP and XGBoost](otto-comparison.md#the-main-result-a-deep-sonn).
 
 ## Baselines
 
@@ -188,6 +196,7 @@ Means over seeds 42 to 46, test log loss / accuracy:
 | Model | Parameters | Test |
 |---|---|---|
 | `otto_deep.yaml` | 14,469 to 14,742 | 0.5130 / 0.8026 |
+| `otto_deep3.yaml` | 14,712 to 15,174 | 0.5199 / 0.8015 |
 | `otto_tuned.yaml` | 15,387 | 0.5270 / 0.7985 |
 | `otto.yaml` | 4,473 to 8,100 | 0.5945 / 0.7769 |
 | MLP, 149 `gelu` units, weight decay 0.5, dropout 0.2 | 15,356 | 0.5146 / 0.8022 |

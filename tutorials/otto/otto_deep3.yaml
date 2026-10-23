@@ -1,0 +1,28 @@
+# Otto Group Product Classification, deep, three layers: otto_deep.yaml with
+# three narrower layers, each fed every earlier layer.
+# Run: python tutorials/otto/otto_classification.py --config-name otto_deep3
+#
+# The search builds three layers of 220 survivors and keeps all three. Every
+# layer after the first reads the inputs and the outputs of all earlier
+# layers, and the head reads all 220 survivors of the last one. The pass is
+# that of otto_deep.yaml with learning rate 3e-3.
+# Results, 3 layers, 14,712 to 15,174 parameters after pruning; test log loss /
+# accuracy per seed (train.seed): 42 0.5161 / 0.8024, 43 0.5124 / 0.8048,
+# 44 0.5220 / 0.8021, 45 0.5314 / 0.7942, 46 0.5174 / 0.8042; mean 0.5199 /
+# 0.8015 (dev 0.5163 / 0.8048). Without the end-to-end pass, seed 42 scores
+# 0.5387 / 0.7934.
+defaults:
+  - otto_deep
+  - _self_
+
+model:
+  nbest_neurons: 220
+  num_out_neurons: 220
+  shortcut:
+    raw_features: true
+    prev_layers: all
+
+train:
+  max_layer_count: 3
+  finetune_train:
+    lr: 3.0e-3
