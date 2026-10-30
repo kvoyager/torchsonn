@@ -50,12 +50,14 @@ zero, a few are large.
 ## Published results
 
 The competition scored submissions by the multi-class log loss on a test
-set whose labels were never released. The leaderboard scores are on that
-hidden test set, and the top ones come from large ensembles of models.
-This page splits the public training file instead, so its numbers are not
-comparable with the leaderboard, and it does not quote it. The fair
-comparison is the baselines run on the tutorial's own split, at the end of
-this page.
+set whose labels were never released, and 3,511 teams took part. The
+winning team, Gilberto Titericz and Stanislav Semenov, scored 0.38243 on
+the private leaderboard, and the next two teams scored 0.38656 and 0.38667
+[[4]](#ref-4). The winners describe their solution in the competition
+forum [[5]](#ref-5). These scores are on the hidden test set, while this
+page splits the public training file, so they set the scale only and are
+not comparable with the numbers here one to one. The fair comparison is
+the baselines run on the tutorial's own split, at the end of this page.
 
 ## The tutorial's setup
 
@@ -405,3 +407,9 @@ What the SONN offers that the MLP does not:
    and the results in the headers of [`otto_deep.yaml`](otto_deep.yaml),
    [`otto_deep3.yaml`](otto_deep3.yaml), [`otto_tuned.yaml`](otto_tuned.yaml)
    and [`otto.yaml`](otto.yaml).
+4. <a id="ref-4"></a>Kaggle, *Otto Group Product Classification
+   Challenge*, final leaderboard:
+   <https://www.kaggle.com/competitions/otto-group-product-classification-challenge/leaderboard>
+5. <a id="ref-5"></a>G. Titericz and S. Semenov, *1st place winner
+   solution*, Kaggle forum (2015):
+   <https://www.kaggle.com/competitions/otto-group-product-classification-challenge/discussion/14335>
