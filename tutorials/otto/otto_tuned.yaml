@@ -3,7 +3,9 @@
 #
 # Five overrides against otto.yaml, found one setting at a time on seeds
 # 42 to 44 by mean dev log loss:
-#   * one layer: deeper layers fit worse at the same parameter budget;
+#   * one layer: trained layer by layer, deeper layers fit worse at the
+#     same parameter budget (with the end-to-end pass they fit better, see
+#     otto_deep.yaml);
 #   * 512 survivors, all read by the head;
 #   * L2 2e-3 in the head fit and the per-layer fine-tune;
 #   * one class map shared by all neurons, 37% fewer parameters.

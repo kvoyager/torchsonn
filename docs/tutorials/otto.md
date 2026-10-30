@@ -92,7 +92,7 @@ loss and the accuracy (see [Classification](../concepts/classification.md#class-
 
 ## Results
 
-One run on an RTX 5080 GPU took about 3 minutes. The search built all three
+One run on an RTX 5080 GPU took 3 to 5 minutes. The search built all three
 layers allowed, and neither later layer beat the first, so the model keeps
 layer 0 alone:
 
@@ -120,7 +120,7 @@ settings, each chosen on seeds 42 to 44 by the mean dev log loss:
 
 | Setting | `otto.yaml` | `otto_tuned.yaml` | Why |
 |---|---|---|---|
-| `train.max_layer_count` | 3 | 1 | at the same parameter count, deeper layers fit worse than one wide layer |
+| `train.max_layer_count` | 3 | 1 | trained layer by layer, deeper layers fit worse than one wide layer at the same parameter count; with the end-to-end pass they fit better (see [A deeper configuration](#a-deeper-configuration)) |
 | `model.nbest_neurons`, `model.num_out_neurons` | 93, 93 | 512, 512 | more survivors, all read by the head |
 | `train.out_proj_train.weight_decay` | 2.5e-5 | 2e-3 | a stronger L2 penalty in the head fit and the per-layer fine-tune |
 | `model.use_neuron_proj` | true | false | one class map shared by all neurons in place of one per candidate, 37% fewer parameters (see [Classification](../concepts/classification.md#a-projection-per-candidate)) |
