@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8
 
 ### Added — `otto_deep3.yaml`, and the Otto README led by the deep SONN
 
