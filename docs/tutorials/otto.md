@@ -164,7 +164,7 @@ layers, the head reading all 220 of the last and the pass at learning rate
 0.5199 / 0.8015 (dev 0.5163 / 0.8048); without the pass, seed 42 scores
 0.5387 / 0.7934. Both deep models beat `otto_tuned.yaml` on every seed.
 The settings and the comparison of depths are on the page
-[Otto Group product classification: results and comparisons](otto-comparison.md#the-main-result-a-deep-sonn).
+[Otto Group product classification: results and comparisons](otto-comparison.md#the-main-result-a-multilayer-model).
 
 ## Baselines
 

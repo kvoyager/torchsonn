@@ -11,7 +11,7 @@ and where the SONN stands against the other models. The short version of
 the tutorial, "run it and read the output", is the docs page
 [Otto Group product classification](../../docs/tutorials/otto.md) [[3]](#ref-3).
 
-The answer in one line: a two layer SONN trained end to end,
+The headline result: a two layer SONN trained end to end,
 `otto_deep.yaml` (14,469 to 14,742 parameters), scores a mean test log
 loss of **0.5130** and an accuracy of **0.8026** over five seeds. That
 ties an MLP of the same size tuned with weight decay and dropout (0.5146 /
@@ -98,7 +98,7 @@ or `otto_deep3.yaml`, about 2.5 minutes with `otto_tuned.yaml` and 3 to 5
 minutes with `otto.yaml`, the quick run of the docs page and of the
 notebook `tutorials/otto/otto.ipynb`.
 
-## The main result: a deep SONN
+## The main result: a multilayer model
 
 `otto_deep.yaml` builds two layers and then trains the whole network at
 once. It changes `otto.yaml` as follows:
